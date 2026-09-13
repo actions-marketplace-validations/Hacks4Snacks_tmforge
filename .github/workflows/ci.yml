@@ -13,6 +13,17 @@ permissions:
   contents: read
 
 jobs:
+  plugin:
+    name: Copilot plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate plugin and portable scripts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -B -m unittest discover -s test/plugin -v
+
   build-test:
     name: Build & test
     runs-on: ubuntu-latest

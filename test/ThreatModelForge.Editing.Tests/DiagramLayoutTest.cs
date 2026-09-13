@@ -2,6 +2,7 @@ namespace ThreatModelForge.Editing.Tests
 {
     using System;
     using System.Collections.Generic;
+    using System.Globalization;
     using System.Linq;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.Editing;
@@ -95,20 +96,86 @@ namespace ThreatModelForge.Editing.Tests
         }
 
         /// <summary>
-        /// Verifies that trust boundaries are not moved by the component layout.
+        /// Verifies that a component stays inside the trust boundary it started in. Boundary
+        /// membership is what the analysis is derived from, so an arrangement that moved a component
+        /// out of its boundary would change the model's meaning rather than just its drawing.
         /// </summary>
         [TestMethod]
-        public void ApplyLeavesTrustBoundariesUntouched()
+        public void ApplyKeepsComponentsInsideTheirTrustBoundary()
         {
             DrawingSurfaceModel diagram = BuildChain(NodeA, NodeB);
-            Guid boundaryGuid = new Guid("00000000-0000-0000-0000-0000000000e5");
-            BorderBoundary boundary = new BorderBoundary { Guid = boundaryGuid, Left = 500, Top = 600, Width = 300, Height = 200 };
-            diagram.Borders[boundaryGuid] = boundary;
+            BorderBoundary boundary = AddBoundary(diagram, 500, 600, 300, 200);
+            DrawingElement member = Component(diagram, NodeA);
+            member.Left = 520;
+            member.Top = 620;
 
             DiagramLayout.Apply(diagram);
 
-            Assert.AreEqual(500, boundary.Left);
-            Assert.AreEqual(600, boundary.Top);
+            member = Component(diagram, NodeA);
+            Assert.IsTrue(
+                member.Left >= boundary.Left && member.Top >= boundary.Top
+                && member.Left + member.Width <= boundary.Left + boundary.Width
+                && member.Top + member.Height <= boundary.Top + boundary.Height,
+                "the member must still be inside its boundary");
+        }
+
+        /// <summary>
+        /// Verifies that a trust boundary is resized around its members instead of keeping a size that
+        /// no longer has anything to do with what it holds.
+        /// </summary>
+        [TestMethod]
+        public void ApplyResizesTrustBoundaryAroundItsMembers()
+        {
+            DrawingSurfaceModel diagram = BuildChain(NodeA, NodeB);
+            BorderBoundary boundary = AddBoundary(diagram, 500, 600, 900, 800);
+            Component(diagram, NodeA).Left = 520;
+            Component(diagram, NodeA).Top = 620;
+
+            DiagramLayout.Apply(diagram);
+
+            DrawingElement member = Component(diagram, NodeA);
+            Assert.IsTrue(boundary.Width < 900, "an oversized boundary should shrink to its one member");
+            Assert.IsTrue(boundary.Width >= member.Width, "the boundary must still hold its member");
+            Assert.IsTrue(boundary.Height >= member.Height, "the boundary must still hold its member");
+        }
+
+        /// <summary>
+        /// Verifies that two trust boundaries are placed apart, so a member cannot be read as
+        /// belonging to the wrong one.
+        /// </summary>
+        [TestMethod]
+        public void ApplySeparatesOverlappingTrustBoundaries()
+        {
+            DrawingSurfaceModel diagram = BuildChain(NodeA, NodeB);
+            BorderBoundary first = AddBoundary(diagram, 100, 100, 400, 400);
+            BorderBoundary second = AddBoundary(diagram, 150, 150, 400, 400);
+            Component(diagram, NodeA).Left = 120;
+            Component(diagram, NodeA).Top = 120;
+            Component(diagram, NodeB).Left = 400;
+            Component(diagram, NodeB).Top = 400;
+
+            DiagramLayout.Apply(diagram);
+
+            Assert.IsFalse(Overlaps(first, second), "boundaries must not overlap after layout");
+        }
+
+        /// <summary>
+        /// Verifies that a wide graph wraps onto a new row rather than running off the right-hand edge
+        /// of the tool's bounded drawing surface.
+        /// </summary>
+        [TestMethod]
+        public void ApplyWrapsColumnsWithinTheCanvasWidth()
+        {
+            Guid[] nodes = Enumerable.Range(1, 20)
+                .Select(index => new Guid("00000000-0000-0000-0000-0000000000" + index.ToString("x2", CultureInfo.InvariantCulture)))
+                .ToArray();
+            DrawingSurfaceModel diagram = BuildChain(nodes);
+            LayoutOptions options = new LayoutOptions();
+
+            DiagramLayout.Apply(diagram, options);
+
+            int right = diagram.Borders.Values.OfType<DrawingElement>().Max(element => element.Left + element.Width);
+            Assert.IsTrue(right <= options.OriginX + options.MaxWidth, "layout must stay within the canvas width, was " + right);
         }
 
         /// <summary>
@@ -163,6 +230,14 @@ namespace ThreatModelForge.Editing.Tests
         private static void AddComponent(DrawingSurfaceModel diagram, Guid guid)
         {
             diagram.Borders[guid] = new StencilEllipse { Guid = guid, TypeId = "GE.P", GenericTypeId = "GE.P", Width = 100, Height = 60 };
+        }
+
+        private static BorderBoundary AddBoundary(DrawingSurfaceModel diagram, int left, int top, int width, int height)
+        {
+            Guid guid = Guid.NewGuid();
+            BorderBoundary boundary = new BorderBoundary { Guid = guid, Left = left, Top = top, Width = width, Height = height };
+            diagram.Borders[guid] = boundary;
+            return boundary;
         }
 
         private static void AddConnector(DrawingSurfaceModel diagram, Guid source, Guid target)

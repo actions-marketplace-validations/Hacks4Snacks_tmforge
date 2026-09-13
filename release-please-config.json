@@ -11,6 +11,16 @@
         {
           "type": "generic",
           "path": "Directory.Build.props"
+        },
+        {
+          "type": "json",
+          "path": "plugins/tmforge/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": ".github/plugin/marketplace.json",
+          "jsonpath": "$.plugins[0].version"
         }
       ]
     }

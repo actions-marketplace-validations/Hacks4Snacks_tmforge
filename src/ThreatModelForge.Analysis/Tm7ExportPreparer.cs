@@ -77,6 +77,18 @@ namespace ThreatModelForge.Analysis
                 throw new ArgumentNullException(nameof(ruleSet));
             }
 
+            // Give any flow label that has no recorded position one, before the shift below, so the
+            // normalization accounts for where the labels actually ended up. The tool prints a flow's
+            // name on its connector, and a model arriving from a format that carries no connector
+            // geometry — the canonical tmforge-json the API and Studio speak — has no positions at
+            // all, so every label would otherwise land on its connector's midpoint and flows sharing a
+            // pair of endpoints would print their names on top of each other. A label an author placed
+            // is left exactly where it is.
+            foreach (DrawingSurfaceModel surface in model.DrawingSurfaceList)
+            {
+                DiagramLabels.DeconflictUnplaced(surface);
+            }
+
             // Shift each surface so no element sits below the tool's minimum drawing coordinate. This is
             // independent of the knowledge base, so it runs before the foreign-knowledge-base short
             // circuit below.

@@ -39,6 +39,22 @@ namespace ThreatModelForge.Model.Abstracts
         }
 
         /// <summary>
+        /// Gets a value indicating whether the curve handle sits at the midpoint of the endpoints,
+        /// which is where it lies when nobody has moved it: either because none was ever recorded, or
+        /// because the midpoint was written eagerly when the line was created.
+        /// </summary>
+        /// <remarks>
+        /// A caller that positions labels needs this to tell a deliberate placement from a default
+        /// one. The handle is both the curve's control point and the point the label is drawn on, so a
+        /// handle at the midpoint means a straight line carrying no placement intent, and a handle
+        /// anywhere else is somebody's decision. It is deliberately not a
+        /// <see cref="DataMemberAttribute"/> — it describes the stored state rather than adding to it.
+        /// </remarks>
+        public bool HandleIsAtMidpoint => (this.handleX == 0 && this.handleY == 0)
+            || (this.HandleX == (this.SourceX + this.TargetX) / 2
+                && this.HandleY == (this.SourceY + this.TargetY) / 2);
+
+        /// <summary>
         /// Gets or sets the source connection port. It serializes as a <c>StencilConnectionPort</c>
         /// name (<c>None</c> when unset) because the Microsoft Threat Modeling Tool types this member
         /// as a non-nullable enum and cannot deserialize a nil value.

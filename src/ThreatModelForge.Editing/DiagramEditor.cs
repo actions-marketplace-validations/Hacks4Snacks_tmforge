@@ -397,16 +397,7 @@ namespace ThreatModelForge.Editing
             }
         }
 
-        private static bool IsHandleAtMidpoint(LineElement line)
-        {
-            if (line.HandleX == 0 && line.HandleY == 0)
-            {
-                return true;
-            }
-
-            return line.HandleX == (line.SourceX + line.TargetX) / 2
-                && line.HandleY == (line.SourceY + line.TargetY) / 2;
-        }
+        private static bool IsHandleAtMidpoint(LineElement line) => line.HandleIsAtMidpoint;
 
         private static DrawingElement CreateStencil(StencilKind kind)
         {

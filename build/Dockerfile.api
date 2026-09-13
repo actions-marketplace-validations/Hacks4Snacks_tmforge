@@ -6,6 +6,9 @@
 # Build from the repo root:
 #   docker build -f build/Dockerfile.api -t tmforge .
 #   docker buildx build -f build/Dockerfile.api --platform linux/amd64,linux/arm64 -t tmforge .
+# Behind package mirrors, point the restores at them:
+#   docker build -f build/Dockerfile.api --build-arg NUGET_FEED=<mirror-v3-index-url> \
+#     --build-arg NPM_REGISTRY=<mirror-npm-url> -t tmforge .
 # Run it:
 #   docker run --rm -p 8080:8080 tmforge     # then open http://localhost:8080/
 
@@ -14,9 +17,14 @@
 # SPA in a dedicated node stage instead and skip that step during publish (/p:BuildStudio=false).
 FROM mcr.microsoft.com/azurelinux/base/nodejs:24 AS spa
 WORKDIR /studio
+
+# The npm registry to install from. Defaults to the public one; override it on a network that
+# reaches only an internal mirror.
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+
 # Install deps first (cached until the lockfile changes).
 COPY src/ThreatModelForge.Studio/package.json src/ThreatModelForge.Studio/package-lock.json ./
-RUN npm ci
+RUN npm config set registry "${NPM_REGISTRY}" && npm ci
 COPY src/ThreatModelForge.Studio/ ./
 RUN npm run build
 
@@ -24,12 +32,16 @@ RUN npm run build
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
+# The NuGet v3 index to restore from. See NPM_REGISTRY above.
+ARG NUGET_FEED=https://api.nuget.org/v3/index.json
+
 COPY global.json NuGet.config Directory.Build.props Directory.Packages.props stylecop.json .editorconfig ./
 COPY src/ ./src/
 
 # Drop the pre-built SPA into the API's wwwroot, then publish without re-running the npm step.
 COPY --from=spa /studio/dist/ ./src/ThreatModelForge.Api/wwwroot/
-RUN dotnet publish src/ThreatModelForge.Api/ThreatModelForge.Api.csproj -c Release -o /app /p:BuildStudio=false
+RUN dotnet publish src/ThreatModelForge.Api/ThreatModelForge.Api.csproj -c Release -o /app \
+    -p:BuildStudio=false -p:RestoreSources="${NUGET_FEED}"
 
 # runtime
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime

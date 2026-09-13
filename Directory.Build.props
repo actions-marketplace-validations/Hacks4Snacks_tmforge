@@ -24,7 +24,7 @@
        annotation on the line below is how its generic updater finds the value. See
        release-please-config.json and .github/workflows/release-please.yml. -->
   <PropertyGroup>
-    <VersionPrefix>0.10.0</VersionPrefix> <!-- x-release-please-version -->
+    <VersionPrefix>0.11.0</VersionPrefix> <!-- x-release-please-version -->
   </PropertyGroup>
 
   <ItemGroup>

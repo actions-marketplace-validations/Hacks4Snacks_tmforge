@@ -44,7 +44,7 @@ tmforge <command> [options] <file>
 | [`rename`](#rename) | Author | Rename an element. |
 | [`set`](#set) | Author | Set an element/flow's name or properties. |
 | [`page`](#page) | Author | List, add, rename, reorder, or remove pages (diagrams). |
-| [`layout`](#layout) | Author | Auto-lay-out the diagram (layered; no hand-placed coordinates). |
+| [`layout`](#layout) | Author | Auto-lay-out the diagram (layered, boundary aware; places flow labels). |
 | [`rules`](#rules) | Analyze | Compile an MTMT `.tb7` template into a versioned rule pack. |
 | [`analyze`](#analyze) | Analyze | Evaluate the analysis rules against a model. |
 | [`analysis`](#analysis) | Analyze | Validate a stored analysis document (and check whether it is stale), or compare two of them. |
@@ -511,18 +511,37 @@ tmforge page reorder payments.tm7 --page "Payments service" --to 1
 ### `layout`
 
 Apply a deterministic **layered auto-layout** so you never hand-place coordinates: components are
-arranged left-to-right by their data flows and connectors are re-routed. Trust boundaries are left in
-place, so run this to tidy a graph (it arranges the data-flow graph rather than preserving boundary
-placement).
+arranged left-to-right by their data flows, connectors are re-routed, and flow labels are placed
+clear of the shapes and of one another.
+
+Layout is **trust-boundary aware**. Every component keeps the boundary it was inside, each boundary
+is resized around exactly the members it holds, and the boundaries are then arranged by the flows
+between them. That matters because boundary membership is what the analysis is derived from: an
+arrangement that moved a component out of its boundary would change what the model means, not just
+how it looks. Columns wrap onto a new row instead of running past the right-hand edge, because the
+Microsoft Threat Modeling Tool's drawing surface is bounded and taller than it is wide.
 
 ```text
-tmforge layout [--page <name|index>] [--node-spacing <n>] [--layer-spacing <n>] [--json] <model>
+tmforge layout [--page <name|index>] [--node-spacing <n>] [--layer-spacing <n>] [--labels] [--check] [--json] <model>
 ```
+
+| Option | Meaning |
+| --- | --- |
+| `--labels` | Place only the flow labels and leave every shape exactly where it is. Use this when the geometry is hand-placed or comes from a manifest and only the labels need sorting out. |
+| `--check` | Report obstructed flow labels and write nothing. Exits `1` when any remain, so a publishing gate can require a legible diagram. |
 
 ```bash
 tmforge layout payments.tm7
 tmforge layout payments.tm7 --node-spacing 60 --layer-spacing 120
+tmforge layout payments.tm7 --labels          # keep the authored geometry, fix the labels
+tmforge layout payments.tm7 --check --json    # gate on legibility
 ```
+
+A flow's name is drawn as a **single unwrapped line** centred on its connector, so a long name needs
+far more room than the flow it names — at the tool's default font a fifty-character name is wider
+than a typical trust boundary. `tmforge apply` places labels as well as it can, but placement cannot
+shorten text: when `--check` still reports overlaps, the remedy is shorter flow names (with the
+sentence moved into a property such as `Description`) or fewer objects per page.
 
 ---
 
@@ -867,6 +886,12 @@ A `.tm7` target embeds the Threat Model Forge knowledge base by default so the f
 `--knowledge-base <file.tb7>` to embed a specific one instead. A knowledge base already present in the
 source model (for example, a file authored in the tool) is preserved.
 
+A `.tm7` target also gets its flow labels placed, because the tool draws each flow's name on its
+connector and most source formats carry no label position at all — `tmforge-json`, the canonical wire
+model Studio and the API exchange, records only a flow's endpoints and name. Without this, every label
+converted from one of them would land on its connector's midpoint and flows sharing a pair of
+endpoints would print their names on top of each other. A label the source did position is preserved.
+
 ```bash
 tmforge convert payments.tm7 --to drawio --out payments.drawio
 tmforge convert payments.drawio --to tm7 --out payments.tm7
@@ -1002,6 +1027,12 @@ tmforge apply <manifest.json> [--out <model>] [--format <id>] [--force] [--dry-r
 tmforge apply model.json --out model.tm7
 tmforge apply model.json --dry-run
 ```
+
+Shapes go exactly where the manifest asks, but a flow's label has no coordinates to declare: the tool
+draws the name on the connector itself, so two flows between one pair of elements would print their
+names on the same spot. Every write to `.tm7` therefore places the labels for you, adjusting only the
+connectors' curve handles — nothing the analysis reads, and never a label somebody has already moved.
+Run [`tmforge layout --check`](#layout) on the result to confirm none is still covered.
 
 A manifest is a model's *source*, not a model. The read-only verbs (`open`, `list`, `show`,
 `analyze`, …) take a model file, so pointing one at a manifest reports that and names the `apply`

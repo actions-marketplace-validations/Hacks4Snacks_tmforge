@@ -99,6 +99,80 @@ namespace ThreatModelForge.Cli.Tests
             Assert.AreNotEqual(first.Left, second.Left, "connected components should land in different layers (columns)");
         }
 
+        /// <summary>
+        /// <c>tmforge layout --labels</c> places the flow labels without rearranging hand-placed
+        /// shapes, which is what a model whose geometry comes from a manifest needs. The whole surface
+        /// may still be translated to stay inside the tool's coordinate range, so what must hold is
+        /// that the shapes keep their positions relative to one another.
+        /// </summary>
+        [TestMethod]
+        public void LayoutLabelsLeavesShapesInPlace()
+        {
+            string path = this.NewModel();
+            string a = AddElement("process", path, "A");
+            string b = AddElement("process", path, "B");
+            Capture(() => ConnectCommand.Run(new[] { path, "--source", a, "--target", b, "--name", "Credential material handed to the signer" }));
+            Capture(() => ConnectCommand.Run(new[] { path, "--source", b, "--target", a, "--name", "Signed material returned to the caller" }));
+            (DrawingElement beforeFirst, DrawingElement beforeSecond) = LoadPair(path, "A", "B");
+            (int offsetX, int offsetY) = (beforeSecond.Left - beforeFirst.Left, beforeSecond.Top - beforeFirst.Top);
+
+            (int exit, string stdout) = Capture(() => LayoutCommand.Run(new[] { path, "--labels", "--json" }));
+
+            Assert.AreEqual(0, exit);
+            using JsonDocument document = JsonDocument.Parse(stdout);
+            Assert.AreEqual(0, document.RootElement.GetProperty("data").GetProperty("labelOverlaps").GetInt32());
+
+            (DrawingElement afterFirst, DrawingElement afterSecond) = LoadPair(path, "A", "B");
+            Assert.AreEqual(offsetX, afterSecond.Left - afterFirst.Left, "shapes must keep their relative arrangement");
+            Assert.AreEqual(offsetY, afterSecond.Top - afterFirst.Top, "shapes must keep their relative arrangement");
+        }
+
+        /// <summary>
+        /// <c>tmforge layout --check</c> fails and writes nothing when a label cannot be placed clear.
+        /// Placement can move a name but not shorten it, so a name with nowhere to go stays covered,
+        /// and a publishing gate has to be able to see that.
+        /// </summary>
+        [TestMethod]
+        public void LayoutCheckReportsObstructedLabelsWithoutWriting()
+        {
+            // A long name between two shapes, with a third covering every direction it could move to.
+            const string Boxed =
+                "{\"name\":\"Boxed\",\"elements\":[" +
+                "{\"alias\":\"a\",\"kind\":\"process\",\"name\":\"A\",\"x\":100,\"y\":200,\"width\":100,\"height\":60}," +
+                "{\"alias\":\"b\",\"kind\":\"process\",\"name\":\"B\",\"x\":700,\"y\":200,\"width\":100,\"height\":60}," +
+                "{\"alias\":\"c\",\"kind\":\"store\",\"name\":\"Covering store\",\"x\":210,\"y\":100,\"width\":480,\"height\":300}]," +
+                "\"flows\":[{\"from\":\"a\",\"to\":\"b\",\"name\":\"A long flow name with nowhere to go\"}]}";
+            string manifest = Path.Join(this.WorkingDirectory, "boxed.tm.json");
+            string path = Path.Join(this.WorkingDirectory, "boxed.tm7");
+            File.WriteAllText(manifest, Boxed);
+            Assert.AreEqual(0, Capture(() => ApplyCommand.Run(new[] { manifest, "--out", path })).Exit);
+            string before = File.ReadAllText(path);
+
+            (int exit, string stdout) = Capture(() => LayoutCommand.Run(new[] { path, "--check", "--json" }));
+
+            Assert.AreEqual(1, exit, "an obstructed diagram must fail the check");
+            using JsonDocument document = JsonDocument.Parse(stdout);
+            Assert.IsTrue(document.RootElement.GetProperty("data").GetProperty("labelOverlaps").GetInt32() > 0);
+            Assert.AreEqual(before, File.ReadAllText(path), "--check must not write the model");
+        }
+
+        /// <summary>
+        /// <c>tmforge layout --check</c> passes on a model the authoring verbs produced. Every write
+        /// path to the tool's format places the labels, so an authored model is legible on arrival
+        /// rather than only after someone remembers to run a layout pass.
+        /// </summary>
+        [TestMethod]
+        public void LayoutCheckPassesForAnAuthoredModel()
+        {
+            string path = this.NewModel();
+            string a = AddElement("process", path, "A");
+            string b = AddElement("process", path, "B");
+            Capture(() => ConnectCommand.Run(new[] { path, "--source", a, "--target", b, "--name", "Credential material handed to the signer" }));
+            Capture(() => ConnectCommand.Run(new[] { path, "--source", b, "--target", a, "--name", "Signed material returned to the caller" }));
+
+            Assert.AreEqual(0, Capture(() => LayoutCommand.Run(new[] { path, "--check" })).Exit);
+        }
+
         private static string AddElement(string kind, string path, string name)
         {
             (int exit, string stdout) = Capture(() => AddCommand.Run(new[] { kind, path, "--name", name, "--json" }));

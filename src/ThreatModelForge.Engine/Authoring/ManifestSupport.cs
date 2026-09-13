@@ -455,6 +455,16 @@ namespace ThreatModelForge.Engine
                 return false;
             }
 
+            // Shapes go exactly where the manifest asks, but a flow's label has no coordinates to
+            // declare: the tool draws it on the connector, so two flows between one pair of elements
+            // print their names on the same spot and a long name runs across whatever it passes over.
+            // Placing the labels is therefore the builder's job, not the author's. It moves only the
+            // curve handles, which nothing in the analysis reads.
+            foreach (PageContext page in pageOrder)
+            {
+                DiagramLabels.Deconflict(page.Surface);
+            }
+
             summary = new ManifestSummary(boundaries.Count, elements.Count, flows.Count);
             return true;
         }

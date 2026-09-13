@@ -14,8 +14,10 @@ namespace ThreatModelForge.Cli
     /// <summary>
     /// Implements <c>tmforge layout</c>: applies a deterministic, dependency-free layered auto-layout
     /// to a model's pages, so an author never has to hand-place coordinates. Components are arranged
-    /// left-to-right by their data flows and connectors are re-routed; trust boundaries are left where
-    /// they are (so this arranges the data-flow graph rather than preserving boundary placement).
+    /// left-to-right by their data flows inside the trust boundary they already belong to, boundaries
+    /// are resized around their members, and flow labels are placed clear of the shapes and of each
+    /// other. <c>--labels</c> restricts it to the labels, which is what a model with hand-placed or
+    /// manifest-declared geometry wants.
     /// </summary>
     internal static class LayoutCommand
     {
@@ -32,13 +34,15 @@ namespace ThreatModelForge.Cli
                 return 1;
             }
 
-            CliArgs parsed = CliArgs.Parse(args, new[] { "node-spacing", "layer-spacing", "page" });
+            CliArgs parsed = CliArgs.Parse(args, new[] { "node-spacing", "layer-spacing", "page" }, new[] { "labels", "check" });
             if (parsed.Help)
             {
                 PrintUsage();
                 return 0;
             }
 
+            bool labelsOnly = parsed.HasFlag("labels");
+            bool check = parsed.HasFlag("check");
             if (parsed.UnknownFlags.Count > 0)
             {
                 Console.Error.WriteLine("Unknown option: " + parsed.UnknownFlags[0]);
@@ -60,7 +64,7 @@ namespace ThreatModelForge.Cli
             }
 
             (ThreatModel model, IThreatModelFormat? format) = CliModelLoader.Load(input!);
-            if (format == null || !format.Capabilities.CanWrite)
+            if (format == null || (!check && !format.Capabilities.CanWrite))
             {
                 Console.Error.WriteLine("The model's format does not support writing.");
                 return 1;
@@ -94,24 +98,118 @@ namespace ThreatModelForge.Cli
             }
 
             int components = 0;
+            int labelled = 0;
+            List<LabelOverlap> overlaps = new List<LabelOverlap>();
             foreach (DrawingSurfaceModel diagram in targets)
             {
                 components += diagram.Borders.Values.OfType<DrawingElement>().Count(element => !(element is BorderBoundary));
-                DiagramLayout.Apply(diagram, options);
+                if (check)
+                {
+                    overlaps.AddRange(DiagramLabels.Inspect(diagram, options));
+                    continue;
+                }
+
+                if (labelsOnly)
+                {
+                    labelled += DiagramLabels.Deconflict(diagram, options);
+                }
+                else
+                {
+                    labelled += DiagramLayout.Apply(diagram, options);
+                }
+
+                overlaps.AddRange(DiagramLabels.Inspect(diagram, options));
+            }
+
+            if (check)
+            {
+                return Report(parsed, targets.Count, components, overlaps);
             }
 
             AuthoringSupport.Save(model, input!, format);
 
             if (parsed.Json)
             {
-                CliJson.WriteEnvelope("layout", new { pages = targets.Count, components });
+                CliJson.WriteEnvelope("layout", new
+                {
+                    pages = targets.Count,
+                    components,
+                    labelsMoved = labelled,
+                    labelOverlaps = overlaps.Count,
+                });
             }
             else
             {
-                Console.Error.WriteLine("Laid out " + components + " component(s) across " + targets.Count + " page(s) in " + input + ".");
+                Console.Error.WriteLine((labelsOnly
+                    ? "Placed " + labelled + " flow label(s)"
+                    : "Laid out " + components + " component(s)") +
+                    " across " + targets.Count + " page(s) in " + input + ".");
+                WarnAboutOverlaps(overlaps);
             }
 
             return 0;
+        }
+
+        /// <summary>
+        /// Reports the label collisions found by <c>--check</c> without writing the model, and fails
+        /// when any remain so a publishing gate can depend on the diagram being legible.
+        /// </summary>
+        /// <param name="parsed">The parsed arguments.</param>
+        /// <param name="pages">The number of pages inspected.</param>
+        /// <param name="components">The number of components inspected.</param>
+        /// <param name="overlaps">The collisions found.</param>
+        /// <returns>Zero when the diagram is legible; one when it is not.</returns>
+        private static int Report(CliArgs parsed, int pages, int components, List<LabelOverlap> overlaps)
+        {
+            if (parsed.Json)
+            {
+                CliJson.WriteEnvelope("layout", new
+                {
+                    pages,
+                    components,
+                    labelOverlaps = overlaps.Count,
+                    overlaps = overlaps.Select(overlap => new
+                    {
+                        flow = overlap.Flow,
+                        obstructedBy = overlap.ObstructedBy,
+                        kind = overlap.Kind,
+                        area = overlap.Area,
+                    }).ToList(),
+                });
+            }
+            else if (overlaps.Count == 0)
+            {
+                Console.Error.WriteLine("No obstructed flow labels across " + pages + " page(s).");
+            }
+            else
+            {
+                WarnAboutOverlaps(overlaps);
+                foreach (LabelOverlap overlap in overlaps)
+                {
+                    Console.Error.WriteLine("  '" + overlap.Flow + "' is covered by the " + overlap.Kind + " '" + overlap.ObstructedBy + "'.");
+                }
+            }
+
+            return overlaps.Count == 0 ? 0 : 1;
+        }
+
+        /// <summary>
+        /// Warns that labels remain obstructed. Layout can move a label but not shorten it: a flow
+        /// name wider than the space between the elements it joins cannot be placed clear of them, so
+        /// the remedy is a shorter name (with the sentence moved into a property) or fewer objects per
+        /// page, and the caller is the only one who can choose.
+        /// </summary>
+        /// <param name="overlaps">The collisions found.</param>
+        private static void WarnAboutOverlaps(List<LabelOverlap> overlaps)
+        {
+            if (overlaps.Count == 0)
+            {
+                return;
+            }
+
+            Console.Error.WriteLine(
+                overlaps.Count + " flow label(s) are still covered. Flow names are drawn unwrapped, so a long " +
+                "name needs more room than the flow it names; shorten the names or split the page.");
         }
 
         private static bool TryGetInt(CliArgs parsed, string name, out int value)
@@ -128,11 +226,14 @@ namespace ThreatModelForge.Cli
 
         private static void PrintUsage()
         {
-            Console.Error.WriteLine("Auto-lay-out a model's pages (layered left-to-right; boundaries are left in place).");
+            Console.Error.WriteLine("Auto-lay-out a model's pages (layered, trust-boundary aware, with flow labels placed).");
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  tmforge layout [--page <name|index>] [--node-spacing <n>] [--layer-spacing <n>] [--json] <model>");
+            Console.Error.WriteLine("  tmforge layout [--page <name|index>] [--node-spacing <n>] [--layer-spacing <n>] [--labels] [--check] [--json] <model>");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Arranges components by their data flows so you need not hand-place coordinates.");
+            Console.Error.WriteLine("Components keep the trust boundary they were in; boundaries are resized around them.");
+            Console.Error.WriteLine("  --labels  Place only the flow labels, leaving hand-placed shapes exactly where they are.");
+            Console.Error.WriteLine("  --check   Report obstructed flow labels without writing; exits 1 when any remain.");
         }
     }
 }

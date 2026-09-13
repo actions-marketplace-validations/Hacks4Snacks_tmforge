@@ -36,6 +36,14 @@ artifacts/
 # Test/scratch artifacts
 test-roundtrip.*
 
+# Python plugin validators and local environments
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 

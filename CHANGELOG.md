@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/Hacks4Snacks/tmforge/compare/v0.10.0...v0.11.0) (2026-09-04)
+
+
+### Features
+
+* copilot plugin to complement tmforge ([#104](https://github.com/Hacks4Snacks/tmforge/issues/104)) ([d10eb54](https://github.com/Hacks4Snacks/tmforge/commit/d10eb54802f0ba87684c0169fc109198c1769e72))
+* Make auto-layout deterministic and trust-boundary aware ([#102](https://github.com/Hacks4Snacks/tmforge/issues/102)) ([0cb43fb](https://github.com/Hacks4Snacks/tmforge/commit/0cb43fb493ebfa3c4838cdf175fc7e86e6ceafba))
+
 ## [0.10.0](https://github.com/Hacks4Snacks/tmforge/compare/v0.9.0...v0.10.0) (2026-08-25)
 
 

@@ -1,0 +1,862 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:threat-modeling:analysis:v1",
+  "title": "Canonical threat-model analysis ledger",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "scope",
+    "evidence",
+    "boundaries",
+    "elements",
+    "flows",
+    "assets",
+    "threatActors",
+    "coverage",
+    "threats",
+    "assumptions",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "slug",
+        "mode",
+        "lifecycle",
+        "inputs",
+        "ownershipDecision",
+        "exclusions"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "mode": {
+          "enum": ["analyze", "formal-package", "verify", "update"]
+        },
+        "lifecycle": {
+          "enum": ["draft", "verified", "stale", "not-verified", "unvalidated"]
+        },
+        "inputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/scopeInput"
+          }
+        },
+        "ownershipDecision": {
+          "$ref": "#/$defs/ownershipDecision"
+        },
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["revision", "date"],
+          "properties": {
+            "revision": {
+              "type": "string",
+              "minLength": 1
+            },
+            "date": {
+              "type": "string",
+              "format": "date"
+            },
+            "approvedBy": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "boundaries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/boundary"
+      }
+    },
+    "elements": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/element"
+      }
+    },
+    "flows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/flow"
+      }
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "threatActors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/threatActor"
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/coverage"
+      }
+    },
+    "threats": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/threat"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assumption"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["riskCounts"],
+      "properties": {
+        "riskCounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["critical", "high", "medium", "low"],
+          "properties": {
+            "critical": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "high": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "medium": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "low": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "scopeInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "role", "reference", "status", "rationale"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^SI[0-9]{3,}$"
+        },
+        "kind": {
+          "enum": [
+            "user-request",
+            "selection",
+            "file",
+            "directory",
+            "component",
+            "work-item",
+            "issue",
+            "pull-request",
+            "branch",
+            "commit",
+            "document",
+            "existing-model",
+            "other"
+          ]
+        },
+        "role": {
+          "enum": ["primary", "supporting", "excluded"]
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recordType": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": ["resolved", "unavailable"]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^E[0-9]{3,}$"
+          }
+        }
+      }
+    },
+    "ownershipDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "rationale"],
+      "properties": {
+        "action": {
+          "enum": [
+            "analysis-only",
+            "verify-only",
+            "create",
+            "update",
+            "append",
+            "replace"
+          ]
+        },
+        "modelReference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "evidenceIds": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^E[0-9]{3,}$"
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "reference", "claim"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^E[0-9]{3,}$"
+        },
+        "type": {
+          "enum": [
+            "runtime",
+            "deployed-configuration",
+            "generated-configuration",
+            "source",
+            "test",
+            "schema",
+            "contract",
+            "procedure",
+            "documentation",
+            "change-record",
+            "assumption"
+          ]
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "axis", "evidenceIds"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^TB[0-9]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "axis": {
+          "description": "The kind of trust change this boundary represents. Nesting is only meaningful within a single axis.",
+          "enum": [
+            "authority",
+            "host",
+            "network-segment",
+            "network-namespace",
+            "process-isolation"
+          ]
+        },
+        "parentId": {
+          "type": "string",
+          "pattern": "^TB[0-9]+$"
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "element": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "boundaryIds",
+        "material",
+        "evidenceIds"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(A|X|P|DS)[0-9]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["actor", "external", "process", "data-store"]
+        },
+        "boundaryIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^TB[0-9]+$"
+          }
+        },
+        "material": {
+          "type": "boolean"
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "placementEvidenceIds": {
+          "description": "Evidence establishing where this component runs. Required for every material process and data store, and a subset of evidenceIds.",
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "producerRationale": {
+          "description": "Why no in-scope component writes this store. Required for a material data store that has no material inbound flow, and must name the excluded renderer, external service, or bootstrap step that produces it.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "sourceId",
+        "targetId",
+        "assetIds",
+        "material",
+        "crossesTrustBoundary",
+        "evidenceIds"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^F[0-9]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sourceId": {
+          "type": "string",
+          "pattern": "^(A|X|P|DS)[0-9]+$"
+        },
+        "targetId": {
+          "type": "string",
+          "pattern": "^(A|X|P|DS)[0-9]+$"
+        },
+        "assetIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^AS[0-9]+$"
+          }
+        },
+        "material": {
+          "type": "boolean"
+        },
+        "crossesTrustBoundary": {
+          "type": "boolean"
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "crossingExemptions": {
+          "description": "Derived boundary crossings this flow does not make, each justified by evidence. Used when endpoints sit on opposite sides of a boundary the flow does not actually traverse, such as a projected Secret volume.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["boundaryId", "rationale", "evidenceIds"],
+            "properties": {
+              "boundaryId": {
+                "type": "string",
+                "pattern": "^TB[0-9]+$"
+              },
+              "rationale": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidenceIds": {
+                "$ref": "#/$defs/evidenceIds"
+              }
+            }
+          }
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "classification", "evidenceIds"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^AS[0-9]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classification": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "threatActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "motivation",
+        "capability",
+        "access",
+        "targetAssetIds",
+        "evidenceIds"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^TA[0-9]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "motivation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "capability": {
+          "enum": ["low", "moderate", "high", "unknown"]
+        },
+        "access": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "external",
+              "authenticated",
+              "privileged",
+              "internal",
+              "supply-chain",
+              "physical",
+              "compromised-component",
+              "unknown"
+            ]
+          }
+        },
+        "targetAssetIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^AS[0-9]+$"
+          }
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "targetId",
+        "category",
+        "disposition",
+        "rationale",
+        "threatIds",
+        "evidenceIds"
+      ],
+      "properties": {
+        "targetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": ["S", "T", "R", "I", "D", "E"]
+        },
+        "disposition": {
+          "enum": ["applicable", "not-applicable"]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "threatIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z0-9]{1,12}-[STRIDE]-[0-9]{3,}$"
+          }
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      }
+    },
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "implementationStatus", "evidenceIds"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "implementationStatus": {
+          "enum": ["implemented", "partial", "unknown"]
+        },
+        "gap": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "implementationStatus": {
+                "enum": ["partial", "unknown"]
+              }
+            },
+            "required": ["implementationStatus"]
+          },
+          "then": {
+            "required": ["gap"]
+          }
+        }
+      ]
+    },
+    "triageEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "reviewer", "decision", "rationale"],
+      "properties": {
+        "date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision": {
+          "enum": [
+            "confirmed",
+            "corrected",
+            "deferred",
+            "disputed",
+            "duplicate",
+            "resolved"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relatedThreatIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z0-9]{1,12}-[STRIDE]-[0-9]{3,}$"
+          }
+        },
+        "workItemIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"decision": {"const": "duplicate"}},
+            "required": ["decision"]
+          },
+          "then": {
+            "required": ["relatedThreatIds"]
+          }
+        },
+        {
+          "if": {
+            "properties": {"decision": {"const": "disputed"}},
+            "required": ["decision"]
+          },
+          "then": {
+            "required": ["reference"]
+          }
+        },
+        {
+          "if": {
+            "properties": {"decision": {"const": "resolved"}},
+            "required": ["decision"]
+          },
+          "then": {
+            "required": ["evidenceIds"]
+          }
+        }
+      ]
+    },
+    "threat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "area",
+        "category",
+        "origin",
+        "findingType",
+        "title",
+        "description",
+        "targetIds",
+        "assetIds",
+        "evidenceIds",
+        "likelihood",
+        "impact",
+        "score",
+        "level",
+        "status",
+        "confidence",
+        "currentControls",
+        "mitigation",
+        "mitigationOwner",
+        "mitigationLocation",
+        "verification"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{1,12}-[STRIDE]-[0-9]{3,}$"
+        },
+        "area": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{1,12}$"
+        },
+        "category": {
+          "enum": ["S", "T", "R", "I", "D", "E"]
+        },
+        "origin": {
+          "enum": ["manual", "generated", "imported"]
+        },
+        "findingType": {
+          "enum": [
+            "design-gap",
+            "implementation-defect",
+            "operational-gap",
+            "unknown"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "targetIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "assetIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^AS[0-9]+$"
+          }
+        },
+        "evidenceIds": {
+          "$ref": "#/$defs/evidenceIds"
+        },
+        "likelihood": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "impact": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 25
+        },
+        "level": {
+          "enum": ["critical", "high", "medium", "low"]
+        },
+        "status": {
+          "enum": ["open", "mitigated", "accepted", "transferred", "unknown"]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "currentControls": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/control"
+          }
+        },
+        "triage": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/triageEntry"
+          }
+        },
+        "mitigation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mitigationOwner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mitigationLocation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verification": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "assumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "text", "evidenceNeeded"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(A|U)[0-9]{3,}$"
+        },
+        "kind": {
+          "enum": ["assumption", "unknown"]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidenceNeeded": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

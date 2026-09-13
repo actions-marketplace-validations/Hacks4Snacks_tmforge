@@ -29,6 +29,23 @@ docker build -f build/Dockerfile.api -t tmforge .
 docker run --rm -p 8080:8080 tmforge          # -> http://localhost:8080/
 ```
 
+### Building behind a package mirror
+
+Both image builds restore from the public package feeds by default. On a network that reaches only
+an internal mirror, point them at it — the build needs no other change:
+
+```bash
+docker build -f build/Dockerfile.api \
+  --build-arg NUGET_FEED=https://<mirror>/nuget/v3/index.json \
+  --build-arg NPM_REGISTRY=https://<mirror>/npm/ \
+  -t tmforge .
+```
+
+| Build argument | Default | Used by |
+| --- | --- | --- |
+| `NUGET_FEED` | `https://api.nuget.org/v3/index.json` | Both images; overrides the source in `NuGet.config`. |
+| `NPM_REGISTRY` | `https://registry.npmjs.org/` | `Dockerfile.api` only, for the Studio SPA. |
+
 - Studio: `http://localhost:8080/`
 - API: `http://localhost:8080/v1/...`
 - OpenAPI: `http://localhost:8080/openapi/v1.json`
@@ -197,7 +214,9 @@ docker build -f build/Dockerfile -t tmforge-cli .
 docker run --rm -v "$PWD:/work" tmforge-cli tmforge analyze model.tm7
 ```
 
-The image mounts your files at `/work`, so paths in your commands are relative to it.
+The image mounts your files at `/work`, so paths in your commands are relative to it. Behind a
+package mirror, pass `--build-arg NUGET_FEED=<mirror-v3-index-url>` — see
+[Building behind a package mirror](#building-behind-a-package-mirror).
 
 ## CI/CD
 

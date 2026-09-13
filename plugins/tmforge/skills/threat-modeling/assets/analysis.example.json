@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "scope": {
+    "name": "Example request workflow",
+    "slug": "example-request-workflow",
+    "mode": "formal-package",
+    "lifecycle": "draft",
+    "inputs": [
+      {
+        "id": "SI001",
+        "kind": "user-request",
+        "role": "primary",
+        "reference": "Create a formal threat-model package for the example request workflow.",
+        "status": "resolved",
+        "rationale": "The explicit user request defines the workflow and deliverable mode."
+      },
+      {
+        "id": "SI002",
+        "kind": "file",
+        "role": "supporting",
+        "reference": "src/handler.example",
+        "status": "resolved",
+        "rationale": "The selected implementation file defines the request-handling entry point.",
+        "evidenceIds": ["E001"]
+      }
+    ],
+    "ownershipDecision": {
+      "action": "create",
+      "rationale": "No existing model was supplied or discovered for this bounded workflow."
+    },
+    "exclusions": []
+  },
+  "evidence": [
+    {
+      "id": "E001",
+      "type": "source",
+      "reference": "src/handler.example",
+      "locator": "handleRequest",
+      "claim": "The handler receives a request and returns a response."
+    },
+    {
+      "id": "E002",
+      "type": "schema",
+      "reference": "schemas/request.example",
+      "claim": "The request schema validates structure but does not authenticate the caller or protect message integrity."
+    }
+  ],
+  "boundaries": [
+    {
+      "id": "TB1",
+      "name": "Service boundary",
+      "evidenceIds": ["E001"],
+      "axis": "authority"
+    }
+  ],
+  "elements": [
+    {
+      "id": "A1",
+      "name": "Caller",
+      "kind": "actor",
+      "boundaryIds": [],
+      "material": false,
+      "evidenceIds": ["E001"]
+    },
+    {
+      "id": "P1",
+      "name": "Request handler",
+      "kind": "process",
+      "boundaryIds": ["TB1"],
+      "material": true,
+      "evidenceIds": ["E001"],
+      "placementEvidenceIds": ["E001"]
+    }
+  ],
+  "flows": [
+    {
+      "id": "F1",
+      "name": "Submit request",
+      "sourceId": "A1",
+      "targetId": "P1",
+      "assetIds": ["AS1"],
+      "material": true,
+      "crossesTrustBoundary": true,
+      "evidenceIds": ["E001"]
+    }
+  ],
+  "assets": [
+    {
+      "id": "AS1",
+      "name": "Request data",
+      "classification": "sensitive",
+      "evidenceIds": ["E001"]
+    }
+  ],
+  "threatActors": [
+    {
+      "id": "TA1",
+      "name": "Untrusted network intermediary",
+      "motivation": "Alter sensitive request data before it reaches the service.",
+      "capability": "moderate",
+      "access": ["external"],
+      "targetAssetIds": ["AS1"],
+      "evidenceIds": ["E001", "E002"]
+    }
+  ],
+  "coverage": [
+    {
+      "targetId": "F1",
+      "category": "S",
+      "disposition": "not-applicable",
+      "rationale": "Caller identity risk is represented on the receiving process.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "F1",
+      "category": "T",
+      "disposition": "applicable",
+      "rationale": "The request crosses the boundary and can be modified before validation.",
+      "threatIds": ["EXAMPLEREQUE-T-001"],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "F1",
+      "category": "R",
+      "disposition": "not-applicable",
+      "rationale": "Action attribution is evaluated on the receiving process.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "F1",
+      "category": "I",
+      "disposition": "not-applicable",
+      "rationale": "The example contains no evidence of a separate disclosure path.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "F1",
+      "category": "D",
+      "disposition": "not-applicable",
+      "rationale": "Availability behavior is outside this minimal example.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "F1",
+      "category": "E",
+      "disposition": "not-applicable",
+      "rationale": "Authorization is evaluated on the receiving process.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "P1",
+      "category": "S",
+      "disposition": "not-applicable",
+      "rationale": "The example does not claim an identity mechanism.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "P1",
+      "category": "T",
+      "disposition": "applicable",
+      "rationale": "The handler consumes boundary-crossing input.",
+      "threatIds": ["EXAMPLEREQUE-T-001"],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "P1",
+      "category": "R",
+      "disposition": "not-applicable",
+      "rationale": "Audit behavior is unknown and not claimed in this example.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "P1",
+      "category": "I",
+      "disposition": "not-applicable",
+      "rationale": "Response disclosure behavior is outside this minimal example.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "P1",
+      "category": "D",
+      "disposition": "not-applicable",
+      "rationale": "Resource-exhaustion behavior is outside this minimal example.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    },
+    {
+      "targetId": "P1",
+      "category": "E",
+      "disposition": "not-applicable",
+      "rationale": "No privileged operation is evidenced in this minimal example.",
+      "threatIds": [],
+      "evidenceIds": ["E001"]
+    }
+  ],
+  "threats": [
+    {
+      "id": "EXAMPLEREQUE-T-001",
+      "area": "EXAMPLEREQUE",
+      "category": "T",
+      "origin": "manual",
+      "findingType": "design-gap",
+      "title": "Request data is modified before validation",
+      "description": "An intermediary changes request data before the handler validates it.",
+      "targetIds": ["F1", "P1"],
+      "assetIds": ["AS1"],
+      "evidenceIds": ["E001", "E002"],
+      "likelihood": 3,
+      "impact": 2,
+      "score": 6,
+      "level": "medium",
+      "status": "open",
+      "confidence": 0.6,
+      "currentControls": [
+        {
+          "description": "The request schema validates the structure of submitted data.",
+          "implementationStatus": "partial",
+          "gap": "Schema validation does not authenticate the caller or protect message integrity.",
+          "evidenceIds": ["E002"]
+        }
+      ],
+      "triage": [
+        {
+          "date": "2026-02-11",
+          "reviewer": "service-owner@example.com",
+          "decision": "corrected",
+          "rationale": "The owner confirmed the finding and asked for the mitigation to name the ingress filter rather than the handler, because the handler already runs inside the trusted path.",
+          "reference": "example-repo pull request 42, review thread 7",
+          "workItemIds": ["1234"]
+        }
+      ],
+      "mitigation": "Validate integrity and authorization before processing the request.",
+      "mitigationOwner": "Request-processing service owner",
+      "mitigationLocation": "Request ingress before any state-changing side effect",
+      "verification": "A negative test rejects a modified or unauthorized request before side effects occur."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "U001",
+      "kind": "unknown",
+      "text": "The caller authentication mechanism is not evidenced.",
+      "evidenceNeeded": "Provide the implemented authentication configuration and verification tests."
+    }
+  ],
+  "summary": {
+    "riskCounts": {
+      "critical": 0,
+      "high": 0,
+      "medium": 1,
+      "low": 0
+    }
+  }
+}

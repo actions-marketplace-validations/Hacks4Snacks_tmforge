@@ -29,7 +29,7 @@ namespace ThreatModelForge.Cli
             new CommandInfo("rename", "Rename an element.", "id, name", RenameCommand.Run),
             new CommandInfo("set", "Set an element/flow's name or properties (protocol, port, auth, ...).", "id, name, properties{}", SetCommand.Run),
             new CommandInfo("page", "List, add, rename, reorder, or remove pages (diagrams).", "ls: count, items[]; add: index, name, id; rename: id, name; rm: id, name, remaining; reorder: id, name, index", PageCommand.Run),
-            new CommandInfo("layout", "Auto-lay-out the diagram (layered; no hand-placed coordinates).", "pages, components", LayoutCommand.Run),
+            new CommandInfo("layout", "Auto-lay-out the diagram (layered, boundary aware; --labels places only the flow labels, --check reports obstructed ones).", "pages, components, labelsMoved, labelOverlaps; with --check also overlaps[]{flow,obstructedBy,kind,area}", LayoutCommand.Run),
             new CommandInfo("rules", "Compile MTMT templates into versioned analysis rule packs.", "operation,input,output,strict,status,packId,packName,sourceCount,emittedCount,skippedCount,warningCount,categoryDistribution{},diagnostics[]", RulesCommand.Run),
             new CommandInfo("analyze", "Analyze a threat model against its analysis rules.", "a SARIF-style model report (runs[].results[]); see docs/cli-reference.md", AnalyzeCommand.Run),
             new CommandInfo("analysis", "Validate a stored tmforge-analysis document (optionally against its model).", "operation, path, status, stale, schemaVersion, findingCount, problems[]", AnalysisCommand.Run),

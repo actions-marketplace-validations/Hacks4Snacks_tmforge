@@ -76,6 +76,10 @@ open as-is; see [Formats & interoperability](docs/formats.md).
   in your terminal.
 - **Analyze in CI** with the `tmforge` CLI (`tmforge analyze`), gating builds on SARIF-reported
   findings.
+- **Model with Copilot** using the [Strider plugin](plugins/tmforge/README.md): evidence-backed
+  STRIDE analysis, deterministic reports, and optional `.tm7` authoring. Install through the
+  [tmforge marketplace](plugins/tmforge/README.md#install-from-a-marketplace);
+  Markdown-only analysis does not require the CLI.
 
 ## Documentation
 

@@ -1,10 +1,12 @@
 namespace ThreatModelForge.Analysis.Tests
 {
     using System;
+    using System.Collections.Generic;
     using System.Linq;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.KnowledgeBase;
     using ThreatModelForge.Model;
+    using ThreatModelForge.Model.Abstracts;
 
     /// <summary>
     /// Unit tests for <see cref="Tm7ExportPreparer"/>.
@@ -19,6 +21,60 @@ namespace ThreatModelForge.Analysis.Tests
         public void PrepareThrowsForNullModel()
         {
             Assert.Throws<ArgumentNullException>(() => Tm7ExportPreparer.Prepare(null!));
+        }
+
+        /// <summary>
+        /// Verifies that flow labels with no recorded position are placed apart. Every write path to
+        /// the tool's format runs through here, so this is what stops a model that arrived over the
+        /// canonical tmforge-json — which carries no connector geometry — from drawing two flows'
+        /// names on the same point.
+        /// </summary>
+        [TestMethod]
+        public void PreparePlacesUnpositionedFlowLabels()
+        {
+            ThreatModel model = ModelWithStackedFlowLabels();
+            DrawingSurfaceModel surface = model.DrawingSurfaceList[0];
+            Assert.AreEqual(1, LabelCenters(surface).Distinct().Count(), "the defect under test is that both labels start on one point");
+
+            Tm7ExportPreparer.Prepare(model);
+
+            Assert.AreEqual(2, LabelCenters(surface).Distinct().Count(), "each flow label needs its own position");
+        }
+
+        /// <summary>
+        /// Verifies that a label somebody positioned is carried through untouched. Saving a file is not
+        /// permission to re-arrange the diagram inside it.
+        /// </summary>
+        [TestMethod]
+        public void PreparePreservesPositionedFlowLabels()
+        {
+            ThreatModel model = ModelWithStackedFlowLabels();
+            DrawingSurfaceModel surface = model.DrawingSurfaceList[0];
+            Connector chosen = surface.Lines.Values.OfType<Connector>().OrderBy(flow => flow.Guid).First();
+            chosen.HandleX = 400;
+            chosen.HandleY = 260;
+
+            Tm7ExportPreparer.Prepare(model);
+
+            Assert.AreEqual(400, chosen.HandleX);
+            Assert.AreEqual(260, chosen.HandleY);
+        }
+
+        /// <summary>
+        /// Verifies that re-preparing an already-prepared model leaves its label positions alone, so an
+        /// iterative authoring loop does not shuffle the diagram on every save.
+        /// </summary>
+        [TestMethod]
+        public void PrepareLeavesAlreadyPlacedLabelsAlone()
+        {
+            ThreatModel model = ModelWithStackedFlowLabels();
+            DrawingSurfaceModel surface = model.DrawingSurfaceList[0];
+
+            Tm7ExportPreparer.Prepare(model);
+            List<(int X, int Y)> first = LabelCenters(surface).ToList();
+            Tm7ExportPreparer.Prepare(model);
+
+            CollectionAssert.AreEqual(first, LabelCenters(surface).ToList());
         }
 
         /// <summary>
@@ -429,9 +485,64 @@ namespace ThreatModelForge.Analysis.Tests
             return model;
         }
 
+        /// <summary>
+        /// Builds a surface holding two named flows between one pair of elements. The canonical
+        /// tmforge-json the API and Studio exchange carries no connector geometry, so a model arriving
+        /// from it looks exactly like this: endpoints derived from the shapes and no label position,
+        /// which draws both names on the same point.
+        /// </summary>
+        /// <returns>The model.</returns>
+        private static ThreatModel ModelWithStackedFlowLabels()
+        {
+            DrawingSurfaceModel surface = new DrawingSurfaceModel { Guid = Guid.NewGuid() };
+            Guid left = Guid.NewGuid();
+            Guid right = Guid.NewGuid();
+            surface.Borders[left] = new StencilEllipse { Guid = left, GenericTypeId = "GE.P", Left = 100, Top = 100, Width = 100, Height = 60 };
+            surface.Borders[right] = new StencilEllipse { Guid = right, GenericTypeId = "GE.P", Left = 600, Top = 100, Width = 100, Height = 60 };
+
+            foreach ((string Name, Guid Source, Guid Target) flow in new[]
+            {
+                ("Credential material handed to the signer", left, right),
+                ("Signed material returned to the caller", right, left),
+            })
+            {
+                Connector connector = new Connector
+                {
+                    Guid = Guid.NewGuid(),
+                    GenericTypeId = "GE.DF",
+                    SourceGuid = flow.Source,
+                    TargetGuid = flow.Target,
+                    SourceX = 200,
+                    SourceY = 130,
+                    TargetX = 600,
+                    TargetY = 130,
+                };
+                connector.Properties.Add(new StringDisplayAttribute { DisplayName = "Name", Name = "Name", Value = flow.Name });
+                surface.Lines[connector.Guid] = connector;
+            }
+
+            ThreatModel model = new ThreatModel();
+            model.DrawingSurfaceList.Add(surface);
+            return model;
+        }
+
         private static Connector Flow(ThreatModel model)
         {
             return model.DrawingSurfaceList[0].Lines.Values.OfType<Connector>().Single();
+        }
+
+        /// <summary>Gets the point each flow's label is drawn on, in a stable order.</summary>
+        /// <param name="surface">The surface to read.</param>
+        /// <returns>The label centers.</returns>
+        private static IEnumerable<(int X, int Y)> LabelCenters(DrawingSurfaceModel surface)
+        {
+            return surface.Lines.Values
+                .OfType<Connector>()
+                .OrderBy(flow => flow.Guid)
+                .Select(flow => (
+                    (flow.SourceX + (2 * flow.HandleX) + flow.TargetX) / 4,
+                    (flow.SourceY + (2 * flow.HandleY) + flow.TargetY) / 4))
+                .ToList();
         }
 
         private sealed class PriorityRule : Rule
