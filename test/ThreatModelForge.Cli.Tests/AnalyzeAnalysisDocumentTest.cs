@@ -6,6 +6,7 @@ namespace ThreatModelForge.Cli.Tests
     using System.Linq;
     using System.Text.Json;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
+    using ThreatModelForge.Engine;
 
     /// <summary>
     /// Tests that <c>analyze --reportFolder</c> writes the versioned analysis document.
@@ -141,7 +142,99 @@ namespace ThreatModelForge.Cli.Tests
                 "A suppressed finding must not also claim a place in the threat register.");
         }
 
-        private static void Run(string[] args)
+        /// <summary>CLI reports evaluate the same numeric, regex, and graph policy as the engine.</summary>
+        [TestMethod]
+        public void AdditionalMatchersAgreeWithTheEngine()
+        {
+            using JsonDocument fixture = JsonDocument.Parse(File.ReadAllText(Path.Join(AppContext.BaseDirectory, "Fixtures", "additional-matchers.json")));
+            string modelJson = fixture.RootElement.GetProperty("model").GetRawText();
+            string packJson = fixture.RootElement.GetProperty("pack").GetRawText();
+            string modelPath = Path.Join(this.WorkingDirectory, "model.json");
+            string rulesPath = Path.Join(this.WorkingDirectory, "matchers.tmrules.json");
+            File.WriteAllText(modelPath, modelJson);
+            File.WriteAllText(rulesPath, packJson);
+            string reports = Path.Join(this.WorkingDirectory, "reports");
+
+            int exit = Run(new[] { modelPath, "--rules", rulesPath, "--reportFolder", reports });
+
+            Assert.AreEqual(2, exit);
+            JsonElement[] actual = ReadDocument(reports).GetProperty("findings").EnumerateArray()
+                .Where(finding => finding.GetProperty("ruleId").GetString()?.StartsWith("rule005/", StringComparison.Ordinal) == true).ToArray();
+            TmForgeModelDto model = JsonSerializer.Deserialize<TmForgeModelDto>(modelJson, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                ?? throw new InvalidDataException("The matcher fixture requires a model.");
+            EngineRuleOptions rules = new EngineRuleOptions
+            {
+                Sources = new[] { new RuleSourceDto { Name = "matchers.tmrules.json", Json = packJson } },
+            };
+            AnalysisResultDto expected = EngineService.Analyze(model, rules);
+            Assert.AreEqual(3, actual.Length);
+            foreach (JsonElement finding in actual)
+            {
+                FindingDto engine = expected.Findings.Single(entry => entry.RuleId == finding.GetProperty("ruleId").GetString());
+                Assert.AreEqual(engine.Message, finding.GetProperty("message").GetString());
+                Assert.AreEqual(engine.Severity, finding.GetProperty("severity").GetString());
+                Assert.AreEqual("generated-threat", finding.GetProperty("disposition").GetString());
+            }
+
+            string repeated = Path.Join(this.WorkingDirectory, "repeated");
+            Assert.AreEqual(2, Run(new[] { modelPath, "--rules", rulesPath, "--reportFolder", repeated }));
+            Assert.AreEqual(ReadDocument(reports).GetRawText(), ReadDocument(repeated).GetRawText());
+            Assert.AreEqual(modelJson, File.ReadAllText(modelPath));
+        }
+
+        /// <summary>The actual documented starter commands execute every pack and preserve report identities.</summary>
+        [TestMethod]
+        public void StarterDocumentationCommandsAreExecutable()
+        {
+            string examples = Path.Join(AppContext.BaseDirectory, "Fixtures", "Examples");
+            string[] commands = File.ReadAllLines(Path.Join(examples, "README.md"))
+                .Where(line => line.StartsWith("tmforge analyze examples/rule-packs/", StringComparison.Ordinal)).ToArray();
+            Assert.AreEqual(4, commands.Length);
+            Dictionary<string, string[]> expected = new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                ["pci-inspired.tmrules.json"] = new[] { "example-pci/PAN-ENCRYPTION", "example-pci/AUDIT-RETENTION" },
+                ["hipaa-inspired.tmrules.json"] = new[] { "example-hipaa/EPHI-TRANSPORT", "example-hipaa/EPHI-AUDIT" },
+                ["internal-service.tmrules.json"] = new[] { "example-internal-service/SERVICE-NAME", "example-internal-service/AUDIT-CONNECTION" },
+            };
+            CollectionAssert.AreEquivalent(expected.Keys.ToArray(), Directory.GetFiles(Path.Join(examples, "rule-packs"), "*.tmrules.json").Select(Path.GetFileName).ToArray());
+            HashSet<string> covered = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string command in commands)
+            {
+                string[] words = command.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                Assert.AreEqual(7, words.Length, command);
+                Assert.AreEqual("--rules", words[3], command);
+                Assert.AreEqual("--max-severity", words[5], command);
+                Assert.AreEqual("warning", words[6], command);
+                string[] args = words.Skip(2).Select(word => word.StartsWith("examples/", StringComparison.Ordinal)
+                    ? Path.Join(examples, word.Substring("examples/".Length)) : word).ToArray();
+                Assert.IsTrue(covered.Add(words[4]), "A duplicate command does not cover another pack.");
+                byte[] original = File.ReadAllBytes(args[0]);
+                Assert.AreEqual(2, Run(args), command);
+                string reports = Path.Join(this.WorkingDirectory, "snippet-" + covered.Count);
+                Assert.AreEqual(2, Run(args.Concat(new[] { "--reportFolder", reports }).ToArray()), command);
+                string reportName = Path.GetFileNameWithoutExtension(args[0]);
+                using JsonDocument evidence = JsonDocument.Parse(File.ReadAllText(Path.Join(reports, reportName + ".analysis.json")));
+                JsonElement[] findings = evidence.RootElement.GetProperty("findings").EnumerateArray()
+                    .Where(finding => finding.GetProperty("ruleId").GetString()?.StartsWith("example-", StringComparison.Ordinal) == true).ToArray();
+                string[] ruleIds = Directory.Exists(args[2]) ? expected.Values.SelectMany(ids => ids).ToArray() : expected[Path.GetFileName(args[2])];
+                CollectionAssert.AreEquivalent(ruleIds, findings.Select(finding => finding.GetProperty("ruleId").GetString()).ToArray(), command);
+                foreach (JsonElement finding in findings)
+                {
+                    string disposition = finding.GetProperty("ruleId").GetString() == "example-internal-service/SERVICE-NAME" ? "hygiene" : "generated-threat";
+                    Assert.AreEqual(disposition, finding.GetProperty("disposition").GetString());
+                }
+
+                using JsonDocument sarif = JsonDocument.Parse(File.ReadAllText(Path.Join(reports, reportName + ".sarif")));
+                string[] sarifIds = sarif.RootElement.GetProperty("runs")[0].GetProperty("results").EnumerateArray()
+                    .Where(result => result.GetProperty("ruleId").GetString()?.StartsWith("example-", StringComparison.Ordinal) == true)
+                    .Select(result => result.GetProperty("partialFingerprints").GetProperty("tmforgeFindingId/v1").GetString() ?? string.Empty).ToArray();
+                CollectionAssert.AreEquivalent(findings.Select(finding => finding.GetProperty("id").GetString()).ToArray(), sarifIds);
+                Assert.IsTrue(File.Exists(Path.Join(reports, reportName + ".html")));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(args[0]));
+            }
+        }
+
+        private static int Run(string[] args)
         {
             TextWriter originalOut = Console.Out;
             TextWriter originalError = Console.Error;
@@ -151,7 +244,7 @@ namespace ThreatModelForge.Cli.Tests
             Console.SetError(errorWriter);
             try
             {
-                AnalyzeCommand.Run(args);
+                return AnalyzeCommand.Run(args);
             }
             finally
             {

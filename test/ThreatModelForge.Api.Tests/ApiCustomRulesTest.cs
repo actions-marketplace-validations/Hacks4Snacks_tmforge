@@ -2,14 +2,17 @@ namespace ThreatModelForge.Api.Tests
 {
     using System;
     using System.IO;
+    using System.Linq;
     using System.Net;
     using System.Net.Http;
+    using System.Net.Http.Json;
     using System.Text;
     using System.Text.Json;
     using System.Threading.Tasks;
     using Microsoft.AspNetCore.Hosting;
     using Microsoft.AspNetCore.Mvc.Testing;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
+    using ThreatModelForge.Engine;
 
     /// <summary>
     /// Tests the host's startup rule loading. Custom packs are deployment configuration read once at
@@ -146,6 +149,59 @@ namespace ThreatModelForge.Api.Tests
             Assert.AreEqual(2, packs.GetArrayLength(), "both packs in the separated list must load.");
             Assert.AreEqual("pack-one", packs[0].GetProperty("id").GetString());
             Assert.AreEqual("pack-two", packs[1].GetProperty("id").GetString());
+        }
+
+        /// <summary>The HTTP host evaluates added matchers identically to the shared engine.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task AdditionalMatchersMatchTheSharedEngine()
+        {
+            (TmForgeModelDto model, EngineRuleOptions rules) = EngineCustomRulesTest.AdditionalMatchers();
+            string path = Path.Join(this.WorkingDirectory, "additional-matchers.tmrules.json");
+            File.WriteAllText(path, rules.Sources![0].Json);
+            using WebApplicationFactory<HealthStatusDto> factory = HostWithRules(path);
+            using HttpClient client = factory.CreateClient();
+            using HttpResponseMessage response = await client.PostAsJsonAsync("/v1/model/analysis", model);
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            AnalysisResultDto? actual = await response.Content.ReadFromJsonAsync<AnalysisResultDto>();
+            Assert.IsNotNull(actual);
+            AnalysisResultDto expected = EngineService.RunAnalysis(model, rules);
+            Assert.AreEqual(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(actual));
+        }
+
+        /// <summary>A trusted starter-pack directory contributes every example to HTTP analysis.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task StarterPackDirectoryIsListedAndEnforced()
+        {
+            string directory = Path.Join(AppContext.BaseDirectory, "Fixtures", "RulePacks");
+            using WebApplicationFactory<HealthStatusDto> factory = HostWithRules(directory);
+            using HttpClient client = factory.CreateClient();
+            using HttpResponseMessage bundle = await client.GetAsync("/v1/rule-bundle");
+            Assert.AreEqual(HttpStatusCode.OK, bundle.StatusCode);
+            RuleBundleDto? loaded = await bundle.Content.ReadFromJsonAsync<RuleBundleDto>();
+            Assert.IsNotNull(loaded);
+            Assert.AreEqual(0, loaded.Diagnostics.Count);
+            CollectionAssert.AreEquivalent(
+                new[] { "example-pci", "example-hipaa", "example-internal-service" }, loaded.RulePacks.Select(pack => pack.Id).ToArray());
+            using StringContent content = new StringContent(
+                File.ReadAllText(Path.Join(directory, "starter-model.tmforge.json")), Encoding.UTF8, "application/json");
+            using HttpResponseMessage response = await client.PostAsync("/v1/model/analysis", content);
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            AnalysisResultDto? result = await response.Content.ReadFromJsonAsync<AnalysisResultDto>();
+            Assert.IsNotNull(result);
+            Assert.AreEqual(0, result.Diagnostics.Count);
+            Assert.IsFalse(result.Findings.Any(finding => finding.Id == "engine-error"));
+            CollectionAssert.AreEquivalent(
+                new[]
+                {
+                    "example-pci/PAN-ENCRYPTION", "example-pci/AUDIT-RETENTION",
+                    "example-hipaa/EPHI-TRANSPORT", "example-hipaa/EPHI-AUDIT",
+                    "example-internal-service/SERVICE-NAME", "example-internal-service/AUDIT-CONNECTION",
+                },
+                result.Findings.Where(finding => finding.RuleId?.StartsWith("example-", StringComparison.Ordinal) == true).Select(finding => finding.RuleId).ToArray());
+            Assert.AreEqual(5, result.Threats.Count(threat => threat.RuleId?.StartsWith("example-", StringComparison.Ordinal) == true));
+            CollectionAssert.AreEquivalent(loaded.RulePacks.Select(pack => pack.Fingerprint).ToArray(), result.RulePacks.Select(pack => pack.Fingerprint).ToArray());
         }
 
         /// <summary>Builds a host that loads rule packs from the given paths.</summary>

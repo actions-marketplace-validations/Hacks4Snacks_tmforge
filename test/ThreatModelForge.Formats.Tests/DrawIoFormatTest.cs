@@ -152,6 +152,45 @@ namespace ThreatModelForge.Formats.Tests
                 "expected a curve waypoint");
         }
 
+        /// <summary>Unreadable graphs are not accepted as empty or incomplete models.</summary>
+        /// <param name="xml">The malformed draw.io input.</param>
+        [TestMethod]
+        [DataRow("<ThreatModel />")]
+        [DataRow("<mxfile />")]
+        [DataRow("<mxGraphModel><root><mxCell id='x' vertex='1'/><mxCell id='x' vertex='1'/></root></mxGraphModel>")]
+        [DataRow("<mxGraphModel><root><mxCell id='x' vertex='1'/><mxCell id='flow' edge='1' source='x' target='missing'/></root></mxGraphModel>")]
+        [DataRow("<mxGraphModel><root><mxCell id='flow' edge='1' source='missing'/></root></mxGraphModel>")]
+        public void ReadRejectsMalformedGraphs(string xml)
+        {
+            using MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(xml));
+
+            Assert.Throws<InvalidDataException>(() => new DrawIoFormat().Read(stream));
+        }
+
+        /// <summary>Compressed input is explicitly refused instead of returning an empty diagram.</summary>
+        [TestMethod]
+        public void ReadRejectsUnsupportedCompressedPage()
+        {
+            using MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes("<mxfile><diagram>compressed-payload</diagram></mxfile>"));
+
+            StringAssert.Contains(Assert.Throws<NotSupportedException>(() => new DrawIoFormat().Read(stream)).Message, "uncompressed XML");
+        }
+
+        /// <summary>Preflight can identify each omitted free-standing edge and inferred shape.</summary>
+        [TestMethod]
+        public void ReadReportsOmittedContent()
+        {
+            const string Xml = "<mxGraphModel><root><mxCell id='node' vertex='1'/><mxCell id='line' edge='1'/></root></mxGraphModel>";
+            using MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes(Xml));
+            List<DocumentDiagnostic> diagnostics = new List<DocumentDiagnostic>();
+
+            ThreatModel model = new DrawIoFormat().Read(stream, diagnostics);
+
+            Assert.AreEqual(1, model.DrawingSurfaceList[0].Borders.Count);
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "import.omitted-edge" && item.Path.Contains("line", StringComparison.Ordinal)));
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "import.inferred-kind" && item.Path.Contains("node", StringComparison.Ordinal)));
+        }
+
         private static int CountVertices(ThreatModel model)
         {
             return model.DrawingSurfaceList.Sum(surface => surface.Borders.Values.OfType<DrawingElement>().Count());

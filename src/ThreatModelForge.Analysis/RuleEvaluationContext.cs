@@ -5,6 +5,7 @@ namespace ThreatModelForge.Analysis
     using System.Collections.ObjectModel;
     using System.Linq;
     using ThreatModelForge.Model;
+    using ThreatModelForge.Model.Abstracts;
 
     /// <summary>
     /// Configuration, services, and properties passed along to all rules during evaluation.
@@ -20,6 +21,8 @@ namespace ThreatModelForge.Analysis
 
         private long declarativeOperationCount;
         private long declarativeOperationLimit = DefaultDeclarativeOperationLimit;
+        private TimeSpan regexTime;
+        private ConnectivityGraph? connectivityGraph;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="RuleEvaluationContext"/> class.
@@ -235,6 +238,24 @@ namespace ThreatModelForge.Analysis
             return this.declarativeOperationCount;
         }
 
+        /// <summary>Charges regex work to the shared one-second invocation budget.</summary>
+        /// <param name="elapsed">The elapsed regular-expression evaluation time.</param>
+        internal void AccountRegexTime(TimeSpan elapsed)
+        {
+            this.regexTime += elapsed;
+            if (this.regexTime > TimeSpan.FromSeconds(1))
+            {
+                throw new InvalidDataException("Analysis exceeded the shared regex evaluation time limit of 1000 ms.");
+            }
+        }
+
+        /// <summary>Gets the page-partitioned graph shared by all predicates in this evaluation.</summary>
+        /// <returns>The lazily constructed graph index.</returns>
+        internal ConnectivityGraph GetConnectivityGraph()
+        {
+            return this.connectivityGraph ??= new ConnectivityGraph(this);
+        }
+
         /// <summary>Sets the declarative operation limit for this analysis invocation.</summary>
         /// <param name="value">The new non-negative limit.</param>
         internal void SetDeclarativeOperationLimit(long value)
@@ -287,6 +308,99 @@ namespace ThreatModelForge.Analysis
             return !string.IsNullOrWhiteSpace(this.ModelSourcePath) ?
                 System.IO.Path.GetFileNameWithoutExtension(this.ModelSourcePath) :
                 string.Empty;
+        }
+
+        /// <summary>An invocation-local adjacency index; model topology must remain fixed during evaluation.</summary>
+        internal sealed class ConnectivityGraph
+        {
+            private readonly Dictionary<DrawingSurfaceModel, GraphPage> pages = new Dictionary<DrawingSurfaceModel, GraphPage>();
+
+            /// <summary>Initializes a new instance of the <see cref="ConnectivityGraph"/> class.</summary>
+            /// <param name="context">The evaluation owning this index and its operation budget.</param>
+            internal ConnectivityGraph(RuleEvaluationContext context)
+            {
+                if (context.Model.DrawingSurfaceList.Count > 1024)
+                {
+                    throw new InvalidDataException("Connectivity exceeds the limit of 1024 pages.");
+                }
+
+                long borders = 0;
+                long lines = 0;
+                foreach (DrawingSurfaceModel diagram in context.Model.DrawingSurfaceList)
+                {
+                    context.AccountDeclarativeOperations();
+                    borders += diagram.Borders.Count;
+                    lines += diagram.Lines.Count;
+                }
+
+                if (borders > 100000 || lines > 200000)
+                {
+                    throw new InvalidDataException("Connectivity exceeds the limit of 100000 shapes or 200000 lines.");
+                }
+
+                foreach (DrawingSurfaceModel diagram in context.Model.DrawingSurfaceList)
+                {
+                    context.AccountDeclarativeOperations(diagram.Borders.Count);
+                    context.AccountDeclarativeOperations(diagram.Lines.Count);
+                    GraphPage page = new GraphPage();
+                    foreach (KeyValuePair<Guid, object> entry in diagram.Borders)
+                    {
+                        if (entry.Value is not Entity component || !component.IsComponent())
+                        {
+                            continue;
+                        }
+
+                        if (entry.Key == Guid.Empty || component.Guid != entry.Key)
+                        {
+                            throw new InvalidDataException("Connectivity requires non-empty component ids matching their page keys.");
+                        }
+
+                        page.Outgoing.Add(component.Guid, new List<Entity>());
+                        page.Incoming.Add(component.Guid, new List<Entity>());
+                    }
+
+                    foreach (Connector flow in diagram.Lines.Values.OfType<Connector>())
+                    {
+                        if (!diagram.Borders.TryGetValue(flow.SourceGuid, out object? sourceValue) || sourceValue is not Entity source ||
+                            !diagram.Borders.TryGetValue(flow.TargetGuid, out object? targetValue) || targetValue is not Entity target)
+                        {
+                            throw new InvalidDataException($"Connectivity requires flow '{flow.Guid}' endpoints to resolve on the same page.");
+                        }
+
+                        if (page.Outgoing.TryGetValue(source.Guid, out List<Entity>? outgoing) &&
+                            page.Incoming.TryGetValue(target.Guid, out List<Entity>? incoming))
+                        {
+                            outgoing.Add(target);
+                            incoming.Add(source);
+                        }
+                    }
+
+                    this.pages.Add(diagram, page);
+                }
+            }
+
+            /// <summary>Returns the neighbors of a component without scanning model lines again.</summary>
+            /// <param name="diagram">The containing page.</param>
+            /// <param name="component">The component id.</param>
+            /// <param name="incoming">Whether to follow incoming rather than outgoing edges.</param>
+            /// <returns>The page-local neighbors, including explicit self-loops and parallel edges.</returns>
+            internal IReadOnlyList<Entity> Neighbors(DrawingSurfaceModel diagram, Guid component, bool incoming)
+            {
+                if (this.pages.TryGetValue(diagram, out GraphPage? page) &&
+                    (incoming ? page.Incoming : page.Outgoing).TryGetValue(component, out List<Entity>? neighbors))
+                {
+                    return neighbors;
+                }
+
+                return Array.Empty<Entity>();
+            }
+
+            private sealed class GraphPage
+            {
+                public Dictionary<Guid, List<Entity>> Outgoing { get; } = new Dictionary<Guid, List<Entity>>();
+
+                public Dictionary<Guid, List<Entity>> Incoming { get; } = new Dictionary<Guid, List<Entity>>();
+            }
         }
     }
 }

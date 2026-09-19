@@ -6,6 +6,7 @@ namespace ThreatModelForge.Cli.Tests
     using System.Text.Json;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.Analysis;
+    using ThreatModelForge.Formats;
     using ThreatModelForge.KnowledgeBase;
     using ThreatModelForge.Model;
 
@@ -177,6 +178,112 @@ namespace ThreatModelForge.Cli.Tests
             {
                 Assert.Contains(expected, merged.Values, expected + " must be declared.");
             }
+        }
+
+        /// <summary>The CLI imports a content-detected JSON file without changing its source bytes.</summary>
+        /// <param name="formatId">The destination format.</param>
+        [TestMethod]
+        [DataRow("tmforge-json")]
+        [DataRow("tm7")]
+        public void ImportsThreatDragonWithoutRewritingSource(string formatId)
+        {
+            string input = Path.Join(this.WorkingDirectory, "dragon.json");
+            File.Copy(Path.Join(AppContext.BaseDirectory, "Fixtures", "threat-dragon-v2.json"), input);
+            byte[] original = File.ReadAllBytes(input);
+            string output = Path.Join(this.WorkingDirectory, formatId == "tm7" ? "imported.tm7" : "imported.tmforge.json");
+
+            Assert.AreEqual(0, ConvertCommand.Run(new[] { input, "--to", formatId, "--out", output }));
+
+            ThreatModel model = ThreatModelFormatRegistry.CreateDefault().Load(output, formatId);
+            Assert.HasCount(2, model.DrawingSurfaceList);
+            Assert.HasCount(3, model.AllThreatsDictionary);
+            Assert.AreEqual("Model owner", model.MetaInformation?.Owner);
+            Threat threat = model.AllThreatsDictionary["manual:threat-dragon.linkability"];
+            Assert.AreEqual("LINDDUN", threat.Properties?["Source.modelType"]);
+            Assert.AreEqual(model.DrawingSurfaceList[1].Guid, threat.DrawingSurfaceGuid);
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(input));
+        }
+
+        /// <summary>An import-only destination is refused without truncating the selected file.</summary>
+        [TestMethod]
+        public void ThreatDragonExportDoesNotOverwriteAnExistingFile()
+        {
+            string input = this.WriteInput();
+            byte[] original = File.ReadAllBytes(input);
+
+            Assert.AreEqual(1, Program.Main(new[] { "convert", input, "--to", "threat-dragon", "--out", input }));
+
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(input));
+        }
+
+        /// <summary>Preflight emits structured diagnostics without creating or changing files.</summary>
+        [TestMethod]
+        public void PreflightReportsDanglingFlowWithoutWriting()
+        {
+            string path = this.WriteInput();
+            string invalid = SampleJson.Replace("\"target\":\"ds1\"", "\"target\":\"missing\"");
+            File.WriteAllText(path, invalid);
+            using StringWriter output = new StringWriter();
+            TextWriter previous = Console.Out;
+            int exit;
+            try
+            {
+                Console.SetOut(output);
+                exit = PreflightCommand.Run(new[] { path, "--json" });
+            }
+            finally
+            {
+                Console.SetOut(previous);
+            }
+
+            Assert.AreEqual(2, exit);
+            using JsonDocument result = JsonDocument.Parse(output.ToString());
+            JsonElement data = result.RootElement.GetProperty("data");
+            Assert.IsFalse(data.GetProperty("success").GetBoolean());
+            Assert.IsTrue(data.GetProperty("diagnostics").EnumerateArray().Any(item => item.GetProperty("path").GetString() == "$.flows[0].target"));
+            Assert.AreEqual(invalid, File.ReadAllText(path));
+            Assert.AreEqual(1, Directory.GetFiles(this.WorkingDirectory).Length);
+        }
+
+        /// <summary>A strict conversion reports known loss before touching its existing destination.</summary>
+        [TestMethod]
+        public void FailOnLossLeavesDestinationUnchanged()
+        {
+            string input = this.WriteInput();
+            string output = Path.Join(this.WorkingDirectory, "existing.drawio");
+            File.WriteAllText(output, "original destination");
+            using StringWriter writer = new StringWriter();
+            TextWriter previous = Console.Out;
+            int exit;
+            try
+            {
+                Console.SetOut(writer);
+                exit = ConvertCommand.Run(new[] { input, "--to", "drawio", "--out", output, "--fail-on-loss", "--json" });
+            }
+            finally
+            {
+                Console.SetOut(previous);
+            }
+
+            Assert.AreEqual(2, exit);
+            Assert.AreEqual("original destination", File.ReadAllText(output));
+            using JsonDocument result = JsonDocument.Parse(writer.ToString());
+            JsonElement data = result.RootElement.GetProperty("data");
+            Assert.AreEqual(JsonValueKind.Null, data.GetProperty("output").ValueKind);
+            Assert.IsTrue(data.GetProperty("diagnostics").EnumerateArray().Any(item => item.GetProperty("code").GetString() == "conversion.identity"));
+        }
+
+        /// <summary>A malformed graph is refused before an existing output can be truncated.</summary>
+        [TestMethod]
+        public void InvalidInputLeavesDestinationUnchanged()
+        {
+            string input = this.WriteInput();
+            File.WriteAllText(input, SampleJson.Replace("\"target\":\"ds1\"", "\"target\":\"missing\""));
+            string output = Path.Join(this.WorkingDirectory, "existing.tm7");
+            File.WriteAllText(output, "original destination");
+
+            Assert.AreEqual(1, ConvertCommand.Run(new[] { input, "--to", "tm7", "--out", output }));
+            Assert.AreEqual("original destination", File.ReadAllText(output));
         }
 
         private string WriteInput()

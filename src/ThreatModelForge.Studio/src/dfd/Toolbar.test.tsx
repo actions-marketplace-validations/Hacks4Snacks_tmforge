@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { Toolbar, REPORT_OPTIONS } from './Toolbar';
 import { REPORT_DOWNLOADS } from './Editor';
 
-function renderToolbar(onReport: (id: string) => void) {
+function renderToolbar(onReport: (id: string) => void, onTidy = vi.fn(), engineOnline = true, tidying = false) {
   render(
     <Toolbar
       onImport={vi.fn()}
@@ -16,14 +16,15 @@ function renderToolbar(onReport: (id: string) => void) {
       onUndo={vi.fn()}
       onRedo={vi.fn()}
       onFit={vi.fn()}
-      onTidy={vi.fn()}
+      onTidy={onTidy}
+      tidying={tidying}
       onToggleTheme={vi.fn()}
       canUndo={false}
       canRedo={false}
       dirty={false}
       fileName={null}
       exportFormats={[]}
-      engineOnline
+      engineOnline={engineOnline}
       engineLabel="test"
       theme="light"
       demo={false}
@@ -88,5 +89,43 @@ describe('report menu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /diagram only/i }));
 
     expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
+  });
+});
+
+describe('Tidy menu', () => {
+  it('tidies the existing arrangement with one click', () => {
+    const onTidy = vi.fn();
+    renderToolbar(vi.fn(), onTidy);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy' }));
+
+    expect(onTidy).toHaveBeenCalledWith('tidy');
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0);
+  });
+
+  it('offers only labels-only cleanup in the secondary menu, not rearrangement', () => {
+    const onTidy = vi.fn();
+    renderToolbar(vi.fn(), onTidy);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy options' }));
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    expect(screen.queryByRole('menuitem', { name: /Arrange/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: /Labels only/ }));
+    expect(onTidy).toHaveBeenCalledWith('labels');
+  });
+
+  it('keeps labels-only cleanup available offline without promising a safe arrangement', () => {
+    renderToolbar(vi.fn(), vi.fn(), false);
+
+    expect(screen.getByRole('button', { name: 'Tidy' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy options' }));
+
+    expect(screen.getByRole('menuitem', { name: /Labels only/ })).toBeEnabled();
+  });
+
+  it('disables repeated requests while tidying', () => {
+    renderToolbar(vi.fn(), vi.fn(), true, true);
+
+    expect(screen.getByRole('button', { name: /Tidying/ })).toBeDisabled();
   });
 });

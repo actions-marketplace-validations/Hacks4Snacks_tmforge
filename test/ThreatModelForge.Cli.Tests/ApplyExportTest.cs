@@ -441,16 +441,13 @@ namespace ThreatModelForge.Cli.Tests
 
         /// <summary>
         /// The case the envelope earns its keep on. A rule pack carries a numeric version, so no type
-        /// mismatch rejects it: it deserializes into a manifest that simply declares nothing, and
-        /// without the check <c>apply</c> would build an empty model from it and report success. The
-        /// first assertion measures that rather than assuming it.
+        /// mismatch rejects it. Both the low-level deserializer and the envelope-aware reader now
+        /// reject it instead of constructing an empty manifest.
         /// </summary>
         [TestMethod]
         public void ADocumentThatWouldOtherwiseCoerceIsRefused()
         {
-            Manifest? coerced = ManifestSupport.Deserialize(RulePackNotManifest);
-            Assert.IsNotNull(coerced, "a rule pack does deserialize into a manifest shape");
-            Assert.IsNull(coerced.Elements, "declaring nothing, which is what would have made this silent");
+            Assert.Throws<InvalidDataException>(() => ManifestSupport.Deserialize(RulePackNotManifest));
 
             Assert.IsFalse(ManifestSupport.TryRead(RulePackNotManifest, out _, out string? error));
             StringAssert.Contains(error, "tmforge-rules");

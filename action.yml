@@ -976,7 +976,7 @@ runs:
     - name: Upload SARIF to code scanning
       # Runs even when analysis found issues, so results always reach the Security tab before the gate.
       if: ${{ always() && inputs.upload-sarif == 'true' }}
-      uses: github/codeql-action/upload-sarif@v4.37.7
+      uses: github/codeql-action/upload-sarif@v4.38.0
       with:
         sarif_file: ${{ inputs.sarif-directory }}
         category: ${{ inputs.category }}

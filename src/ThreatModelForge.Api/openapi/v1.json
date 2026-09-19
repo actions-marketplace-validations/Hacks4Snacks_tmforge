@@ -369,6 +369,36 @@
         }
       }
     },
+    "/v1/model/layout": {
+      "post": {
+        "tags": [
+          "Model"
+        ],
+        "operationId": "LayoutModel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LayoutRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/model/export/tm7": {
       "post": {
         "tags": [
@@ -448,6 +478,45 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TmForgeModelDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/model/preflight": {
+      "post": {
+        "tags": [
+          "Model"
+        ],
+        "operationId": "PreflightModel",
+        "parameters": [
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileContentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResultDto"
                 }
               }
             }
@@ -765,6 +834,28 @@
           }
         }
       },
+      "DocumentDiagnostic": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Gets the stable diagnostic code."
+          },
+          "severity": {
+            "type": "string",
+            "description": "Gets the severity: error, warning or info."
+          },
+          "path": {
+            "type": "string",
+            "description": "Gets the location in the source document, using JSONPath for JSON input."
+          },
+          "message": {
+            "type": "string",
+            "description": "Gets the actionable diagnostic text."
+          }
+        },
+        "description": "A structural input or conversion diagnostic, separate from security findings."
+      },
       "ExpectedRulePackDto": {
         "type": "object",
         "properties": {
@@ -850,6 +941,235 @@
         "properties": {
           "status": {
             "type": "string"
+          }
+        }
+      },
+      "LayoutElementDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "width": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "height": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          }
+        }
+      },
+      "LayoutOptions": {
+        "type": "object",
+        "properties": {
+          "originX": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the x coordinate of the top-left origin of the laid-out region.",
+            "format": "int32"
+          },
+          "originY": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the y coordinate of the top-left origin of the laid-out region.",
+            "format": "int32"
+          },
+          "layerSpacing": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the horizontal gap between adjacent layers (columns).",
+            "format": "int32"
+          },
+          "nodeSpacing": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the vertical gap between adjacent nodes within a layer.",
+            "format": "int32"
+          },
+          "maxWidth": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the width a row of columns may occupy before the next column wraps onto a new\nrow. The Microsoft Threat Modeling Tool's drawing surface is bounded and taller than it is\nwide, so a wide model has to grow downwards; anything drawn past the right-hand limit is\nclamped by the tool on load, which would pile elements on top of each other.",
+            "format": "int32"
+          },
+          "boundaryPadding": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the padding between a trust boundary's edge and the members inside it.",
+            "format": "int32"
+          },
+          "boundaryHeaderHeight": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the extra headroom reserved at the top of a trust boundary for its title,\nwhich is drawn inside the box and would otherwise print over the topmost member.",
+            "format": "int32"
+          },
+          "labelCharacterWidth": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the width one character of a data-flow label occupies. Labels are drawn as a\nsingle unwrapped line, so this is what converts a flow's name into the space it needs.",
+            "format": "int32"
+          },
+          "labelHeight": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the height of a data-flow label.",
+            "format": "int32"
+          },
+          "labelLaneSpacing": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the perpendicular distance between adjacent label lanes.",
+            "format": "int32"
+          },
+          "labelLanes": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets how many lanes either side of a connector a label may be pushed into before\nthe least-covered position is accepted. Larger values clear more labels at the cost of\nbowing connectors further from a straight line.",
+            "format": "int32"
+          }
+        },
+        "description": "Tunable spacing parameters for DiagramLayout. Defaults produce a readable\nlayered diagram; callers may widen the gaps for larger stencils."
+      },
+      "LayoutRequestDto": {
+        "type": "object",
+        "properties": {
+          "model": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TmForgeModelDto"
+              }
+            ]
+          },
+          "page": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "options": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LayoutOptions"
+              }
+            ]
+          },
+          "positions": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/LayoutElementDto"
+            }
+          }
+        }
+      },
+      "LayoutResultDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LayoutElementDto"
+            }
+          },
+          "pages": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "components": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "labelOverlaps": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       },
@@ -985,6 +1305,61 @@
           }
         }
       },
+      "MetaInformation": {
+        "type": "object",
+        "properties": {
+          "assumptions": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the recorded assumptions."
+          },
+          "contributors": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the contributors."
+          },
+          "externalDependencies": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the external dependencies."
+          },
+          "highLevelSystemDescription": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the high-level system description."
+          },
+          "owner": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the model owner."
+          },
+          "reviewer": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the reviewer."
+          },
+          "threatModelName": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the threat model name."
+          }
+        },
+        "description": "Free-text metadata describing the modeled system (owner, reviewer, assumptions, and so on)."
+      },
       "PackDto": {
         "type": "object",
         "properties": {
@@ -1007,6 +1382,32 @@
           }
         },
         "description": "Describes a stencil pack: a named, togglable group of related stencils (for example, the\nAzure pack). The palette uses packs so the user can show or hide whole families at once."
+      },
+      "PreflightResultDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "format": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "targetFormat": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocumentDiagnostic"
+            }
+          }
+        }
       },
       "PropertyDescriptor": {
         "type": "object",
@@ -1252,6 +1653,15 @@
               "string"
             ]
           },
+          "source": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "manual": {
             "type": "boolean"
           }
@@ -1396,6 +1806,15 @@
               "null",
               "string"
             ]
+          },
+          "source": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
           },
           "priority": {
             "type": [
@@ -1571,6 +1990,16 @@
             "type": [
               "null",
               "string"
+            ]
+          },
+          "metadata": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/MetaInformation"
+              }
             ]
           },
           "elements": {

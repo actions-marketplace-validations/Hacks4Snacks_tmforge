@@ -3,6 +3,18 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { ReactFlowProvider, useReactFlow, type ReactFlowInstance } from '@xyflow/react';
 import { STORAGE_KEY } from './Editor';
+import type { IEngineClient, LayoutElement } from './engineClient';
+import type { TmForgeModel } from './types';
+
+const engineState = vi.hoisted(() => ({ current: undefined as IEngineClient | undefined }));
+vi.mock('./engineClient', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./engineClient')>();
+  return {
+    ...original,
+    probeEngine: async () => false,
+    loadWasmEngine: async () => engineState.current ?? null,
+  };
+});
 
 /**
  * Drives the whole editor — React Flow canvas, Inspector, toolbar, page strip — the way a person
@@ -182,6 +194,118 @@ function addCustomProperty(key: string, value: string): void {
 
 beforeEach(() => {
   window.localStorage.clear();
+  engineState.current = undefined;
+});
+
+describe('Editor — guarded Tidy', () => {
+  const geometry: LayoutElement[] = ['a', 'b', 'c'].map((id, index) => ({
+    id, x: 40 + index * 300, y: 100, width: 160, height: 96,
+  }));
+
+  async function useLayout(layout: IEngineClient['layout']): Promise<void> {
+    const { offlineEngine } = await import('./engineClient');
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, { label: 'layout test engine', layout });
+  }
+
+  async function tidy(): Promise<void> {
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('layout test engine'));
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy' }));
+  }
+
+  it('applies a successful response with the original ids and exactly one undo step', async () => {
+    const layout = vi.fn(async () => geometry);
+    await useLayout(layout);
+    await mountEditor(chain());
+
+    await tidy();
+
+    await waitFor(() => expect(flow!.getNode('a')?.position).toEqual({ x: 40, y: 100 }));
+    expect(layout).toHaveBeenCalledTimes(1);
+    expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+    expect(await undoToExhaustion()).toBe(1);
+    await waitFor(() => expect(flow!.getNode('a')?.position).toEqual({ x: 0, y: 0 }));
+    await expectPersisted({ elements: ['a', 'b', 'c'], flows: ['ab', 'bc'] });
+  });
+
+  it('tidies the existing horizontal arrangement instead of replacing it with graph layers', async () => {
+    const layout = vi.fn(async (...args: unknown[]) => args[1] as LayoutElement[]);
+    await useLayout(layout);
+    await mountEditor(chain());
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('layout test engine'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy' }));
+
+    await waitFor(() => expect(layout).toHaveBeenCalledTimes(1));
+    const candidate = layout.mock.calls[0][1] as LayoutElement[];
+    expect(candidate).toHaveLength(3);
+    for (const [index, id] of ['a', 'b', 'c'].entries()) {
+      const placed = candidate.find((element) => element.id === id)!;
+      expect(Math.abs(placed.x + placed.width / 2 - (index * 200 + 60))).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(placed.y + placed.height / 2 - 30)).toBeLessThanOrEqual(0.5);
+    }
+    await waitFor(() => expect(flow!.getNode('a')?.position.x).toBe(candidate[0].x));
+    expect(await undoToExhaustion()).toBe(1);
+  });
+
+  it('leaves geometry and undo history untouched after a refusal', async () => {
+    await useLayout(vi.fn(async () => { throw new Error('Unsafe crossing; no pages were changed.'); }));
+    await mountEditor(chain());
+
+    await tidy();
+
+    await waitFor(() => expect(screen.getByText(/Unsafe crossing/)).toBeInTheDocument());
+    expect(flow!.getNode('a')?.position).toEqual({ x: 0, y: 0 });
+    expect(undoButton()).toBeDisabled();
+  });
+
+  it('discards a late response instead of overwriting a newer property edit', async () => {
+    let finish!: (elements: LayoutElement[]) => void;
+    const layout = vi.fn(() => new Promise<LayoutElement[]>((resolve) => { finish = resolve; }));
+    await useLayout(layout);
+    await mountEditor(chain());
+    await tidy();
+    await waitFor(() => expect(layout).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: /Tidying/ })).toBeDisabled();
+
+    selectNodes('a');
+    addCustomProperty('Owner', 'newer-edit');
+    await act(async () => { finish(geometry); });
+
+    await waitFor(() => expect(screen.getByText(/model changed while tidying/i)).toBeInTheDocument());
+    expect(flow!.getNode('a')?.position).toEqual({ x: 0, y: 0 });
+    expect(flow!.getNode('a')?.data.properties).toMatchObject({ Owner: 'newer-edit' });
+    expect(await undoToExhaustion()).toBe(1);
+  });
+
+  it('does not apply a late response to a different active page', async () => {
+    let finish!: (elements: LayoutElement[]) => void;
+    const layout = vi.fn(() => new Promise<LayoutElement[]>((resolve) => { finish = resolve; }));
+    await useLayout(layout);
+    const first = chain();
+    const second = seedModel([{ id: 'other', kind: 'process', name: 'Other', x: 900, y: 500, width: 120, height: 60 }], []);
+    const model = { ...first, diagrams: [{ ...first, id: 'one', name: 'First' }, { ...second, id: 'two', name: 'Second' }] };
+    await mountEditor(model);
+    await tidy();
+    await waitFor(() => expect(layout).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Second/ }));
+    await act(async () => { finish(geometry); });
+
+    await waitFor(() => expect(canvasNodeIds()).toEqual(['other']));
+    expect(flow!.getNode('other')?.position).toEqual({ x: 900, y: 500 });
+    expect(undoButton()).toBeDisabled();
+  });
+
+  it('keeps labels-only cleanup available without invoking an offline layout engine', async () => {
+    await mountEditor(chain());
+    expect(screen.getByRole('button', { name: 'Tidy' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy options' }));
+    expect(screen.queryByRole('menuitem', { name: /Arrange/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: /Labels only/ }));
+
+    expect(flow!.getNode('a')?.position).toEqual({ x: 0, y: 0 });
+    expect(flow!.getNode('b')?.position).toEqual({ x: 200, y: 0 });
+  });
 });
 
 describe('Editor — deleting from the canvas', () => {
@@ -385,6 +509,136 @@ describe('Editor — the outline highlights what it picks', () => {
     await waitFor(() => expect(nodeEl('c')).toHaveClass('flagged'));
     expect(nodeEl('b')).toHaveClass('flagged');
     expect(nodeEl('a')).not.toHaveClass('flagged');
+  });
+});
+
+describe('Editor import-only formats', () => {
+  it('saves to a new canonical file without binding or overwriting the source', async () => {
+    const { offlineEngine } = await import('./engineClient');
+    const imported: TmForgeModel = await offlineEngine.read(JSON.stringify(chain()));
+    imported.metadata = { owner: 'Imported owner' };
+    imported.threats = [{ id: 'manual:threat-dragon.source', state: 'Accepted', manual: true, category: 'Linkability', source: { format: 'threat-dragon', id: 'source' } }];
+    imported.diagrams = [{ id: 'source-page', name: 'Imported page', elements: imported.elements, flows: imported.flows }];
+    const sourceWrite = vi.fn();
+    const targetWrite = vi.fn(async () => undefined);
+    const writeModel = vi.fn(async (model: TmForgeModel) => JSON.stringify(model));
+    const readFile = vi.fn(async () => imported);
+    const open = vi.fn(async () => [{ name: 'foreign.json', getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }), createWritable: sourceWrite }]);
+    const save = vi.fn(async () => ({ name: 'foreign.tmforge.json', createWritable: async () => ({ write: targetWrite, close: async () => undefined }) }));
+    const format = { id: 'threat-dragon', displayName: 'Threat Dragon', canRead: true, canWrite: false, roundTrips: false, extensions: [], fidelityNote: 'Import only' };
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
+      label: 'import test engine', detect: async () => format, readFile, write: writeModel,
+      preflight: async () => ({ success: true, format: 'threat-dragon', diagnostics: [] }),
+    });
+    Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, value: open });
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: save });
+    try {
+      await mountEditor(chain());
+      await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('import test engine'));
+      fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+      await waitFor(() => expect(screen.getByText('foreign.tmforge.json')).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect(targetWrite).toHaveBeenCalledOnce());
+      expect(sourceWrite).not.toHaveBeenCalled();
+      expect(save).toHaveBeenCalledWith({ suggestedName: 'foreign.tmforge.json' });
+      expect(readFile).toHaveBeenCalledWith(expect.any(Uint8Array), 'threat-dragon');
+      const saved = writeModel.mock.calls.at(-1)?.[0];
+      expect(saved?.metadata).toEqual(imported.metadata);
+      expect(saved?.threats).toEqual(imported.threats);
+      expect(saved?.diagrams?.[0]).toMatchObject({ id: 'source-page', name: 'Imported page' });
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+      Reflect.deleteProperty(window, 'showSaveFilePicker');
+    }
+  });
+});
+
+describe('Editor preflight review', () => {
+  async function prepare(result: Awaited<ReturnType<IEngineClient['preflight']>>) {
+    const { offlineEngine } = await import('./engineClient');
+    const model = await offlineEngine.read(JSON.stringify(chain()));
+    model.elements[0].name = 'Imported Alpha';
+    const readFile = vi.fn(async () => model);
+    const preflight = vi.fn(async () => result);
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
+      label: 'preflight test engine', preflight, readFile,
+      detect: async () => ({ id: 'threat-dragon', canRead: true, canWrite: false, extensions: [] }),
+    });
+    Object.defineProperty(window, 'showOpenFilePicker', {
+      configurable: true,
+      value: async () => [{ name: 'source.json', getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }) }],
+    });
+    await mountEditor(chain());
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('preflight test engine'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+    return { readFile, preflight };
+  }
+
+  it('reports errors with paths and leaves the original workspace untouched', async () => {
+    try {
+      const { readFile } = await prepare({ success: false, diagnostics: [{ code: 'model.unresolved-endpoint', severity: 'error', path: '$.flows[0].target', message: 'Target missing.' }] });
+      const dialog = await screen.findByRole('dialog', { name: 'Import blocked' });
+      expect(within(dialog).getByText('$.flows[0].target')).toBeInTheDocument();
+      expect(within(dialog).queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+      expect(readFile).not.toHaveBeenCalled();
+      expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+      expect(undoButton()).toBeDisabled();
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+    }
+  });
+
+  it.each([false, true])('requires an explicit decision before a lossy import (continue=%s)', async (proceed) => {
+    try {
+      const { readFile } = await prepare({ success: true, diagnostics: [{ code: 'conversion.line-boundaries', severity: 'warning', path: '$.diagrams', message: 'Line boundaries are not represented.' }] });
+      const dialog = await screen.findByRole('dialog', { name: 'Review import' });
+      expect(readFile).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: proceed ? 'Continue' : 'Cancel' }));
+      if (proceed) {
+        await waitFor(() => expect(readFile).toHaveBeenCalledOnce());
+        await screen.findByText('Imported Alpha');
+      } else {
+        expect(readFile).not.toHaveBeenCalled();
+        expect(screen.queryByText('Imported Alpha')).not.toBeInTheDocument();
+      }
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+    }
+  });
+
+  it('discards a delayed import after the workspace changes', async () => {
+    const { offlineEngine } = await import('./engineClient');
+    const imported = await offlineEngine.read(JSON.stringify(chain()));
+    imported.elements[0].name = 'Stale import';
+    let resolveRead!: (model: TmForgeModel) => void;
+    const readFile = vi.fn(() => new Promise<TmForgeModel>((resolve) => { resolveRead = resolve; }));
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
+      label: 'delayed import engine', readFile,
+      preflight: async () => ({ success: true, diagnostics: [] }),
+      detect: async () => ({ id: 'threat-dragon', canRead: true, canWrite: false, extensions: [] }),
+    });
+    Object.defineProperty(window, 'showOpenFilePicker', {
+      configurable: true,
+      value: async () => [{ name: 'source.json', getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }) }],
+    });
+    try {
+      await mountEditor(chain());
+      await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('delayed import engine'));
+      fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+      await waitFor(() => expect(readFile).toHaveBeenCalledOnce());
+      selectNodes('a');
+      addCustomProperty('ChangedDuringImport', 'Yes');
+      await waitFor(() => expect(window.localStorage.getItem(STORAGE_KEY)).toContain('ChangedDuringImport'), { timeout: 3000 });
+      await act(async () => resolveRead(imported));
+
+      expect(screen.queryByText('Stale import')).not.toBeInTheDocument();
+      expect(window.localStorage.getItem(STORAGE_KEY)).toContain('ChangedDuringImport');
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+    }
   });
 });
 

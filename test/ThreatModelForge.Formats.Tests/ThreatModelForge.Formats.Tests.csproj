@@ -18,6 +18,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\Fixtures\threat-dragon-v2.json" Link="threat-dragon-v2.json" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="..\ThreatModelForge.Core.Tests\SampleModel.tm7">
       <Link>SampleModel.tm7</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

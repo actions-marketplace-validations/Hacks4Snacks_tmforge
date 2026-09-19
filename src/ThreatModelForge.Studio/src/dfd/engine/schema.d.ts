@@ -228,6 +228,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/model/layout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["LayoutModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/model/export/tm7": {
         parameters: {
             query?: never;
@@ -270,6 +286,22 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["ReadModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/model/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["PreflightModel"];
         delete?: never;
         options?: never;
         head?: never;
@@ -387,6 +419,17 @@ export interface components {
             /** Format: int32 */
             flows?: number | string;
         };
+        /** @description A structural input or conversion diagnostic, separate from security findings. */
+        DocumentDiagnostic: {
+            /** @description Gets the stable diagnostic code. */
+            code?: string;
+            /** @description Gets the severity: error, warning or info. */
+            severity?: string;
+            /** @description Gets the location in the source document, using JSONPath for JSON input. */
+            path?: string;
+            /** @description Gets the actionable diagnostic text. */
+            message?: string;
+        };
         ExpectedRulePackDto: {
             id?: null | string;
             fingerprint?: null | string;
@@ -412,6 +455,102 @@ export interface components {
         HealthStatusDto: {
             status?: string;
         };
+        LayoutElementDto: {
+            id?: string;
+            /** Format: int32 */
+            x?: number | string;
+            /** Format: int32 */
+            y?: number | string;
+            /** Format: int32 */
+            width?: number | string;
+            /** Format: int32 */
+            height?: number | string;
+        };
+        /**
+         * @description Tunable spacing parameters for DiagramLayout. Defaults produce a readable
+         *     layered diagram; callers may widen the gaps for larger stencils.
+         */
+        LayoutOptions: {
+            /**
+             * Format: int32
+             * @description Gets or sets the x coordinate of the top-left origin of the laid-out region.
+             */
+            originX?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the y coordinate of the top-left origin of the laid-out region.
+             */
+            originY?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the horizontal gap between adjacent layers (columns).
+             */
+            layerSpacing?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the vertical gap between adjacent nodes within a layer.
+             */
+            nodeSpacing?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the width a row of columns may occupy before the next column wraps onto a new
+             *     row. The Microsoft Threat Modeling Tool's drawing surface is bounded and taller than it is
+             *     wide, so a wide model has to grow downwards; anything drawn past the right-hand limit is
+             *     clamped by the tool on load, which would pile elements on top of each other.
+             */
+            maxWidth?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the padding between a trust boundary's edge and the members inside it.
+             */
+            boundaryPadding?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the extra headroom reserved at the top of a trust boundary for its title,
+             *     which is drawn inside the box and would otherwise print over the topmost member.
+             */
+            boundaryHeaderHeight?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the width one character of a data-flow label occupies. Labels are drawn as a
+             *     single unwrapped line, so this is what converts a flow's name into the space it needs.
+             */
+            labelCharacterWidth?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the height of a data-flow label.
+             */
+            labelHeight?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets the perpendicular distance between adjacent label lanes.
+             */
+            labelLaneSpacing?: number | string;
+            /**
+             * Format: int32
+             * @description Gets or sets how many lanes either side of a connector a label may be pushed into before
+             *     the least-covered position is accepted. Larger values clear more labels at the cost of
+             *     bowing connectors further from a straight line.
+             */
+            labelLanes?: number | string;
+        };
+        LayoutRequestDto: {
+            model?: null | components["schemas"]["TmForgeModelDto"];
+            page?: null | string;
+            options?: null | components["schemas"]["LayoutOptions"];
+            positions?: null | components["schemas"]["LayoutElementDto"][];
+        };
+        LayoutResultDto: {
+            success?: boolean;
+            error?: null | string;
+            elements?: components["schemas"]["LayoutElementDto"][];
+            /** Format: int32 */
+            pages?: number | string;
+            /** Format: int32 */
+            components?: number | string;
+            /** Format: int32 */
+            labelOverlaps?: number | string;
+        };
         ManifestRequestDto: {
             manifest?: null | string;
             force?: boolean;
@@ -436,6 +575,23 @@ export interface components {
             merged?: null | components["schemas"]["TmForgeModelDto"];
             conflicts?: null | components["schemas"]["MergeConflictDto"][];
         };
+        /** @description Free-text metadata describing the modeled system (owner, reviewer, assumptions, and so on). */
+        MetaInformation: {
+            /** @description Gets or sets the recorded assumptions. */
+            assumptions?: null | string;
+            /** @description Gets or sets the contributors. */
+            contributors?: null | string;
+            /** @description Gets or sets the external dependencies. */
+            externalDependencies?: null | string;
+            /** @description Gets or sets the high-level system description. */
+            highLevelSystemDescription?: null | string;
+            /** @description Gets or sets the model owner. */
+            owner?: null | string;
+            /** @description Gets or sets the reviewer. */
+            reviewer?: null | string;
+            /** @description Gets or sets the threat model name. */
+            threatModelName?: null | string;
+        };
         /**
          * @description Describes a stencil pack: a named, togglable group of related stencils (for example, the
          *     Azure pack). The palette uses packs so the user can show or hide whole families at once.
@@ -450,6 +606,12 @@ export interface components {
              * @description Gets the number of stencils the pack contributes.
              */
             count?: number | string;
+        };
+        PreflightResultDto: {
+            success?: boolean;
+            format?: null | string;
+            targetFormat?: null | string;
+            diagnostics?: components["schemas"]["DocumentDiagnostic"][];
         };
         /**
          * @description Typed definition of a single element custom property (for example, a data store's
@@ -539,6 +701,9 @@ export interface components {
             state?: string;
             justification?: null | string;
             description?: null | string;
+            source?: null | {
+                [key: string]: string;
+            };
             manual?: boolean;
         };
         ThreatRegisterDto: {
@@ -574,6 +739,9 @@ export interface components {
             title?: null | string;
             description?: null | string;
             mitigation?: null | string;
+            source?: null | {
+                [key: string]: string;
+            };
             priority?: null | string;
             elementIds?: null | string[];
         };
@@ -616,6 +784,7 @@ export interface components {
         TmForgeModelDto: {
             schema?: null | string;
             version?: null | string;
+            metadata?: null | components["schemas"]["MetaInformation"];
             elements?: null | components["schemas"]["TmForgeElementDto"][];
             flows?: null | components["schemas"]["TmForgeFlowDto"][];
             diagrams?: null | components["schemas"]["TmForgeDiagramDto"][];
@@ -935,6 +1104,30 @@ export interface operations {
             };
         };
     };
+    LayoutModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LayoutRequestDto"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LayoutResultDto"];
+                };
+            };
+        };
+    };
     ExportModelTm7: {
         parameters: {
             query?: never;
@@ -1001,6 +1194,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TmForgeModelDto"];
+                };
+            };
+        };
+    };
+    PreflightModel: {
+        parameters: {
+            query?: {
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileContentDto"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreflightResultDto"];
                 };
             };
         };

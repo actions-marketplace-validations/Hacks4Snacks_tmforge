@@ -23,11 +23,15 @@ function ToolbarMenu({
   title,
   options,
   onSelect,
+  disabled = false,
+  ariaLabel,
 }: {
   label: string;
   title: string;
   options: MenuOption[];
   onSelect: (id: string) => void;
+  disabled?: boolean;
+  ariaLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -58,8 +62,9 @@ function ToolbarMenu({
     <div className="menu" ref={ref}>
       <button
         className="btn"
-        disabled={options.length === 0}
+        disabled={disabled || options.length === 0}
         aria-haspopup="menu"
+        aria-label={ariaLabel}
         aria-expanded={open}
         title={title}
         onClick={() => setOpen((value) => !value)}
@@ -134,8 +139,9 @@ interface ToolbarProps {
   onReport: (reportId: string) => void;
   onClear: () => void;
   onFit: () => void;
-  /** Auto-sizes shapes to fit their text, routes flows through facing ports, and separates flow labels on the current page. */
-  onTidy: () => void;
+  /** Tidies the existing layout with engine validation, or only its visual labels. */
+  onTidy: (mode: 'tidy' | 'labels') => void;
+  tidying?: boolean;
   onUndo: () => void;
   onRedo: () => void;
   canUndo: boolean;
@@ -239,11 +245,22 @@ export function Toolbar(props: ToolbarProps) {
         </button>
         <button
           className="btn"
-          onClick={props.onTidy}
-          title="Auto-layout: deconflict trust boundaries and shapes, route flows through facing ports, and separate flow labels"
+          disabled={props.tidying || !props.engineOnline}
+          onClick={() => props.onTidy('tidy')}
+          title={props.engineOnline ? 'Tidy the existing layout, preserving its arrangement and trust boundaries' : 'Tidy requires the engine; Labels only is available in Tidy options'}
         >
-          Tidy
+          {props.tidying ? 'Tidying…' : 'Tidy'}
         </button>
+        <ToolbarMenu
+          label=""
+          ariaLabel="Tidy options"
+          title="Tidy options"
+          disabled={props.tidying}
+          options={[
+            { id: 'labels', label: 'Labels only' },
+          ]}
+          onSelect={() => props.onTidy('labels')}
+        />
         <button className="btn" onClick={props.onClear}>
           Clear
         </button>

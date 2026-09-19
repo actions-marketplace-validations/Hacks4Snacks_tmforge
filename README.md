@@ -72,6 +72,9 @@ open as-is; see [Formats & interoperability](docs/formats.md).
 - **Version like code**: semantic `diff`, three-way `merge`, and `git-setup` to wire both into
   your repo, plus declarative `apply`/`export` manifests for reproducible models.
 - **Convert** between `.tm7`, `tmforge-json`, draw.io, and Visio.
+- **Import OWASP Threat Dragon v2 JSON** with stable identities and authored threats. The initial
+  [bounded subset](docs/formats.md#threat-dragon-owasp-threat-dragon-v2-import) supports rectangular
+  boundaries and directed flows; native Threat Dragon export is not supported.
 - **Report** to self-contained HTML (with inline SVG diagrams), or `render` the diagram right
   in your terminal.
 - **Analyze in CI** with the `tmforge` CLI (`tmforge analyze`), gating builds on SARIF-reported

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  applyLayoutGeometry,
   boundaryTitleRect,
   deconflictEdgeLabels,
   edgeLabelBox,
@@ -10,10 +11,71 @@ import {
   routeEdges,
   separateNodes,
   tidyGraph,
+  tidyLabels,
   wrapLabel,
 } from './autosize';
 import { DEFAULT_NODE_SIZE } from './mapping';
 import type { DfdEdge, DfdNode } from './types';
+
+describe('shared layout integration', () => {
+  function nodes(): DfdNode[] {
+    return [
+      { id: 'tb', type: 'boundary', position: { x: 0, y: 0 }, width: 400, height: 250, data: { label: 'A long boundary title that will wrap on a narrow region' } },
+      { id: 'p', type: 'process', position: { x: 50, y: 50 }, width: 100, height: 60, selected: true, data: { label: 'Gateway', properties: { Boundary: 'tb', Owner: 'security' } } },
+    ];
+  }
+
+  it('applies only geometry and retains all author and selection state', () => {
+    const input = nodes();
+    const placed = applyLayoutGeometry(input, [
+      { id: 'tb', x: 40, y: 40, width: 240, height: 280 },
+      { id: 'p', x: 64, y: 160, width: 160, height: 96 },
+    ]);
+
+    expect(placed[1].position).toEqual({ x: 64, y: 160 });
+    expect(placed[1].data).toBe(input[1].data);
+    expect(placed[1].selected).toBe(true);
+    expect(input[1].position).toEqual({ x: 50, y: 50 });
+    expect(placed[1].style).toEqual({ width: 160, height: 96 });
+  });
+
+  it('refuses missing, duplicate and foreign rectangles instead of partially applying a response', () => {
+    const input = nodes();
+    const patch = { id: 'p', x: 1, y: 2, width: 100, height: 60 };
+
+    expect(() => applyLayoutGeometry(input, [patch])).toThrow(/does not match/);
+    expect(() => applyLayoutGeometry(input, [patch, patch])).toThrow(/does not match/);
+    expect(() => applyLayoutGeometry(input, [patch, { ...patch, id: 'foreign' }])).toThrow(/does not match/);
+    expect(input).toEqual(nodes());
+  });
+
+  it('labels-only cleanup leaves every rectangle untouched, including overlapping trust claims', () => {
+    const input = nodes();
+    const edges: DfdEdge[] = [{ id: 'f', source: 'p', target: 'p', label: 'loop', data: { properties: { Protocol: 'TLS' } } }];
+    const cleaned = tidyLabels(input, edges);
+
+    expect(cleaned.nodes).toBe(input);
+    expect(cleaned.edges[0].source).toBe(edges[0].source);
+    expect(cleaned.edges[0].target).toBe(edges[0].target);
+    expect(cleaned.edges[0].data?.properties).toEqual(edges[0].data?.properties);
+  });
+
+  it('refuses cyclic declared boundaries without recursing or changing the input', () => {
+    const input = [
+      { ...nodes()[0], id: 'a', data: { label: 'A', properties: { Boundary: 'b' } } },
+      { ...nodes()[0], id: 'b', data: { label: 'B', properties: { Boundary: 'a' } } },
+    ];
+    const before = structuredClone(input);
+
+    expect(() => tidyGraph(input, [])).toThrow(/cyclic boundary membership/);
+    expect(input).toEqual(before);
+  });
+
+  it('bounds cleanup before performing overlap searches or text measurement', () => {
+    expect(() => tidyGraph(Array.from({ length: 513 }, () => nodes()[1]), [])).toThrow(/512 shapes/);
+    expect(() => tidyGraph([{ ...nodes()[1], data: { label: 'x'.repeat(4097) } }], [])).toThrow(/4096 characters/);
+  });
+});
 
 describe('wrapLabel', () => {
   it('keeps a short name on a single line', () => {

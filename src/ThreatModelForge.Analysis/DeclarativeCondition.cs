@@ -2,6 +2,7 @@ namespace ThreatModelForge.Analysis
 {
     using System.Collections.Generic;
     using System.Text.Json.Serialization;
+    using System.Text.RegularExpressions;
 
     /// <summary>
     /// A condition over an element. Every specified facet must hold (logical AND). A bare
@@ -27,6 +28,21 @@ namespace ThreatModelForge.Analysis
         /// <summary>Gets or sets whether the property must be present (<c>true</c>) or absent (<c>false</c>).</summary>
         public bool? Present { get; set; }
 
+        /// <summary>Gets or sets the exclusive numeric lower bound.</summary>
+        public decimal? GreaterThan { get; set; }
+
+        /// <summary>Gets or sets the inclusive numeric lower bound.</summary>
+        public decimal? GreaterThanOrEqual { get; set; }
+
+        /// <summary>Gets or sets the exclusive numeric upper bound.</summary>
+        public decimal? LessThan { get; set; }
+
+        /// <summary>Gets or sets the inclusive numeric upper bound.</summary>
+        public decimal? LessThanOrEqual { get; set; }
+
+        /// <summary>Gets or sets the regular expression the property must match.</summary>
+        public string? Matches { get; set; }
+
         /// <summary>Gets or sets whether the flow must cross a trust boundary (<c>true</c>) or not (<c>false</c>).</summary>
         public bool? CrossesTrustBoundary { get; set; }
 
@@ -35,5 +51,14 @@ namespace ThreatModelForge.Analysis
 
         /// <summary>Gets or sets a condition on the element at the flow's target end.</summary>
         public DeclarativeEndpoint? Target { get; set; }
+
+        /// <summary>Gets or sets a filter for a component with a positive-length directed path to this component.</summary>
+        public DeclarativeEndpoint? ReachableFrom { get; set; }
+
+        /// <summary>Gets or sets a filter for a component reached by one outgoing connector.</summary>
+        public DeclarativeEndpoint? ConnectsTo { get; set; }
+
+        /// <summary>Gets or sets the pattern prepared during pack validation.</summary>
+        internal Regex? CompiledPattern { get; set; }
     }
 }

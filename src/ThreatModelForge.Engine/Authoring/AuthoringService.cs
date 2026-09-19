@@ -324,6 +324,7 @@ namespace ThreatModelForge.Engine
                 Priority = priority ?? existing.Priority,
                 Description = request.Description ?? existing.Description,
                 Mitigation = request.Mitigation ?? existing.Mitigation,
+                Source = existing.Source,
                 Category = request.Category ?? existing.Category,
                 Title = Resolve(request.Title, existing.Title),
                 ElementIds = existing.ElementIds,
@@ -393,6 +394,7 @@ namespace ThreatModelForge.Engine
             {
                 Schema = source.Schema,
                 Version = source.Version,
+                Metadata = source.Metadata,
                 Elements = source.Elements,
                 Flows = source.Flows,
                 Diagrams = source.Diagrams,

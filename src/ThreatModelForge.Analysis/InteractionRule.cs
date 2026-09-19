@@ -219,7 +219,8 @@ namespace ThreatModelForge.Analysis
             List<PropertyBinding> bindings,
             ISet<string> seen)
         {
-            if (expression.Operation == InteractionExpression.OperationKind.Property)
+            if (expression.Operation == InteractionExpression.OperationKind.Property ||
+                expression.Operation == InteractionExpression.OperationKind.FlatProperty)
             {
                 foreach (string appliesTo in PropertyKinds(expression, pack, parents))
                 {
@@ -247,6 +248,11 @@ namespace ThreatModelForge.Analysis
             RulePackDefinition pack,
             IReadOnlyDictionary<string, string?> parents)
         {
+            if (expression.Kind != null)
+            {
+                return new[] { expression.Kind };
+            }
+
             if (string.Equals(expression.Subject, "flow", StringComparison.Ordinal))
             {
                 return new[] { "flow" };

@@ -1,0 +1,82 @@
+{
+  "schema": "tmforge-json",
+  "version": "0.1",
+  "elements": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "kind": "external",
+      "name": "Example client",
+      "x": 40,
+      "y": 80,
+      "width": 160,
+      "height": 80
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "kind": "process",
+      "name": "Example gateway",
+      "x": 280,
+      "y": 80,
+      "width": 160,
+      "height": 100,
+      "properties": { "ServiceScope": "Internal", "ServiceName": "gateway" }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "kind": "process",
+      "name": "Example worker",
+      "x": 520,
+      "y": 80,
+      "width": 160,
+      "height": 100,
+      "properties": { "ServiceScope": "Internal", "ServiceName": "svc-worker" }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "kind": "datastore",
+      "name": "Example audit store",
+      "x": 760,
+      "y": 80,
+      "width": 180,
+      "height": 100,
+      "properties": { "StoresLogData": "Yes", "AuditScope": "CDE", "RetentionMonths": "6" }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000005",
+      "kind": "datastore",
+      "name": "Example PAN store",
+      "x": 280,
+      "y": 340,
+      "width": 180,
+      "height": 100,
+      "properties": { "StoresPAN": "Yes", "Encrypted": "No" }
+    }
+  ],
+  "flows": [
+    {
+      "id": "20000000-0000-4000-8000-000000000001",
+      "name": "Example ePHI request",
+      "source": "10000000-0000-4000-8000-000000000001",
+      "target": "10000000-0000-4000-8000-000000000002",
+      "properties": { "DataClassification": "ePHI", "Protocol": "HTTP", "CertificateValidation": "No" }
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000002",
+      "name": "Example work request",
+      "source": "10000000-0000-4000-8000-000000000002",
+      "target": "10000000-0000-4000-8000-000000000003"
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000003",
+      "name": "Example audit event",
+      "source": "10000000-0000-4000-8000-000000000003",
+      "target": "10000000-0000-4000-8000-000000000004"
+    },
+    {
+      "id": "20000000-0000-4000-8000-000000000004",
+      "name": "Example payment record",
+      "source": "10000000-0000-4000-8000-000000000002",
+      "target": "10000000-0000-4000-8000-000000000005"
+    }
+  ]
+}

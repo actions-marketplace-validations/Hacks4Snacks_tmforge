@@ -59,6 +59,9 @@ namespace ThreatModelForge.Engine
         /// <summary>Gets the author-set description, when present.</summary>
         public string? Description { get; init; }
 
+        /// <summary>Gets informational source provenance when this is an imported threat.</summary>
+        public IReadOnlyDictionary<string, string>? Source { get; init; }
+
         /// <summary>Gets a value indicating whether this threat was authored manually (not projected from a rule).</summary>
         public bool Manual { get; init; }
     }

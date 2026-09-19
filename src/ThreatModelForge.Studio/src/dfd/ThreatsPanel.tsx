@@ -164,6 +164,7 @@ function ThreatEditor({ threat, onSave, onCancel }: { threat: Threat; onSave: (e
           disabled={!threat.manual}
           onChange={(event) => setCategory(event.target.value)}
         >
+          {threat.manual && !STRIDE_ORDER.includes(category) && <option value={category}>{category}</option>}
           {threat.manual ? (
             STRIDE_ORDER.map((option) => (
               <option key={option} value={option}>

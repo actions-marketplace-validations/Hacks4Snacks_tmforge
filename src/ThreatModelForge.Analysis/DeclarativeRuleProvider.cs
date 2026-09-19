@@ -2,6 +2,7 @@ namespace ThreatModelForge.Analysis
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
     using System.Globalization;
     using System.IO;
     using System.Linq;
@@ -9,6 +10,7 @@ namespace ThreatModelForge.Analysis
     using System.Text;
     using System.Text.Json;
     using System.Text.Json.Serialization;
+    using System.Text.RegularExpressions;
     using System.Xml;
     using ThreatModelForge.Editing;
 
@@ -165,10 +167,11 @@ namespace ThreatModelForge.Analysis
             }
 
             List<ParsedDocument> documents = new List<ParsedDocument>();
+            RegexCompiler regexCompiler = new RegexCompiler();
             long totalBytes = 0;
             foreach (string file in files)
             {
-                ParsedDocument? document = LoadFile(file, diagnostics, out int bytesRead);
+                ParsedDocument? document = LoadFile(file, diagnostics, regexCompiler, out int bytesRead);
                 totalBytes += bytesRead;
                 if (totalBytes > MaxTotalRuleBytes)
                 {
@@ -184,7 +187,7 @@ namespace ThreatModelForge.Analysis
 
             foreach (RuleContent content in inline)
             {
-                ParsedDocument? document = LoadContent(content, diagnostics, out int bytesRead);
+                ParsedDocument? document = LoadContent(content, diagnostics, regexCompiler, out int bytesRead);
                 totalBytes += bytesRead;
                 if (totalBytes > MaxTotalRuleBytes)
                 {
@@ -358,7 +361,7 @@ namespace ThreatModelForge.Analysis
             }
 
             string? endpointError = ValidateEndpointKinds(spec.When);
-            return endpointError ?? ValidateEndpointKinds(spec.Assert);
+            return endpointError ?? ValidateEndpointKinds(spec.Assert) ?? ValidateConnectivityConditions(spec);
         }
 
         private static string? ValidateVersionTwoRuleMetadata(DeclarativeRuleSpec spec)
@@ -465,10 +468,13 @@ namespace ThreatModelForge.Analysis
                 return "interaction expression depth exceeds the limit of 64.";
             }
 
+            bool hasNumeric = expression.GreaterThan.HasValue || expression.GreaterThanOrEqual.HasValue ||
+                expression.LessThan.HasValue || expression.LessThanOrEqual.HasValue;
             bool hasPredicate = expression.Subject != null ||
                 expression.Type != null ||
                 expression.Property != null ||
-                expression.ValueIn != null;
+                expression.Kind != null || expression.ReachableFrom != null || expression.ConnectsTo != null ||
+                expression.ValueIn != null || hasNumeric || expression.Matches != null;
             int shapes = (expression.AllOf != null ? 1 : 0) +
                 (expression.AnyOf != null ? 1 : 0) +
                 (expression.Not != null ? 1 : 0) +
@@ -518,16 +524,45 @@ namespace ThreatModelForge.Analysis
                 return $"unknown interaction subject '{expression.Subject}'.";
             }
 
-            bool hasType = !string.IsNullOrWhiteSpace(expression.Type);
-            bool hasProperty = !string.IsNullOrWhiteSpace(expression.Property);
-            if (hasType == hasProperty)
+            int predicates = (expression.Type != null ? 1 : 0) + (expression.Property != null ? 1 : 0) +
+                (expression.Kind != null ? 1 : 0) + (expression.ReachableFrom != null ? 1 : 0) + (expression.ConnectsTo != null ? 1 : 0);
+            if (predicates != 1)
             {
-                return "interaction predicates require exactly one of type or property.";
+                return "interaction predicates require exactly one of type, kind, property, reachableFrom, or connectsTo.";
             }
 
-            if (hasProperty && (expression.ValueIn == null || expression.ValueIn.Count == 0))
+            if (expression.Kind != null || expression.ReachableFrom != null || expression.ConnectsTo != null)
             {
-                return "interaction property predicates require valueIn.";
+                if (expression.Subject == "flow" || expression.ValueIn != null || hasNumeric || expression.Matches != null)
+                {
+                    return "kind and connectivity predicates require source or target and cannot declare property matchers.";
+                }
+
+                return expression.Kind != null
+                    ? ValidateEndpointKind(new DeclarativeEndpoint { Kind = expression.Kind })
+                    : ValidateConnectivityFilter(expression.ReachableFrom ?? expression.ConnectsTo);
+            }
+
+            bool hasType = expression.Type != null;
+            bool hasProperty = expression.Property != null;
+            if ((hasType && string.IsNullOrWhiteSpace(expression.Type)) || (hasProperty && string.IsNullOrWhiteSpace(expression.Property)))
+            {
+                return "interaction type and property names cannot be empty.";
+            }
+
+            if (hasProperty && !hasNumeric && expression.Matches == null && (expression.ValueIn == null || expression.ValueIn.Count == 0))
+            {
+                return "interaction property predicates require valueIn, numeric bounds, or matches.";
+            }
+
+            if (expression.Matches != null && (hasType || hasNumeric || expression.ValueIn != null))
+            {
+                return "regex predicates require property and cannot be combined with type, valueIn, or numeric bounds.";
+            }
+
+            if (hasNumeric && (hasType || expression.ValueIn != null))
+            {
+                return "numeric predicates require property and cannot be combined with type or valueIn.";
             }
 
             if (hasType && expression.ValueIn != null)
@@ -535,9 +570,11 @@ namespace ThreatModelForge.Analysis
                 return "interaction type predicates cannot declare valueIn.";
             }
 
-            return expression.ValueIn?.Any(value => value == null) == true
+            string? numericError = ValidateNumericBounds(
+                expression.Property, expression.GreaterThan, expression.GreaterThanOrEqual, expression.LessThan, expression.LessThanOrEqual);
+            return numericError ?? (expression.ValueIn?.Any(value => value == null) == true
                 ? "interaction valueIn cannot contain null values."
-                : null;
+                : null);
         }
 
         private static string? ValidateConditionShape(DeclarativeCondition? condition)
@@ -561,7 +598,9 @@ namespace ThreatModelForge.Analysis
             bool hasValueMatcher = condition.EqualTo != null ||
                 condition.Present.HasValue ||
                 condition.AnyOf != null ||
-                condition.NotAnyOf != null;
+                condition.NotAnyOf != null ||
+                condition.GreaterThan.HasValue || condition.GreaterThanOrEqual.HasValue ||
+                condition.LessThan.HasValue || condition.LessThanOrEqual.HasValue || condition.Matches != null;
             if (hasValueMatcher && string.IsNullOrWhiteSpace(condition.Property))
             {
                 return "condition value matchers require property.";
@@ -572,8 +611,10 @@ namespace ThreatModelForge.Analysis
                 return "condition matcher arrays cannot be empty.";
             }
 
-            string? sourceError = ValidateEndpointShape(condition.Source);
-            return sourceError ?? ValidateEndpointShape(condition.Target);
+            string? numericError = ValidateNumericBounds(
+                condition.Property, condition.GreaterThan, condition.GreaterThanOrEqual, condition.LessThan, condition.LessThanOrEqual);
+            return numericError ?? ValidateEndpointShape(condition.Source) ?? ValidateEndpointShape(condition.Target) ??
+                ValidateConnectivityFilter(condition.ReachableFrom) ?? ValidateConnectivityFilter(condition.ConnectsTo);
         }
 
         private static string? ValidateEndpointShape(DeclarativeEndpoint? endpoint)
@@ -586,7 +627,8 @@ namespace ThreatModelForge.Analysis
             bool hasValueMatcher = endpoint?.EqualTo != null ||
                 endpoint?.Present.HasValue == true ||
                 endpoint?.AnyOf != null ||
-                endpoint?.NotAnyOf != null;
+                endpoint?.NotAnyOf != null || endpoint?.GreaterThan != null || endpoint?.GreaterThanOrEqual != null ||
+                endpoint?.LessThan != null || endpoint?.LessThanOrEqual != null || endpoint?.Matches != null;
             if (hasValueMatcher && string.IsNullOrWhiteSpace(endpoint?.Property))
             {
                 return "endpoint value matchers require property.";
@@ -597,10 +639,164 @@ namespace ThreatModelForge.Analysis
                 return "endpoint matcher arrays cannot be empty.";
             }
 
-            return endpoint?.AnyOf?.Any(value => value == null) == true ||
+            string? numericError = ValidateNumericBounds(
+                endpoint?.Property, endpoint?.GreaterThan, endpoint?.GreaterThanOrEqual, endpoint?.LessThan, endpoint?.LessThanOrEqual);
+            return numericError ?? (endpoint?.AnyOf?.Any(value => value == null) == true ||
                 endpoint?.NotAnyOf?.Any(value => value == null) == true
                     ? "endpoint matchers cannot contain null values."
-                    : null;
+                    : null);
+        }
+
+        private static string? PrepareMatchers(IReadOnlyList<DeclarativeRuleSpec> rules, RegexCompiler compiler, bool interaction)
+        {
+            foreach (DeclarativeRuleSpec rule in rules)
+            {
+                try
+                {
+                    string? connectivityError = ValidateConnectivityConditions(rule);
+                    if (connectivityError != null)
+                    {
+                        throw new InvalidDataException(connectivityError);
+                    }
+
+                    PrepareCondition(rule.When, compiler);
+                    PrepareCondition(rule.Assert, compiler);
+                    if (interaction && rule.Expression != null)
+                    {
+                        PrepareExpression(rule.Expression, compiler);
+                    }
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is InvalidDataException)
+                {
+                    return $"rule '{rule.Id}': {ex.Message}";
+                }
+            }
+
+            return null;
+        }
+
+        private static void PrepareCondition(DeclarativeCondition? condition, RegexCompiler compiler)
+        {
+            if (condition == null)
+            {
+                return;
+            }
+
+            condition.CompiledPattern = PreparePropertyMatcher(
+                condition.Property, condition.GreaterThan, condition.GreaterThanOrEqual, condition.LessThan, condition.LessThanOrEqual, condition.Matches, compiler);
+            PrepareEndpoint(condition.Source, compiler);
+            PrepareEndpoint(condition.Target, compiler);
+            PrepareEndpoint(condition.ReachableFrom, compiler);
+            PrepareEndpoint(condition.ConnectsTo, compiler);
+        }
+
+        private static void PrepareEndpoint(DeclarativeEndpoint? endpoint, RegexCompiler compiler)
+        {
+            if (endpoint != null)
+            {
+                endpoint.CompiledPattern = PreparePropertyMatcher(
+                    endpoint.Property, endpoint.GreaterThan, endpoint.GreaterThanOrEqual, endpoint.LessThan, endpoint.LessThanOrEqual, endpoint.Matches, compiler);
+            }
+        }
+
+        private static void PrepareExpression(DeclarativeRuleSpec.InteractionExpressionSpec expression, RegexCompiler compiler)
+        {
+            expression.CompiledPattern = PreparePropertyMatcher(
+                expression.Property, expression.GreaterThan, expression.GreaterThanOrEqual, expression.LessThan, expression.LessThanOrEqual, expression.Matches, compiler);
+            PrepareEndpoint(expression.ReachableFrom, compiler);
+            PrepareEndpoint(expression.ConnectsTo, compiler);
+            if (expression.Not != null)
+            {
+                PrepareExpression(expression.Not, compiler);
+            }
+
+            foreach (DeclarativeRuleSpec.InteractionExpressionSpec child in
+                (expression.AllOf ?? Enumerable.Empty<DeclarativeRuleSpec.InteractionExpressionSpec>())
+                    .Concat(expression.AnyOf ?? Enumerable.Empty<DeclarativeRuleSpec.InteractionExpressionSpec>()))
+            {
+                PrepareExpression(child, compiler);
+            }
+        }
+
+        private static Regex? PreparePropertyMatcher(
+            string? property,
+            decimal? greaterThan,
+            decimal? greaterThanOrEqual,
+            decimal? lessThan,
+            decimal? lessThanOrEqual,
+            string? matches,
+            RegexCompiler compiler)
+        {
+            string? error = ValidateNumericBounds(property, greaterThan, greaterThanOrEqual, lessThan, lessThanOrEqual);
+            if (error != null)
+            {
+                throw new InvalidDataException(error);
+            }
+
+            return compiler.Prepare(property, matches);
+        }
+
+        private static string? ValidateConnectivityConditions(DeclarativeRuleSpec rule)
+        {
+            foreach (DeclarativeCondition? condition in new[] { rule.When, rule.Assert })
+            {
+                if (condition?.ReachableFrom == null && condition?.ConnectsTo == null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(rule.AppliesTo, "flow", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "reachableFrom and connectsTo require a component appliesTo; use interaction source or target for flows.";
+                }
+
+                string? error = ValidateConnectivityFilter(condition!.ReachableFrom) ?? ValidateConnectivityFilter(condition.ConnectsTo);
+                if (error != null)
+                {
+                    return error;
+                }
+            }
+
+            return null;
+        }
+
+        private static string? ValidateConnectivityFilter(DeclarativeEndpoint? filter)
+        {
+            if (filter == null)
+            {
+                return null;
+            }
+
+            if (filter.Kind == null && filter.Property == null)
+            {
+                return "connectivity filters require kind or property.";
+            }
+
+            return ValidateEndpointKind(filter) ?? ValidateEndpointShape(filter);
+        }
+
+        private static string? ValidateNumericBounds(
+            string? property,
+            decimal? greaterThan,
+            decimal? greaterThanOrEqual,
+            decimal? lessThan,
+            decimal? lessThanOrEqual)
+        {
+            if (!greaterThan.HasValue && !greaterThanOrEqual.HasValue && !lessThan.HasValue && !lessThanOrEqual.HasValue)
+            {
+                return null;
+            }
+
+            if (string.IsNullOrWhiteSpace(property))
+            {
+                return "numeric bounds require property.";
+            }
+
+            decimal lower = Math.Max(greaterThan ?? decimal.MinValue, greaterThanOrEqual ?? decimal.MinValue);
+            decimal upper = Math.Min(lessThan ?? decimal.MaxValue, lessThanOrEqual ?? decimal.MaxValue);
+            return lower > upper || (lower == upper && (greaterThan == lower || lessThan == upper))
+                ? "numeric bounds describe an empty range."
+                : null;
         }
 
         private static string? ValidateEndpointKinds(DeclarativeCondition? condition)
@@ -656,7 +852,7 @@ namespace ThreatModelForge.Analysis
             return Array.Empty<string>();
         }
 
-        private static ParsedDocument? LoadFile(string file, Action<string>? diagnostics, out int bytesRead)
+        private static ParsedDocument? LoadFile(string file, Action<string>? diagnostics, RegexCompiler regexCompiler, out int bytesRead)
         {
             bytesRead = 0;
             byte[] content;
@@ -670,10 +866,10 @@ namespace ThreatModelForge.Analysis
                 return null;
             }
 
-            return ParseDocument(file, content, diagnostics);
+            return ParseDocument(file, content, diagnostics, regexCompiler);
         }
 
-        private static ParsedDocument? LoadContent(RuleContent source, Action<string>? diagnostics, out int bytesRead)
+        private static ParsedDocument? LoadContent(RuleContent source, Action<string>? diagnostics, RegexCompiler regexCompiler, out int bytesRead)
         {
             byte[] content = source.Bytes();
             bytesRead = content.Length;
@@ -684,10 +880,10 @@ namespace ThreatModelForge.Analysis
                 return null;
             }
 
-            return ParseDocument(source.Name, content, diagnostics);
+            return ParseDocument(source.Name, content, diagnostics, regexCompiler);
         }
 
-        private static ParsedDocument? ParseDocument(string file, byte[] content, Action<string>? diagnostics)
+        private static ParsedDocument? ParseDocument(string file, byte[] content, Action<string>? diagnostics, RegexCompiler regexCompiler)
         {
             DeclarativeRuleFile? parsed;
             string json;
@@ -756,9 +952,10 @@ namespace ThreatModelForge.Analysis
                     Array.Empty<DeclarativeRuleFile.ElementTypeSpec>(),
                     Array.Empty<DeclarativeRuleFile.PropertySpec>(),
                     legacyRules);
-                if (countError != null || textError != null)
+                string? matcherError = countError ?? textError ?? PrepareMatchers(legacyRules, regexCompiler, interaction: false);
+                if (matcherError != null)
                 {
-                    diagnostics?.Invoke($"Skipped rule file '{file}': {countError ?? textError}");
+                    diagnostics?.Invoke($"Skipped rule file '{file}': {matcherError}");
                     return null;
                 }
 
@@ -826,7 +1023,8 @@ namespace ThreatModelForge.Analysis
                 return null;
             }
 
-            string? validationError = ValidateVersionTwoPack(parsed.Dialect!, header, categories, elementTypes, properties, rules);
+            string? validationError = ValidateVersionTwoPack(parsed.Dialect!, header, categories, elementTypes, properties, rules) ??
+                PrepareMatchers(rules, regexCompiler, interaction: true);
             if (validationError != null)
             {
                 diagnostics?.Invoke($"Skipped rule file '{file}': {validationError}");
@@ -1081,7 +1279,9 @@ namespace ThreatModelForge.Analysis
                 properties);
             return error ??
                 ValidateEndpointCatalogValues(condition.Source, properties) ??
-                ValidateEndpointCatalogValues(condition.Target, properties);
+                ValidateEndpointCatalogValues(condition.Target, properties) ??
+                ValidateEndpointCatalogValues(condition.ReachableFrom, properties) ??
+                ValidateEndpointCatalogValues(condition.ConnectsTo, properties);
         }
 
         private static string? ValidateEndpointCatalogValues(
@@ -1162,6 +1362,20 @@ namespace ThreatModelForge.Analysis
                 if (unknownValue != null)
                 {
                     return $"interaction expression uses unknown value '{unknownValue}' for property '{property.Name}'.";
+                }
+            }
+
+            foreach (DeclarativeEndpoint? filter in new[] { expression.ReachableFrom, expression.ConnectsTo })
+            {
+                if (filter?.Property != null && !properties.ContainsKey(filter.Property))
+                {
+                    return $"connectivity filter references unknown property '{filter.Property}'.";
+                }
+
+                string? error = ValidateEndpointCatalogValues(filter, properties);
+                if (error != null)
+                {
+                    return error;
                 }
             }
 
@@ -1447,6 +1661,8 @@ namespace ThreatModelForge.Analysis
             long count = (condition.AnyOf?.Count ?? 0) + (condition.NotAnyOf?.Count ?? 0);
             count += CountEndpointValues(condition.Source);
             count += CountEndpointValues(condition.Target);
+            count += CountEndpointValues(condition.ReachableFrom);
+            count += CountEndpointValues(condition.ConnectsTo);
             return count;
         }
 
@@ -1462,7 +1678,8 @@ namespace ThreatModelForge.Analysis
                 return 0;
             }
 
-            long count = 1 + (expression.ValueIn?.Count ?? 0);
+            long count = 1 + (expression.ValueIn?.Count ?? 0) +
+                CountEndpointValues(expression.ReachableFrom) + CountEndpointValues(expression.ConnectsTo);
             foreach (DeclarativeRuleSpec.InteractionExpressionSpec child in expression.AllOf ?? new List<DeclarativeRuleSpec.InteractionExpressionSpec>())
             {
                 count += CountInteractionValues(child);
@@ -1583,10 +1800,13 @@ namespace ThreatModelForge.Analysis
 
             values.Add(condition.Property);
             values.Add(condition.EqualTo);
+            values.Add(condition.Matches);
             values.AddRange(condition.AnyOf ?? new List<string>());
             values.AddRange(condition.NotAnyOf ?? new List<string>());
             AddEndpointText(values, condition.Source);
             AddEndpointText(values, condition.Target);
+            AddEndpointText(values, condition.ReachableFrom);
+            AddEndpointText(values, condition.ConnectsTo);
         }
 
         private static void AddEndpointText(List<string?> values, DeclarativeEndpoint? endpoint)
@@ -1599,6 +1819,7 @@ namespace ThreatModelForge.Analysis
             values.Add(endpoint.Kind);
             values.Add(endpoint.Property);
             values.Add(endpoint.EqualTo);
+            values.Add(endpoint.Matches);
             values.AddRange(endpoint.AnyOf ?? new List<string>());
             values.AddRange(endpoint.NotAnyOf ?? new List<string>());
         }
@@ -1614,8 +1835,12 @@ namespace ThreatModelForge.Analysis
 
             values.Add(expression.Subject);
             values.Add(expression.Type);
+            values.Add(expression.Kind);
             values.Add(expression.Property);
             values.Add(expression.Crosses);
+            values.Add(expression.Matches);
+            AddEndpointText(values, expression.ReachableFrom);
+            AddEndpointText(values, expression.ConnectsTo);
             values.AddRange(expression.ValueIn ?? new List<string>());
             foreach (DeclarativeRuleSpec.InteractionExpressionSpec child in expression.AllOf ?? new List<DeclarativeRuleSpec.InteractionExpressionSpec>())
             {
@@ -1996,7 +2221,32 @@ namespace ThreatModelForge.Analysis
                     CanonicalElementTypeId(expression.Type, pack));
             }
 
+            if (expression.Kind != null)
+            {
+                return InteractionExpression.KindIs(expression.Subject!, expression.Kind);
+            }
+
+            DeclarativeEndpoint? connected = expression.ReachableFrom ?? expression.ConnectsTo;
+            if (connected != null)
+            {
+                CanonicalizeEndpoint(connected, pack);
+                return InteractionExpression.Connectivity(
+                    expression.Subject!, DeclarativeRule.CompileEndpoint(connected, "source"), expression.ReachableFrom != null);
+            }
+
             string? property = CanonicalPropertyName(expression.Property!, pack);
+            if (expression.CompiledPattern != null)
+            {
+                return InteractionExpression.RegexProperty(expression.Subject!, property!, expression.CompiledPattern);
+            }
+
+            if (expression.GreaterThan.HasValue || expression.GreaterThanOrEqual.HasValue ||
+                expression.LessThan.HasValue || expression.LessThanOrEqual.HasValue)
+            {
+                return InteractionExpression.NumericProperty(
+                    expression.Subject!, property!, expression.GreaterThan, expression.GreaterThanOrEqual, expression.LessThan, expression.LessThanOrEqual);
+            }
+
             return InteractionExpression.PropertyIn(
                 expression.Subject!,
                 property!,
@@ -2168,6 +2418,8 @@ namespace ThreatModelForge.Analysis
             condition.Property = CanonicalPropertyName(condition.Property, pack);
             CanonicalizeEndpoint(condition.Source, pack);
             CanonicalizeEndpoint(condition.Target, pack);
+            CanonicalizeEndpoint(condition.ReachableFrom, pack);
+            CanonicalizeEndpoint(condition.ConnectsTo, pack);
         }
 
         private static void CanonicalizeEndpoint(DeclarativeEndpoint? endpoint, RulePackDefinition pack)
@@ -2284,6 +2536,17 @@ namespace ThreatModelForge.Analysis
             {
                 WarnProperty(condition.Target.Kind!, condition.Target.Property, pack, origin, diagnostics);
             }
+
+            foreach (DeclarativeEndpoint? filter in new[] { condition?.ReachableFrom, condition?.ConnectsTo })
+            {
+                if (filter?.Property != null)
+                {
+                    foreach (string kind in filter.Kind == null ? new[] { "process", "datastore", "external" } : new[] { filter.Kind })
+                    {
+                        WarnProperty(kind, filter.Property, pack, origin, diagnostics);
+                    }
+                }
+            }
         }
 
         private static void WarnProperty(
@@ -2345,6 +2608,65 @@ namespace ThreatModelForge.Analysis
             public string EffectiveId { get; }
 
             public int Index { get; }
+        }
+
+        private sealed class RegexCompiler
+        {
+            private readonly Dictionary<string, Regex> patterns = new Dictionary<string, Regex>(StringComparer.Ordinal);
+            private TimeSpan elapsed;
+
+            public Regex? Prepare(string? property, string? pattern)
+            {
+                if (pattern == null)
+                {
+                    return null;
+                }
+
+                if (string.IsNullOrWhiteSpace(property))
+                {
+                    throw new InvalidDataException("matches requires property.");
+                }
+
+                if (pattern.Length == 0 || pattern.Length > 1024)
+                {
+                    throw new InvalidDataException("Regex patterns must contain 1 to 1024 characters.");
+                }
+
+                if (this.elapsed > TimeSpan.FromSeconds(1))
+                {
+                    throw new InvalidDataException("Regex construction exceeded the shared 1000 ms load limit.");
+                }
+
+                if (this.patterns.TryGetValue(pattern, out Regex? existing))
+                {
+                    return existing;
+                }
+
+                if (this.patterns.Count >= 128)
+                {
+                    throw new InvalidDataException("Rule sources exceed the limit of 128 distinct regex patterns.");
+                }
+
+                Regex compiled;
+                Stopwatch timer = Stopwatch.StartNew();
+                try
+                {
+                    compiled = new Regex(pattern, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+                }
+                finally
+                {
+                    timer.Stop();
+                    this.elapsed += timer.Elapsed;
+                }
+
+                if (timer.Elapsed > TimeSpan.FromMilliseconds(250) || this.elapsed > TimeSpan.FromSeconds(1))
+                {
+                    throw new InvalidDataException("Regex construction exceeded the 250 ms pattern or 1000 ms load limit.");
+                }
+
+                this.patterns.Add(pattern, compiled);
+                return compiled;
+            }
         }
     }
 }

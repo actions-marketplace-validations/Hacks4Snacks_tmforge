@@ -115,7 +115,13 @@ namespace ThreatModelForge.Formats
         }
 
         /// <inheritdoc/>
-        public ThreatModel Read(Stream stream)
+        public ThreatModel Read(Stream stream) => this.Read(stream, null);
+
+        /// <summary>Reads Visio structure while reporting shapes omitted by the supported mapping.</summary>
+        /// <param name="stream">The source package.</param>
+        /// <param name="diagnostics">An optional collection for source-specific warnings.</param>
+        /// <returns>The structural model.</returns>
+        public ThreatModel Read(Stream stream, List<DocumentDiagnostic>? diagnostics)
         {
             if (stream == null)
             {
@@ -192,7 +198,7 @@ namespace ThreatModelForge.Formats
                         : name;
                     DrawingSurfaceModel surface = new DrawingSurfaceModel { Guid = Guid.NewGuid(), Header = header };
                     model.DrawingSurfaceList.Add(surface);
-                    ReadPageInto(editor, surface, ReadEntry(pageEntry, MaxPageContentBytes, "page content"), height, masterNames);
+                    ReadPageInto(editor, surface, ReadEntry(pageEntry, MaxPageContentBytes, "page content"), height, masterNames, diagnostics);
                 }
 
                 if (model.DrawingSurfaceList.Count == 0)
@@ -244,7 +250,8 @@ namespace ThreatModelForge.Formats
             DrawingSurfaceModel surface,
             string pageXml,
             double pageHeight,
-            IReadOnlyDictionary<int, string> masterNames)
+            IReadOnlyDictionary<int, string> masterNames,
+            List<DocumentDiagnostic>? diagnostics)
         {
             XDocument page = XDocument.Parse(pageXml);
             (Dictionary<int, int> connectorSource, Dictionary<int, int> connectorTarget) = ParseConnects(page);
@@ -255,11 +262,17 @@ namespace ThreatModelForge.Formats
 
             Dictionary<int, Guid> nodeGuids = new Dictionary<int, Guid>();
             Dictionary<int, string> connectorLabels = new Dictionary<int, string>();
+            HashSet<int> shapeIds = new HashSet<int>();
             string pageTitle = string.Empty;
 
             foreach (XElement shape in page.Descendants().Where(e => e.Name.LocalName == "Shape"))
             {
                 int id = ParseInt(shape.Attribute("ID")?.Value);
+                if (id <= 0 || !shapeIds.Add(id))
+                {
+                    throw new InvalidDataException("/PageContents/Shapes/Shape/@ID: Invalid or duplicate Visio shape id '" + shape.Attribute("ID")?.Value + "'.");
+                }
+
                 string text = (shape.Elements().FirstOrDefault(e => e.Name.LocalName == "Text")?.Value ?? string.Empty).Trim();
                 Dictionary<string, string> cells = TopLevelCells(shape);
                 string masterName = masterNames.TryGetValue(ParseInt(shape.Attribute("Master")?.Value), out string? resolvedMaster)
@@ -275,6 +288,11 @@ namespace ThreatModelForge.Formats
                 StencilKind? kind = ClassifyShape(cells, masterName, text, connectedShapes.Contains(id));
                 if (kind == null)
                 {
+                    if (diagnostics != null)
+                    {
+                        JsonDocumentPreflight.Add(diagnostics, "import.omitted-shape", "/PageContents/Shapes/Shape[@ID='" + id + "']", "Shape '" + id + "' is treated as a title or annotation, not a model element. Its text may supply the page title; its geometry is not retained.", "warning");
+                    }
+
                     // A title or annotation (no master, unconnected, no kind markers) is not a model
                     // element; the first such text is reused as the diagram header.
                     if (string.IsNullOrEmpty(pageTitle) && !string.IsNullOrEmpty(text))
@@ -632,17 +650,21 @@ namespace ThreatModelForge.Formats
         {
             foreach (KeyValuePair<int, int> entry in connectorSource)
             {
-                if (!connectorTarget.TryGetValue(entry.Key, out int targetSheet))
+                if (!connectorTarget.TryGetValue(entry.Key, out int targetSheet)
+                    || !connectorLabels.ContainsKey(entry.Key)
+                    || !nodeGuids.TryGetValue(entry.Value, out Guid sourceGuid)
+                    || !nodeGuids.TryGetValue(targetSheet, out Guid targetGuid))
                 {
-                    continue;
+                    throw new InvalidDataException("/PageContents/Connects: Connector '" + entry.Key + "' has an unresolved or unattached endpoint.");
                 }
 
-                if (nodeGuids.TryGetValue(entry.Value, out Guid sourceGuid)
-                    && nodeGuids.TryGetValue(targetSheet, out Guid targetGuid))
-                {
-                    Guid connector = editor.AddConnector(surface, sourceGuid, targetGuid);
-                    editor.SetElementName(surface, connector, connectorLabels.TryGetValue(entry.Key, out string? label) ? label : string.Empty);
-                }
+                Guid connector = editor.AddConnector(surface, sourceGuid, targetGuid);
+                editor.SetElementName(surface, connector, connectorLabels[entry.Key]);
+            }
+
+            foreach (int id in connectorTarget.Keys.Where(id => !connectorSource.ContainsKey(id)))
+            {
+                throw new InvalidDataException("/PageContents/Connects: Connector '" + id + "' has no source endpoint.");
             }
         }
 

@@ -2,6 +2,7 @@ namespace ThreatModelForge.Formats
 {
     using System;
     using System.Collections.Generic;
+    using ThreatModelForge.Model;
 
     /// <summary>
     /// The <c>tmforge-json</c> document: the canvas's canonical in-memory model and the wire shape
@@ -17,6 +18,9 @@ namespace ThreatModelForge.Formats
         /// <summary>Gets the document version.</summary>
         public string Version { get; init; } = "0.1";
 
+        /// <summary>Gets the author-owned model description, owner and review metadata.</summary>
+        public MetaInformation? Metadata { get; init; }
+
         /// <summary>Gets the diagram elements (processes, data stores, external entities, boundaries).</summary>
         public TmForgeJsonElement[] Elements { get; init; } = Array.Empty<TmForgeJsonElement>();
 
@@ -24,9 +28,9 @@ namespace ThreatModelForge.Formats
         public TmForgeJsonFlow[] Flows { get; init; } = Array.Empty<TmForgeJsonFlow>();
 
         /// <summary>
-        /// Gets the named pages (diagrams). When present, this is the authoritative multi-page form and
+        /// Gets the named pages (diagrams). When present, this is the authoritative page form and
         /// the top-level <see cref="Elements"/> and <see cref="Flows"/> mirror the first page for older,
-        /// single-page readers. Absent (<see langword="null"/>) for single-page models.
+        /// single-page readers. A named or explicitly identified single page also uses this form.
         /// </summary>
         public IReadOnlyList<TmForgeJsonDiagram>? Diagrams { get; init; }
 

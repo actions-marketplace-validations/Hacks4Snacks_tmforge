@@ -6,8 +6,16 @@ namespace ThreatModelForge.Cli.Tests
     using System.IO;
     using System.IO.Compression;
     using System.Linq;
+    using System.Text;
+    using System.Text.Json;
+    using System.Threading;
+    using System.Threading.Tasks;
     using Microsoft.Extensions.DependencyInjection;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
+    using ModelContextProtocol;
+    using ModelContextProtocol.Client;
+    using ModelContextProtocol.Protocol;
+    using ThreatModelForge.Analysis;
     using ThreatModelForge.Engine;
 
     /// <summary>
@@ -92,6 +100,49 @@ namespace ThreatModelForge.Cli.Tests
             Assert.IsFalse(findings.Any(finding => finding.Id == "engine-error"));
         }
 
+        /// <summary>The sandboxed MCP rule path preserves results from all three added matcher families.</summary>
+        [TestMethod]
+        public void AdditionalMatchersAgreeWithTheEngine()
+        {
+            using JsonDocument fixture = JsonDocument.Parse(File.ReadAllText(Path.Join(AppContext.BaseDirectory, "Fixtures", "additional-matchers.json")));
+            TmForgeModelDto model = fixture.RootElement.GetProperty("model").Deserialize<TmForgeModelDto>(new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                ?? throw new InvalidDataException("The matcher fixture requires a model.");
+            string packJson = fixture.RootElement.GetProperty("pack").GetRawText();
+            File.WriteAllText(Path.Join(this.WorkingDirectory, "matchers.tmrules.json"), packJson);
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            EngineRuleOptions rules = new EngineRuleOptions
+            {
+                Sources = new[] { new RuleSourceDto { Name = "matchers.tmrules.json", Json = packJson } },
+            };
+
+            IReadOnlyList<FindingDto> actual = McpModelTools.Analyze(model, services, rulesPath: "matchers.tmrules.json");
+            IReadOnlyList<FindingDto> expected = EngineService.Analyze(model, rules).Findings;
+
+            Assert.AreEqual(3, actual.Count(finding => finding.RuleId?.StartsWith("rule005/", StringComparison.Ordinal) == true));
+            Assert.AreEqual(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(actual));
+        }
+
+        /// <summary>Sandboxed Threat Dragon import retains authored evidence through an MCP save.</summary>
+        [TestMethod]
+        public void ReadThreatDragonAndSavePreservesEvidence()
+        {
+            string path = Path.Join(this.WorkingDirectory, "dragon.json");
+            File.Copy(Path.Join(AppContext.BaseDirectory, "Fixtures", "threat-dragon-v2.json"), path);
+            byte[] original = File.ReadAllBytes(path);
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+
+            TmForgeModelDto imported = McpModelTools.Read("dragon.json", services);
+            McpSaveResult saved = McpModelTools.Save(imported, "imported.tmforge.json", services, "tmforge-json");
+            TmForgeModelDto restored = McpModelTools.Read("imported.tmforge.json", services);
+
+            Assert.IsTrue(saved.Bytes > 0);
+            Assert.IsNotNull(restored.Threats);
+            Assert.HasCount(3, restored.Threats);
+            Assert.AreEqual("Model owner", restored.Metadata?.Owner);
+            Assert.AreEqual("LINDDUN", restored.Threats.Single(threat => threat.Id == "manual:threat-dragon.linkability").Source?["modelType"]);
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+        }
+
         /// <summary>
         /// Verifies that <c>save</c> writes a model to disk and <c>read</c> loads it back.
         /// </summary>
@@ -110,6 +161,23 @@ namespace ThreatModelForge.Cli.Tests
             TmForgeModelDto reread = McpModelTools.Read(path, services);
             Assert.AreEqual(1, reread.Elements!.Count);
             Assert.AreEqual("Web", reread.Elements![0].Name);
+        }
+
+        /// <summary>MCP preflight uses the workspace sandbox and returns the common input diagnostics.</summary>
+        [TestMethod]
+        public void PreflightRemainsReadOnlyAndSandboxed()
+        {
+            const string Json = "{\"schema\":\"tmforge-json\",\"elements\":[],\"flows\":[{\"id\":\"f\",\"source\":\"a\",\"target\":\"b\"}]}";
+            string path = Path.Join(this.WorkingDirectory, "broken.json");
+            File.WriteAllText(path, Json);
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+
+            PreflightResultDto result = McpModelTools.Preflight("broken.json", services);
+
+            Assert.IsFalse(result.Success);
+            Assert.IsTrue(result.Diagnostics.Any(diagnostic => diagnostic.Path == "$.flows[0].source"));
+            Assert.AreEqual(Json, File.ReadAllText(path));
+            Assert.Throws<UnauthorizedAccessException>(() => McpModelTools.Preflight("../outside.json", services));
         }
 
         /// <summary>Verifies that relative traversal cannot leave the configured MCP workspace root.</summary>
@@ -685,6 +753,272 @@ namespace ThreatModelForge.Cli.Tests
             Assert.IsTrue(McpGroundingTools.Formats().Count > 0);
         }
 
+        /// <summary>The formats resource is a stable snapshot of the existing grounding tool's content.</summary>
+        [TestMethod]
+        public void Grounding_FormatsResourceIsVersionedAndFingerprintable()
+        {
+            string snapshot = McpGroundingResources.Formats();
+            Assert.AreEqual(snapshot, McpGroundingResources.Formats());
+            using JsonDocument document = JsonDocument.Parse(snapshot);
+            JsonElement root = document.RootElement;
+            Assert.AreEqual("tmforge-grounding", root.GetProperty("schema").GetString());
+            Assert.AreEqual(1, root.GetProperty("version").GetInt32());
+            Assert.AreEqual("formats", root.GetProperty("kind").GetString());
+            Assert.AreEqual("application/json", root.GetProperty("contentType").GetString());
+            Assert.IsFalse(string.IsNullOrEmpty(root.GetProperty("engineVersion").GetString()));
+            string content = root.GetProperty("content").GetString() ?? string.Empty;
+            Assert.AreEqual(CliJson.Serialize(McpGroundingTools.Formats()), content);
+            Assert.AreEqual(RulePackIdentity.CreateFingerprint(Encoding.UTF8.GetBytes(content)), root.GetProperty("fingerprint").GetString());
+        }
+
+        /// <summary>All fixed resources retain compatibility-tool content and stable cache metadata.</summary>
+        /// <param name="kind">The requested catalog.</param>
+        [TestMethod]
+        [DataRow("manifest-schema")]
+        [DataRow("property-schema")]
+        [DataRow("rule-packs")]
+        public void Grounding_StaticResourcesMatchTheTools(string kind)
+        {
+            Func<string> read = kind switch
+            {
+                "manifest-schema" => McpGroundingResources.ManifestSchema,
+                "property-schema" => McpGroundingResources.PropertySchema,
+                _ => McpGroundingResources.RulePacks,
+            };
+            string snapshot = read();
+            Assert.AreEqual(snapshot, read());
+            using JsonDocument document = JsonDocument.Parse(snapshot);
+            JsonElement root = document.RootElement;
+            Assert.AreEqual("tmforge-grounding", root.GetProperty("schema").GetString());
+            Assert.AreEqual(1, root.GetProperty("version").GetInt32());
+            Assert.AreEqual(kind, root.GetProperty("kind").GetString());
+            Assert.AreEqual(kind == "manifest-schema" ? "text/plain" : "application/json", root.GetProperty("contentType").GetString());
+            string content = root.GetProperty("content").GetString() ?? string.Empty;
+            Assert.AreEqual(RulePackIdentity.CreateFingerprint(Encoding.UTF8.GetBytes(content)), root.GetProperty("fingerprint").GetString());
+            if (kind == "manifest-schema")
+            {
+                Assert.AreEqual(McpGroundingTools.ManifestSchema(), content);
+                StringAssert.Contains(content, "\"schema\": \"" + Manifest.SchemaName + "\"");
+                StringAssert.Contains(content, "\"version\": " + Manifest.CurrentVersion);
+                foreach (string field in new[] { "pages", "page", "x", "y", "width", "height", "alias" })
+                {
+                    StringAssert.Contains(content, "\"" + field + "\"");
+                }
+            }
+            else if (kind == "property-schema")
+            {
+                Assert.AreEqual(CliJson.Serialize(McpGroundingTools.PropertySchema()), content);
+            }
+            else
+            {
+                using JsonDocument packs = JsonDocument.Parse(content);
+                IReadOnlyList<RulePackDto>? actual = packs.RootElement.GetProperty("rulePacks").Deserialize<IReadOnlyList<RulePackDto>>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                Assert.AreEqual(CliJson.Serialize(McpGroundingTools.RulePacks(CreateServices(this.WorkingDirectory))), CliJson.Serialize(actual!));
+                Assert.AreEqual(0, packs.RootElement.GetProperty("customPacks").GetArrayLength());
+                Assert.AreEqual(0, packs.RootElement.GetProperty("diagnostics").GetArrayLength());
+            }
+        }
+
+        /// <summary>Custom metadata matches tool catalogs and invalidates pins even when pack counts do not change.</summary>
+        /// <param name="versioned">Whether the selected source carries v2 pack identity.</param>
+        [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void Grounding_CustomResourcesTrackContentAndPins(bool versioned)
+        {
+            const string path = "custom rules.tmrules.json";
+            string json = GroundingRuleJson(versioned, "Before");
+            File.WriteAllText(Path.Join(this.WorkingDirectory, path), json);
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            string snapshot = McpGroundingResources.CustomRulePacks(services, path);
+            using JsonDocument envelope = JsonDocument.Parse(snapshot);
+            string fingerprint = envelope.RootElement.GetProperty("fingerprint").GetString() ?? string.Empty;
+            string content = envelope.RootElement.GetProperty("content").GetString() ?? string.Empty;
+            using JsonDocument document = JsonDocument.Parse(content);
+            JsonElement root = document.RootElement;
+            Assert.AreEqual(RulePackIdentity.CreateFingerprint(Encoding.UTF8.GetBytes(content)), fingerprint);
+            Assert.AreEqual(0, root.GetProperty("diagnostics").GetArrayLength());
+            Assert.AreEqual(versioned ? 1 : 0, root.GetProperty("customPacks").GetArrayLength());
+            Assert.AreEqual(RulePackIdentity.CreateFingerprint(Encoding.UTF8.GetBytes(json)), root.GetProperty("sources")[0].GetProperty("fingerprint").GetString());
+            IReadOnlyList<RulePackDto>? packs = root.GetProperty("rulePacks").Deserialize<IReadOnlyList<RulePackDto>>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            Assert.IsNotNull(packs);
+            Assert.AreEqual(CliJson.Serialize(McpGroundingTools.RulePacks(services, path)), CliJson.Serialize(packs));
+            Assert.AreEqual(snapshot, McpGroundingResources.CustomRulePacks(services, path));
+            Assert.AreEqual(snapshot, McpGroundingResources.CustomRulePacks(services, path, fingerprint));
+
+            File.WriteAllText(Path.Join(this.WorkingDirectory, path), GroundingRuleJson(versioned, "After"));
+            string updated = McpGroundingResources.CustomRulePacks(services, path);
+            Assert.AreNotEqual(snapshot, updated);
+            using JsonDocument newEnvelope = JsonDocument.Parse(updated);
+            Assert.AreNotEqual(fingerprint, newEnvelope.RootElement.GetProperty("fingerprint").GetString());
+            McpException mismatch = Assert.Throws<McpException>(() => McpGroundingResources.CustomRulePacks(services, path, fingerprint));
+            StringAssert.Contains(mismatch.Message, "fingerprint mismatch");
+        }
+
+        /// <summary>A malformed selected pack remains visible instead of presenting a built-ins-only success.</summary>
+        [TestMethod]
+        public void Grounding_CustomResourcePreservesDiagnostics()
+        {
+            const string path = "invalid.tmrules.json";
+            File.WriteAllText(Path.Join(this.WorkingDirectory, path), "{ invalid json");
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            using JsonDocument envelope = JsonDocument.Parse(McpGroundingResources.CustomRulePacks(services, path));
+            using JsonDocument content = JsonDocument.Parse(envelope.RootElement.GetProperty("content").GetString() ?? string.Empty);
+            Assert.AreEqual(0, content.RootElement.GetProperty("customPacks").GetArrayLength());
+            Assert.IsTrue(content.RootElement.GetProperty("diagnostics").GetArrayLength() > 0);
+            Assert.AreEqual(1, content.RootElement.GetProperty("sources").GetArrayLength());
+            Assert.IsFalse(string.IsNullOrWhiteSpace(content.RootElement.GetProperty("sources")[0].GetProperty("fingerprint").GetString()));
+        }
+
+        /// <summary>Resource reads retain file-tool path and byte limits, including pinned rereads.</summary>
+        [TestMethod]
+        public void Grounding_CustomResourceEnforcesSandboxAndLimits()
+        {
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            Assert.Throws<ArgumentException>(() => McpGroundingResources.CustomRulePacks(services, " "));
+            Assert.Throws<ArgumentException>(() => McpGroundingResources.CustomRulePacks(services, "rules.tmrules.json", "invalid"));
+            Assert.Throws<UnauthorizedAccessException>(() => McpGroundingResources.CustomRulePacks(services, "../outside.tmrules.json"));
+            Assert.Throws<FileNotFoundException>(() => McpGroundingResources.CustomRulePacks(services, "missing.tmrules.json"));
+
+            string path = Path.Join(this.WorkingDirectory, "rules.tmrules.json");
+            File.WriteAllText(path, GroundingRuleJson(versioned: true, "Read limit"));
+            string snapshot = McpGroundingResources.CustomRulePacks(services, "rules.tmrules.json");
+            using JsonDocument document = JsonDocument.Parse(snapshot);
+            string fingerprint = document.RootElement.GetProperty("fingerprint").GetString() ?? string.Empty;
+            using ServiceProvider limited = CreateServices(this.WorkingDirectory, maxReadBytes: 16);
+            Assert.Throws<IOException>(() => McpGroundingResources.CustomRulePacks(limited, "rules.tmrules.json", fingerprint));
+            File.Delete(path);
+            Assert.Throws<FileNotFoundException>(() => McpGroundingResources.CustomRulePacks(services, "rules.tmrules.json", fingerprint));
+        }
+
+        /// <summary>A matching pin cannot authorize a file that now resolves outside the configured root.</summary>
+        [TestMethod]
+        public void Grounding_PinnedResourcesStillRejectSymlinkEscapes()
+        {
+            const string path = "rules.tmrules.json";
+            string fullPath = Path.Join(this.WorkingDirectory, path);
+            string outside = this.WorkingDirectory + "-outside.tmrules.json";
+            string json = GroundingRuleJson(versioned: true, "Same content");
+            File.WriteAllText(fullPath, json);
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            using JsonDocument envelope = JsonDocument.Parse(McpGroundingResources.CustomRulePacks(services, path));
+            string fingerprint = envelope.RootElement.GetProperty("fingerprint").GetString() ?? string.Empty;
+            File.WriteAllText(outside, json);
+            File.Delete(fullPath);
+            try
+            {
+                File.CreateSymbolicLink(fullPath, outside);
+                Assert.Throws<UnauthorizedAccessException>(() => McpGroundingResources.CustomRulePacks(services, path, fingerprint));
+            }
+            finally
+            {
+                File.Delete(fullPath);
+                File.Delete(outside);
+            }
+        }
+
+        /// <summary>Pins use one canonical spelling and cannot turn malformed values into unpinned reads.</summary>
+        [TestMethod]
+        public void Grounding_RejectsMalformedFingerprintPins()
+        {
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            foreach (string pin in new[] { string.Empty, "sha256:" + new string('a', 63), "SHA256:" + new string('a', 64), "sha256:" + new string('g', 64) })
+            {
+                Assert.Throws<ArgumentException>(() => McpGroundingResources.CustomRulePacks(services, "rules.tmrules.json", pin));
+            }
+        }
+
+        /// <summary>The real stdio host discovers and reads resources while retaining grounding tools.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Grounding_ResourcesAreDiscoverableOverStdio()
+        {
+            using CancellationTokenSource deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await using McpClient client = await this.StartGroundingClient(deadline.Token);
+            Assert.IsNotNull(client.ServerCapabilities.Resources);
+            Dictionary<string, Func<string>> expected = new Dictionary<string, Func<string>>(StringComparer.Ordinal)
+            {
+                ["tmforge://grounding/v1/formats"] = McpGroundingResources.Formats,
+                ["tmforge://grounding/v1/property-schema"] = McpGroundingResources.PropertySchema,
+                ["tmforge://grounding/v1/manifest-schema"] = McpGroundingResources.ManifestSchema,
+                ["tmforge://grounding/v1/rule-packs"] = McpGroundingResources.RulePacks,
+            };
+            IList<McpClientResource> resources = await client.ListResourcesAsync(cancellationToken: deadline.Token);
+            CollectionAssert.AreEquivalent(expected.Keys.ToArray(), resources.Select(resource => resource.Uri).ToArray());
+            foreach (McpClientResource resource in resources)
+            {
+                Assert.AreEqual("application/json", resource.MimeType);
+                ReadResourceResult result = await client.ReadResourceAsync(resource.Uri, cancellationToken: deadline.Token);
+                TextResourceContents text = (TextResourceContents)result.Contents.Single();
+                Assert.AreEqual(resource.Uri, text.Uri);
+                Assert.AreEqual("application/json", text.MimeType);
+                Assert.AreEqual(expected[resource.Uri](), text.Text);
+            }
+
+            IList<McpClientResourceTemplate> templates = await client.ListResourceTemplatesAsync(cancellationToken: deadline.Token);
+            Assert.AreEqual("tmforge://grounding/v1/rule-packs/custom{?rulesPath,fingerprint}", templates.Single().UriTemplate);
+            IList<McpClientTool> tools = await client.ListToolsAsync(cancellationToken: deadline.Token);
+            foreach (string name in new[] { "formats", "property_schema", "manifest_schema", "rule_packs", "rules", "stencils" })
+            {
+                Assert.IsTrue(tools.Any(tool => tool.Name == name), name);
+            }
+
+            CallToolResult legacy = await client.CallToolAsync("formats", cancellationToken: deadline.Token);
+            Assert.IsFalse(legacy.IsError == true);
+            string json = ((TextContentBlock)legacy.Content.Single()).Text;
+            IReadOnlyList<FormatDto>? formats = JsonSerializer.Deserialize<IReadOnlyList<FormatDto>>(json, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            Assert.IsNotNull(formats);
+            Assert.AreEqual(CliJson.Serialize(McpGroundingTools.Formats()), CliJson.Serialize(formats));
+            await Assert.ThrowsAsync<McpException>(() => client.ReadResourceAsync("tmforge://grounding/v99/formats", cancellationToken: deadline.Token).AsTask());
+        }
+
+        /// <summary>URI parameters preserve file names and cache pins without bypassing the file sandbox.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Grounding_CustomResourceUrisWorkOverStdio()
+        {
+            const string path = "policy files/custom +#%.tmrules.json";
+            string fullPath = Path.Join(this.WorkingDirectory, path);
+            Directory.CreateDirectory(Path.Join(this.WorkingDirectory, "policy files"));
+            File.WriteAllText(fullPath, GroundingRuleJson(versioned: true, "Before"));
+            using CancellationTokenSource deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            await using McpClient client = await this.StartGroundingClient(deadline.Token);
+            using ServiceProvider services = CreateServices(this.WorkingDirectory);
+            const string resource = "tmforge://grounding/v1/rule-packs/custom";
+            string uri = resource + "?rulesPath=" + Uri.EscapeDataString(path);
+            ReadResourceResult result = await client.ReadResourceAsync(uri, cancellationToken: deadline.Token);
+            TextResourceContents first = (TextResourceContents)result.Contents.Single();
+            Assert.AreEqual(uri, first.Uri);
+            Assert.AreEqual("application/json", first.MimeType);
+            Assert.AreEqual(McpGroundingResources.CustomRulePacks(services, path), first.Text);
+            using JsonDocument envelope = JsonDocument.Parse(first.Text);
+            string fingerprint = envelope.RootElement.GetProperty("fingerprint").GetString() ?? string.Empty;
+            string pinnedUri = uri + "&fingerprint=" + Uri.EscapeDataString(fingerprint);
+            ReadResourceResult pinned = await client.ReadResourceAsync(pinnedUri, cancellationToken: deadline.Token);
+            Assert.AreEqual(first.Text, ((TextResourceContents)pinned.Contents.Single()).Text);
+
+            CallToolResult legacy = await client.CallToolAsync("rule_packs", new Dictionary<string, object?> { ["rulesPath"] = path }, cancellationToken: deadline.Token);
+            Assert.IsFalse(legacy.IsError == true);
+            StringAssert.Contains(((TextContentBlock)legacy.Content.Single()).Text, "cached-policy");
+            File.WriteAllText(fullPath, GroundingRuleJson(versioned: true, "After"));
+            ReadResourceResult updated = await client.ReadResourceAsync(uri, cancellationToken: deadline.Token);
+            Assert.AreNotEqual(first.Text, ((TextResourceContents)updated.Contents.Single()).Text);
+            McpException mismatch = await Assert.ThrowsAsync<McpException>(() => client.ReadResourceAsync(pinnedUri, cancellationToken: deadline.Token).AsTask());
+            StringAssert.Contains(mismatch.Message, "fingerprint mismatch");
+
+            string escapeUri = resource + "?rulesPath=" + Uri.EscapeDataString("../outside.tmrules.json");
+            await Assert.ThrowsAsync<McpException>(() => client.ReadResourceAsync(escapeUri, cancellationToken: deadline.Token).AsTask());
+            await Assert.ThrowsAsync<McpException>(() => client.ReadResourceAsync(resource, cancellationToken: deadline.Token).AsTask());
+            File.WriteAllText(fullPath, "{ invalid json");
+            ReadResourceResult invalid = await client.ReadResourceAsync(uri, cancellationToken: deadline.Token);
+            using JsonDocument invalidEnvelope = JsonDocument.Parse(((TextResourceContents)invalid.Contents.Single()).Text);
+            using JsonDocument invalidContent = JsonDocument.Parse(invalidEnvelope.RootElement.GetProperty("content").GetString() ?? string.Empty);
+            Assert.AreEqual(0, invalidContent.RootElement.GetProperty("customPacks").GetArrayLength());
+            Assert.IsTrue(invalidContent.RootElement.GetProperty("diagnostics").GetArrayLength() > 0);
+            File.Delete(fullPath);
+            await Assert.ThrowsAsync<McpException>(() => client.ReadResourceAsync(pinnedUri, cancellationToken: deadline.Token).AsTask());
+        }
+
         /// <summary>
         /// Verifies that a property map is marshaled into the <c>KEY=VALUE</c> assignment list.
         /// </summary>
@@ -752,6 +1086,14 @@ namespace ThreatModelForge.Cli.Tests
             Assert.IsTrue(removed.Success, removed.Error);
             Assert.IsNull(removed.Model!.Threats);
             Assert.AreEqual(id, removed.Removed!.Single());
+        }
+
+        private static string GroundingRuleJson(bool versioned, string message)
+        {
+            string rule = "{\"id\":\"CACHE\",\"appliesTo\":\"process\",\"message\":\"" + message + "\",\"when\":{\"property\":\"Isolation\"}}";
+            return versioned
+                ? "{\"schema\":\"tmforge-rules\",\"version\":2,\"dialect\":\"urn:tmforge:rules:flat-v1\",\"pack\":{\"id\":\"cached-policy\",\"name\":\"Cached policy\",\"version\":\"1.0\"},\"properties\":[{\"name\":\"Isolation\"}],\"rules\":[" + rule + "]}"
+                : "{\"rules\":[" + rule + "]}";
         }
 
         private static TmForgeModelDto ModelWithSpoofingThreat()
@@ -857,6 +1199,20 @@ namespace ThreatModelForge.Cli.Tests
             ZipArchiveEntry entry = archive.CreateEntry(name, CompressionLevel.SmallestSize);
             using StreamWriter writer = new StreamWriter(entry.Open());
             writer.Write(content);
+        }
+
+        private Task<McpClient> StartGroundingClient(CancellationToken cancellationToken)
+        {
+            StdioClientTransport transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Command = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet",
+                Arguments = new[] { typeof(McpGroundingResources).Assembly.Location, "mcp", "--root", this.WorkingDirectory },
+                WorkingDirectory = this.WorkingDirectory,
+                InheritEnvironmentVariables = false,
+                EnvironmentVariables = StdioClientTransportOptions.GetDefaultEnvironmentVariables(),
+                ShutdownTimeout = TimeSpan.FromSeconds(3),
+            });
+            return McpClient.CreateAsync(transport, cancellationToken: cancellationToken);
         }
     }
 }

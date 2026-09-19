@@ -52,6 +52,7 @@ export interface Threat {
   justification?: string;
   /** The author-set description, when set. */
   description?: string;
+  source?: Record<string, string>;
   /** True when the threat was authored by hand (not projected from a rule). */
   manual?: boolean;
 }
@@ -82,6 +83,15 @@ export interface MergeConflict {
 export interface MergeResult {
   merged: TmForgeModel;
   conflicts: MergeConflict[];
+}
+
+/** An engine-validated rectangle update. All semantic and author-owned data remains client-owned. */
+export interface LayoutElement {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /** A file format the engine can read and/or write. */
@@ -203,6 +213,20 @@ export interface PropertyDescriptorInfo {
  * so all clients share them. Everything else (`analyze`, `getFormats`, `detect`, `readFile`,
  * `convert`, `report`, `exportTm7`) is a coarse-grained engine call.
  */
+export interface DocumentDiagnostic {
+  code: string;
+  severity: 'error' | 'warning' | 'info';
+  path: string;
+  message: string;
+}
+
+export interface PreflightResult {
+  success: boolean;
+  format?: string;
+  targetFormat?: string;
+  diagnostics: DocumentDiagnostic[];
+}
+
 export interface IEngineClient {
   readonly label: string;
   write(model: TmForgeModel): Promise<string>;
@@ -240,6 +264,7 @@ export interface IEngineClient {
   getPropertySchema(): Promise<PropertyDescriptorInfo[]>;
   /** Detects the format of raw document bytes, or null when none matches. */
   detect(bytes: Uint8Array): Promise<FormatInfo | null>;
+  preflight(bytes: Uint8Array, formatId?: string, targetFormat?: string): Promise<PreflightResult>;
   /** Reads a document in any registered format into the canonical tmforge-json model. */
   readFile(bytes: Uint8Array, formatId?: string): Promise<TmForgeModel>;
   /**
@@ -263,6 +288,8 @@ export interface IEngineClient {
    * is unavailable for a two-way merge, where any overlapping difference is reported as a conflict.
    */
   merge(base: TmForgeModel | null, ours: TmForgeModel, theirs: TmForgeModel): Promise<MergeResult>;
+  /** Validates proposed Tidy geometry without rearranging it or changing trust claims. */
+  layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]>;
 }
 
 /**
@@ -314,6 +341,48 @@ function modelFromApplyResult(dto: components['schemas']['ApplyResultDto'] | und
     throw new Error(dto?.error ?? 'The manifest could not be applied.');
   }
   return toModel(dto.model);
+}
+
+function toPreflight(dto: components['schemas']['PreflightResultDto'] | undefined): PreflightResult {
+  if (typeof dto?.success !== 'boolean' || !Array.isArray(dto.diagnostics)) {
+    throw new Error('The engine did not return a complete preflight result. Nothing was changed.');
+  }
+  const diagnostics = dto.diagnostics.map((item) => {
+    if (!item.code || !item.path || !item.message || !['error', 'warning', 'info'].includes(item.severity ?? '')) {
+      throw new Error('The engine returned an incomplete preflight diagnostic. Nothing was changed.');
+    }
+    return { code: item.code, path: item.path, message: item.message, severity: item.severity as DocumentDiagnostic['severity'] };
+  });
+  return {
+    success: dto.success && !diagnostics.some((item) => item.severity === 'error'),
+    format: dto.format ?? undefined,
+    targetFormat: dto.targetFormat ?? undefined,
+    diagnostics,
+  };
+}
+
+/** A refused layout never falls back to an unvalidated client-side arrangement. */
+function layoutElements(dto: components['schemas']['LayoutResultDto'] | undefined, positions: LayoutElement[]): LayoutElement[] {
+  if (!dto?.success || !dto.elements) {
+    throw new Error(dto?.error ?? 'The engine did not return a validated arrangement.');
+  }
+  const elements = dto.elements.map((element) => {
+    if (!element.id || ![element.x, element.y, element.width, element.height].every((value) => typeof value === 'number' && Number.isSafeInteger(value))
+      || Number(element.width) < 20 || Number(element.height) < 20) {
+      throw new Error('The engine returned incomplete layout geometry. Nothing was changed.');
+    }
+    return { id: element.id, x: Number(element.x), y: Number(element.y), width: Number(element.width), height: Number(element.height) };
+  });
+  const proposed = new Map(positions.map((element) => [element.id, element]));
+  if (elements.length !== positions.length || new Set(elements.map((element) => element.id)).size !== elements.length
+    || elements.some((element) => {
+      const expected = proposed.get(element.id);
+      return !expected || element.x !== expected.x || element.y !== expected.y
+        || element.width !== expected.width || element.height !== expected.height;
+    })) {
+    throw new Error('The engine did not preserve the proposed Tidy layout. Update the engine; nothing was changed.');
+  }
+  return elements;
 }
 
 /** Encodes bytes as base64 for the engine's read/detect payloads. */
@@ -457,30 +526,40 @@ function toPropertyDescriptor(dto: components['schemas']['PropertyDescriptor']):
 
 /** Normalizes a generated TmForgeModelDto (all fields optional/nullable) onto the UI model. */
 export function toModel(dto: components['schemas']['TmForgeModelDto']): TmForgeModel {
+  const elements = (items: components['schemas']['TmForgeModelDto']['elements']) => (items ?? []).map((e) => ({
+    id: e.id ?? '',
+    kind: (e.kind ?? 'process') as DfdKind,
+    name: e.name ?? '',
+    x: Number(e.x ?? 0),
+    y: Number(e.y ?? 0),
+    width: e.width == null ? undefined : Number(e.width),
+    height: e.height == null ? undefined : Number(e.height),
+    properties: e.properties ?? {},
+  }));
+  const flows = (items: components['schemas']['TmForgeModelDto']['flows']) => (items ?? []).map((f) => ({
+    id: f.id ?? '',
+    source: f.source ?? '',
+    target: f.target ?? '',
+    name: f.name ?? '',
+    properties: f.properties ?? {},
+  }));
   return {
     schema: 'tmforge-json',
     version: '0.1',
-    elements: (dto.elements ?? []).map((e) => ({
-      id: e.id ?? '',
-      kind: (e.kind ?? 'process') as DfdKind,
-      name: e.name ?? '',
-      x: Number(e.x ?? 0),
-      y: Number(e.y ?? 0),
-      width: e.width == null ? undefined : Number(e.width),
-      height: e.height == null ? undefined : Number(e.height),
-      properties: e.properties ?? {},
-    })),
-    flows: (dto.flows ?? []).map((f) => ({
-      id: f.id ?? '',
-      source: f.source ?? '',
-      target: f.target ?? '',
-      name: f.name ?? '',
-      properties: f.properties ?? {},
+    metadata: dto.metadata ?? undefined,
+    elements: elements(dto.elements),
+    flows: flows(dto.flows),
+    diagrams: dto.diagrams?.map((page) => ({
+      id: page.id ?? '',
+      name: page.name ?? '',
+      elements: elements(page.elements),
+      flows: flows(page.flows),
     })),
     analysis: dto.analysis
       ? {
           disabledPacks: dto.analysis.disabledPacks ?? undefined,
           disabledRuleIds: dto.analysis.disabledRuleIds ?? undefined,
+          expectedPacks: dto.analysis.expectedPacks?.map((pack) => ({ id: pack.id ?? '', fingerprint: pack.fingerprint ?? '' })),
         }
       : undefined,
     threats: dto.threats?.map(toThreatTriage),
@@ -498,6 +577,7 @@ function toThreatTriage(dto: components['schemas']['ThreatStateDto']): ThreatTri
     title: dto.title ?? undefined,
     description: dto.description ?? undefined,
     mitigation: dto.mitigation ?? undefined,
+    source: dto.source ?? undefined,
     priority: dto.priority ?? undefined,
     elementIds: dto.elementIds ?? undefined,
   };
@@ -551,6 +631,7 @@ function toThreat(dto: components['schemas']['ThreatDto']): Threat {
     state: normalizeThreatState(dto.state),
     justification: dto.justification ?? undefined,
     description: dto.description ?? undefined,
+    source: dto.source ?? undefined,
     manual: dto.manual ?? false,
   };
 }
@@ -673,6 +754,10 @@ class OfflineEngineClient implements IEngineClient {
     return readJson(new TextDecoder().decode(bytes));
   }
 
+  public preflight(): Promise<PreflightResult> {
+    return Promise.reject(new Error('Document preflight requires the .NET engine. Wait for the engine to load or connect to the API. Nothing was changed.'));
+  }
+
   public applyManifest(): Promise<TmForgeModel> {
     // Building a manifest resolves aliases, derives stable ids, places elements inside their
     // boundaries, and validates every property against the schema. Re-implementing that here would
@@ -708,6 +793,10 @@ class OfflineEngineClient implements IEngineClient {
     return Promise.reject(
       new Error('Three-way merge requires the .NET engine. Start the API (or use the hosted app), then reload.'),
     );
+  }
+
+  public layout(): Promise<LayoutElement[]> {
+    return Promise.reject(new Error('Tidy requires the .NET engine. Use Labels only until the engine is available.'));
   }
 }
 
@@ -845,6 +934,17 @@ class HttpEngineClient implements IEngineClient {
     return data ? toFormatInfo(data) : null;
   }
 
+  public async preflight(bytes: Uint8Array, formatId?: string, targetFormat?: string): Promise<PreflightResult> {
+    const { data, response } = await this.client.POST('/v1/model/preflight', {
+      params: { query: { to: targetFormat } },
+      body: { contentBase64: toBase64(bytes), formatId },
+    });
+    if (!response.ok) {
+      throw new Error(`Engine preflight failed (${response.status}). Nothing was changed.`);
+    }
+    return toPreflight(data);
+  }
+
   public async readFile(bytes: Uint8Array, formatId?: string): Promise<TmForgeModel> {
     const { data, response } = await this.client.POST('/v1/model/read', {
       body: { contentBase64: toBase64(bytes), formatId },
@@ -910,6 +1010,16 @@ class HttpEngineClient implements IEngineClient {
     }
     return toMergeResult(data);
   }
+
+  public async layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]> {
+    const { data, response } = await this.client.POST('/v1/model/layout', {
+      body: { model, positions },
+    });
+    if (!response.ok) {
+      throw new Error(`Engine layout failed (${response.status}). Nothing was changed.`);
+    }
+    return layoutElements(data, positions);
+  }
 }
 
 /** The `[JSExport]` methods on the WASM `ThreatModelForge.Wasm.Engine` type (all string in/out). */
@@ -924,6 +1034,7 @@ interface WasmEngineExports {
   Analyze(tmforgeJson: string): string;
   Threats(tmforgeJson: string): string;
   Detect(contentBase64: string): string;
+  Preflight(contentBase64: string, formatId: string, targetFormat: string): string;
   ReadFile(contentBase64: string, formatId: string): string;
   ApplyManifest(manifestJson: string): string;
   ExportTm7(tmforgeJson: string): string;
@@ -934,6 +1045,7 @@ interface WasmEngineExports {
   RuleBundle(): string;
   Analysis(tmforgeJson: string): string;
   AnalysisReport(tmforgeJson: string, format: string): string;
+  Layout(requestJson: string): string;
 }
 
 /**
@@ -941,7 +1053,7 @@ interface WasmEngineExports {
  * engine the `/v1` API runs (both go through the shared `ThreatModelForge.Engine` facade); only the
  * transport differs. tmforge-json crosses the boundary as a string, binary documents as base64.
  */
-class WasmEngineClient implements IEngineClient {
+export class WasmEngineClient implements IEngineClient {
   public readonly label = 'engine (wasm)';
 
   private readonly wasm: WasmEngineExports;
@@ -956,6 +1068,10 @@ class WasmEngineClient implements IEngineClient {
 
   public read(text: string): Promise<TmForgeModel> {
     return readJson(text);
+  }
+
+  public async preflight(bytes: Uint8Array, formatId?: string, targetFormat?: string): Promise<PreflightResult> {
+    return toPreflight(JSON.parse(this.wasm.Preflight(toBase64(bytes), formatId ?? '', targetFormat ?? '')));
   }
 
   public async analyze(model: TmForgeModel): Promise<Finding[]> {
@@ -1048,6 +1164,10 @@ class WasmEngineClient implements IEngineClient {
       this.wasm.Merge(base ? JSON.stringify(base) : '', JSON.stringify(ours), JSON.stringify(theirs)),
     ) as components['schemas']['MergeResultDto'];
     return toMergeResult(dto);
+  }
+
+  public async layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]> {
+    return layoutElements(JSON.parse(this.wasm.Layout(JSON.stringify({ model, positions }))), positions);
   }
 }
 

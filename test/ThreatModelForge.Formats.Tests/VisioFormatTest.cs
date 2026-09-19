@@ -412,6 +412,36 @@ namespace ThreatModelForge.Formats.Tests
             Assert.IsTrue(hasProtocol, "the custom property should survive the Shape Data round-trip");
         }
 
+        /// <summary>Malformed shape identities and incomplete connector references are not silently dropped.</summary>
+        /// <param name="oldText">The valid fragment to replace.</param>
+        /// <param name="newText">The malformed replacement.</param>
+        [TestMethod]
+        [DataRow("<Connect FromSheet='4' FromCell='BeginX' ToSheet='1'/>", "")]
+        [DataRow("<Connect FromSheet='4' FromCell='EndX' ToSheet='2'/>", "")]
+        [DataRow("FromCell='BeginX' ToSheet='1'", "FromCell='BeginX' ToSheet='999'")]
+        [DataRow("FromSheet='4'", "FromSheet='999'")]
+        [DataRow("<Shape ID='2'", "<Shape ID='1'")]
+        public void ReadRejectsMalformedShapeGraph(string oldText, string newText)
+        {
+            using MemoryStream input = new MemoryStream(BuildArbitraryVisio(page => page.Replace(oldText, newText)), writable: false);
+
+            Assert.Throws<InvalidDataException>(() => new VisioFormat().Read(input));
+        }
+
+        /// <summary>The preflight reader names a shape that is deliberately treated as an annotation.</summary>
+        [TestMethod]
+        public void ReadReportsUnmappedAnnotation()
+        {
+            byte[] bytes = BuildArbitraryVisio(page => page.Replace("</Shapes>", "<Shape ID='10'><Text>Annotation</Text></Shape></Shapes>"));
+            using MemoryStream input = new MemoryStream(bytes, writable: false);
+            List<DocumentDiagnostic> diagnostics = new List<DocumentDiagnostic>();
+
+            ThreatModel model = new VisioFormat().Read(input, diagnostics);
+
+            Assert.IsTrue(model.DrawingSurfaceList[0].Borders.Count > 0);
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "import.omitted-shape" && item.Path.Contains("10", StringComparison.Ordinal)));
+        }
+
         private static string RowCellValue(XElement row, string name)
         {
             XElement? cell = row.Elements().FirstOrDefault(c => c.Name.LocalName == "Cell" && (string?)c.Attribute("N") == name);
@@ -456,7 +486,7 @@ namespace ThreatModelForge.Formats.Tests
             return total;
         }
 
-        private static byte[] BuildArbitraryVisio()
+        private static byte[] BuildArbitraryVisio(Func<string, string>? changePage = null)
         {
             Dictionary<string, string> parts = new Dictionary<string, string>(StringComparer.Ordinal)
             {
@@ -490,7 +520,7 @@ namespace ThreatModelForge.Formats.Tests
                 {
                     ZipArchiveEntry entry = zip.CreateEntry(part.Key);
                     using StreamWriter writer = new StreamWriter(entry.Open());
-                    writer.Write(part.Value);
+                    writer.Write(part.Key == "visio/pages/page1.xml" && changePage != null ? changePage(part.Value) : part.Value);
                 }
             }
 

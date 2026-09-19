@@ -20,18 +20,19 @@ namespace ThreatModelForge.Formats.Tests
 
         /// <summary>
         /// Verifies that the default registry contains the built-in <c>.tm7</c>,
-        /// <c>tmforge-json</c>, <c>.drawio</c>, and <c>.vsdx</c> providers.
+        /// <c>tmforge-json</c>, <c>.drawio</c>, <c>.vsdx</c>, and Threat Dragon providers.
         /// </summary>
         [TestMethod]
         public void CreateDefaultContainsBuiltinFormats()
         {
             ThreatModelFormatRegistry registry = ThreatModelFormatRegistry.CreateDefault();
 
-            Assert.AreEqual(4, registry.Formats.Count);
+            Assert.AreEqual(5, registry.Formats.Count);
             Assert.IsTrue(registry.Formats.Any(f => f is Tm7Format));
             Assert.IsTrue(registry.Formats.Any(f => f is TmForgeJsonFormat));
             Assert.IsTrue(registry.Formats.Any(f => f is DrawIoFormat));
             Assert.IsTrue(registry.Formats.Any(f => f is VisioFormat));
+            Assert.IsTrue(registry.Formats.Any(f => f is ThreatDragonFormat));
         }
 
         /// <summary>

@@ -25,9 +25,10 @@ namespace ThreatModelForge.Editing
     /// <para>
     /// One case cannot be preserved: a component sitting in the intersection of two boundaries that
     /// merely overlap. Nesting is representable and is kept, but a partial overlap is not, so such a
-    /// component keeps only the innermost boundary and the arrangement drops the other claim on it.
-    /// Overlapping boundaries are a modelling defect rather than a drawing one — they assert two
-    /// unrelated trust claims over one shape — so resolve them in the model before laying it out.
+    /// component keeps only the innermost boundary in this coarse placement candidate. Hosts must
+    /// validate all memberships and actual connector crossings before committing the candidate;
+    /// the engine's shared layout operation does so atomically. Overlapping trust claims may be
+    /// intentional and must never be discarded just to improve a drawing.
     /// </para>
     /// </remarks>
     public static class DiagramLayout
@@ -63,7 +64,7 @@ namespace ThreatModelForge.Editing
             Measure(root, edges, effectiveOptions, effectiveOptions.MaxWidth);
             Place(root, effectiveOptions.OriginX, effectiveOptions.OriginY, effectiveOptions);
 
-            RerouteConnectors(diagram, componentGuids);
+            DiagramGeometry.RerouteConnectors(diagram);
             return DiagramLabels.Deconflict(diagram, effectiveOptions);
         }
 
@@ -330,29 +331,6 @@ namespace ThreatModelForge.Editing
                 {
                     Place(cell.Child!, innerX + cell.OffsetX, innerY + cell.OffsetY, options);
                 }
-            }
-        }
-
-        private static void RerouteConnectors(DrawingSurfaceModel diagram, HashSet<Guid> componentGuids)
-        {
-            foreach (Connector connector in diagram.Lines.Values.OfType<Connector>())
-            {
-                if (!componentGuids.Contains(connector.SourceGuid) || !componentGuids.Contains(connector.TargetGuid))
-                {
-                    continue;
-                }
-
-                (int sourceCenterX, int sourceCenterY) = DiagramGeometry.CenterOf(diagram, connector.SourceGuid);
-                (int targetCenterX, int targetCenterY) = DiagramGeometry.CenterOf(diagram, connector.TargetGuid);
-                (int sourceX, int sourceY) = DiagramGeometry.EdgePoint(diagram, connector.SourceGuid, targetCenterX, targetCenterY);
-                (int targetX, int targetY) = DiagramGeometry.EdgePoint(diagram, connector.TargetGuid, sourceCenterX, sourceCenterY);
-
-                connector.SourceX = sourceX;
-                connector.SourceY = sourceY;
-                connector.TargetX = targetX;
-                connector.TargetY = targetY;
-                connector.HandleX = (sourceX + targetX) / 2;
-                connector.HandleY = (sourceY + targetY) / 2;
             }
         }
 

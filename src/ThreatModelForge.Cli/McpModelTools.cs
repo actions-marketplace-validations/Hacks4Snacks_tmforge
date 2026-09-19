@@ -41,6 +41,29 @@ namespace ThreatModelForge.Cli
             return model;
         }
 
+        /// <summary>Checks a document inside the MCP sandbox and previews optional conversion losses.</summary>
+        /// <param name="path">The sandboxed input path.</param>
+        /// <param name="services">The MCP request services.</param>
+        /// <param name="format">An optional source format.</param>
+        /// <param name="to">An optional destination format.</param>
+        /// <returns>The structural diagnostics, without model mutation or rule evaluation.</returns>
+        [McpServerTool(Name = "preflight")]
+        [Description("Checks model or manifest input and optional conversion losses without writing files or evaluating security rules. Returns structured diagnostic codes, severities and source paths.")]
+        public static PreflightResultDto Preflight(
+            [Description("Input path inside the configured MCP workspace root.")] string path,
+            IServiceProvider services,
+            [Description("Optional input format id, including tmforge-manifest for a legacy manifest.")] string? format = null,
+            [Description("Optional target format to preview conversion losses.")] string? to = null)
+        {
+            McpToolSupport.ValidateArguments(new[] { path, format, to });
+            McpPathPolicy policy = services.GetRequiredService<McpPathPolicy>();
+            byte[] content = policy.ReadAllBytes(path);
+            policy.ValidateArchiveContainer(content);
+            string? source = string.IsNullOrEmpty(format) ? EngineService.Detect(content)?.Id : format;
+            policy.ValidateExpandedContent(content, source);
+            return DocumentPreflight.Inspect(content, format, to);
+        }
+
         /// <summary>
         /// Detects the file format of a local threat model document by content sniffing.
         /// </summary>

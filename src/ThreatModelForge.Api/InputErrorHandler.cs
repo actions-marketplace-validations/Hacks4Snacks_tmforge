@@ -1,6 +1,7 @@
 namespace ThreatModelForge.Api
 {
     using System;
+    using System.IO;
     using System.Text.Json;
     using System.Threading;
     using System.Threading.Tasks;
@@ -81,6 +82,7 @@ namespace ThreatModelForge.Api
 
                 // Uploaded bytes that are not the model document they claim to be.
                 case JsonException:
+                case InvalidDataException:
                     return true;
                 default:
                     return false;

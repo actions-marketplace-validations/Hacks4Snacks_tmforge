@@ -1,5 +1,6 @@
 namespace ThreatModelForge.Formats.Tests
 {
+    using System;
     using System.Collections.Generic;
     using System.IO;
     using System.Linq;
@@ -46,6 +47,137 @@ namespace ThreatModelForge.Formats.Tests
             Assert.AreEqual("tmforge-json", format.Id);
             Assert.IsTrue(format.Capabilities.CanRead);
             Assert.IsTrue(format.Capabilities.CanWrite);
+        }
+
+        /// <summary>A dangling flow is refused with its authored location instead of disappearing.</summary>
+        [TestMethod]
+        public void ReadRejectsUnresolvedFlowWithJsonPath()
+        {
+            string json = SampleJson.Replace("\"target\":\"ds1\"", "\"target\":\"missing\"");
+
+            InvalidDataException error = Assert.Throws<InvalidDataException>(() => ReadJson(json));
+
+            StringAssert.Contains(error.Message, "$.flows[0].target");
+            StringAssert.Contains(error.Message, "missing");
+            StringAssert.Contains(error.Message, "f1");
+        }
+
+        /// <summary>Preflight reports every local structural issue with stable codes and paths.</summary>
+        [TestMethod]
+        public void PreflightFindsUnknownFieldsDuplicateIdsAndKinds()
+        {
+            string json = SampleJson.Replace("\"id\":\"ds1\"", "\"id\":\"p1\"")
+                .Replace("\"kind\":\"datastore\"", "\"kind\":\"widget\"")
+                .Replace("\"name\":\"query\"", "\"name\":\"query\",\"props\":{\"Protocol\":\"TLS\"}");
+
+            IReadOnlyList<DocumentDiagnostic> diagnostics = JsonModelPreflight.Inspect(json);
+
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "input.unknown-field" && item.Path == "$.flows[0].props"));
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "model.duplicate-id" && item.Path == "$.elements[1].id"));
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "model.unsupported-kind" && item.Path == "$.elements[1].kind"));
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "model.unresolved-endpoint" && item.Path == "$.flows[0].target"));
+            Assert.Throws<InvalidDataException>(() => ReadJson(json));
+        }
+
+        /// <summary>Custom property bags and Studio view state remain part of the accepted contract.</summary>
+        [TestMethod]
+        public void PreflightAllowsCustomPropertiesAndViewFields()
+        {
+            string json = SampleJson.Replace(
+                "\"name\":\"query\"",
+                "\"name\":\"query\",\"sourceHandle\":\"r\",\"targetHandle\":\"l\",\"labelOffset\":{\"x\":12,\"y\":4},\"properties\":{\"OrganizationPolicy\":\"Unknown\"}");
+
+            Assert.HasCount(0, JsonModelPreflight.Inspect(json));
+            Assert.AreEqual(1, ReadJson(json).DrawingSurfaceList[0].Lines.Count);
+        }
+
+        /// <summary>Raw document defects cannot be hidden by serializer defaults or coercion.</summary>
+        /// <param name="json">The invalid input.</param>
+        /// <param name="code">The expected stable diagnostic.</param>
+        [TestMethod]
+        [DataRow("null", "input.object-required")]
+        [DataRow("[]", "input.object-required")]
+        [DataRow("{", "input.invalid-json")]
+        [DataRow("{\"schema\":\"other\"}", "input.schema")]
+        [DataRow("{\"version\":\"9.0\"}", "input.version")]
+        [DataRow("{\"elements\":[null]}", "input.null-entry")]
+        [DataRow("{\"elements\":[{}]}", "model.invalid-id")]
+        [DataRow("{\"elements\":[{\"id\":\"00000000-0000-0000-0000-000000000000\"}]}", "model.invalid-id")]
+        [DataRow("{\"elements\":[{\"id\":\"x\",\"ID\":\"y\"}]}", "input.duplicate-field")]
+        [DataRow("{\"elements\":[{\"id\":\"x\",\"width\":30}]}", "model.incomplete-size")]
+        [DataRow("{\"elements\":[{\"id\":\"x\",\"width\":-1,\"height\":30}]}", "model.invalid-size")]
+        [DataRow("{\"elements\":[{\"id\":\"x\",\"x\":0.5}]}", "input.invalid-value")]
+        [DataRow("{\"elements\":[{\"id\":\"x\",\"properties\":{\"Protocol\":true}}]}", "input.invalid-value")]
+        [DataRow("{\"diagrams\":[{\"id\":\"page\"},{\"id\":\"page\"}]}", "model.duplicate-id")]
+        [DataRow("{\"diagrams\":[{\"id\":\"a\",\"elements\":[{\"id\":\"x\"}],\"flows\":[{\"id\":\"f\",\"source\":\"x\",\"target\":\"y\"}]},{\"id\":\"b\",\"elements\":[{\"id\":\"y\"}]}]}", "model.unresolved-endpoint")]
+        public void PreflightRejectsMalformedInput(string json, string code)
+        {
+            IReadOnlyList<DocumentDiagnostic> diagnostics = JsonModelPreflight.Inspect(json);
+
+            Assert.IsTrue(diagnostics.Any(item => item.Code == code && item.Severity == "error"), string.Join("; ", diagnostics.Select(item => item.Code + ": " + item.Message)));
+            Assert.Throws<InvalidDataException>(() => ReadJson(json));
+        }
+
+        /// <summary>Equivalent GUID spellings and alias-derived identities cannot collide silently.</summary>
+        [TestMethod]
+        public void PreflightDetectsInternalIdentityCollisions()
+        {
+            string guid = DeterministicGuid.FromElementId("alias").ToString("D");
+            string json = "{\"elements\":[{\"id\":\"alias\"},{\"id\":\"" + guid + "\"}]}";
+
+            Assert.IsTrue(JsonModelPreflight.Inspect(json).Any(item => item.Code == "model.duplicate-id"));
+            string upper = Guid.NewGuid().ToString("D").ToUpperInvariant();
+            json = "{\"elements\":[{\"id\":\"" + upper + "\"},{\"id\":\"" + upper.ToLowerInvariant() + "\"}]}";
+            Assert.IsTrue(JsonModelPreflight.Inspect(json).Any(item => item.Code == "model.duplicate-id"));
+        }
+
+        /// <summary>Extension fields remain readable but preflight explicitly names their loss risk.</summary>
+        [TestMethod]
+        public void PreflightWarnsForCanonicalExtensionsWithoutRejectingThem()
+        {
+            string json = SampleJson.Replace("\"version\":\"0.1\"", "\"version\":\"0.1\",\"extension\":{\"owner\":\"team\"}");
+            IReadOnlyList<DocumentDiagnostic> diagnostics = JsonModelPreflight.Inspect(json);
+
+            DocumentDiagnostic warning = diagnostics.Single();
+            Assert.AreEqual("input.unknown-field", warning.Code);
+            Assert.AreEqual("warning", warning.Severity);
+            Assert.AreEqual("$.extension", warning.Path);
+            Assert.HasCount(1, ReadJson(json).DrawingSurfaceList[0].Lines);
+            Assert.HasCount(0, JsonModelPreflight.Inspect("{\"analysis\":{\"expectedPacks\":[{\"id\":\"pack\",\"fingerprint\":\"sha256:pin\"}]}}"));
+        }
+
+        /// <summary>Preflight limits bound malformed input and the diagnostic response.</summary>
+        [TestMethod]
+        public void PreflightBoundsInputAndDiagnosticSize()
+        {
+            Assert.AreEqual("input.too-large", JsonModelPreflight.Inspect(new string(' ', JsonDocumentPreflight.MaxBytes + 1)).Single().Code);
+            string pages = "{\"diagrams\":[" + string.Join(",", Enumerable.Range(0, 1025).Select(index => "{\"id\":\"p" + index + "\"}")) + "]}";
+            Assert.IsTrue(JsonModelPreflight.Inspect(pages).Any(item => item.Code == "model.too-many-pages"));
+            string many = "{" + string.Join(",", Enumerable.Range(0, 200).Select(index => "\"unknown" + index + "\":0")) + "}";
+            IReadOnlyList<DocumentDiagnostic> diagnostics = JsonModelPreflight.Inspect(many);
+            Assert.HasCount(JsonDocumentPreflight.MaxDiagnostics, diagnostics);
+            Assert.AreEqual("input.diagnostic-limit", diagnostics.Last().Code);
+            Assert.AreEqual("error", diagnostics.Last().Severity);
+
+            List<DocumentDiagnostic> bounded = new List<DocumentDiagnostic>();
+            JsonDocumentPreflight.Add(bounded, "code", new string('p', 2048), new string('m', 4096));
+            Assert.AreEqual(1024, bounded[0].Path.Length);
+            Assert.AreEqual(2048, bounded[0].Message.Length);
+        }
+
+        /// <summary>Strict UTF-8 and byte limits apply to actual stream reads without closing the source.</summary>
+        [TestMethod]
+        public void PreflightReadsBoundedUtf8Streams()
+        {
+            using MemoryStream stream = new MemoryStream(Encoding.UTF8.GetBytes("\uFEFF" + SampleJson));
+            Assert.AreEqual(SampleJson, JsonDocumentPreflight.ReadText(stream));
+            Assert.IsTrue(stream.CanRead);
+            using MemoryStream oversized = new MemoryStream(new byte[JsonDocumentPreflight.MaxBytes + 1]);
+            Assert.Throws<InvalidDataException>(() => JsonDocumentPreflight.ReadText(oversized));
+            using MemoryStream malformed = new MemoryStream(new byte[] { 0xff });
+            Assert.Throws<DecoderFallbackException>(() => JsonDocumentPreflight.ReadText(malformed));
+            Assert.Throws<ArgumentNullException>(() => JsonDocumentPreflight.ReadText(null!));
+            Assert.Throws<ArgumentNullException>(() => JsonDocumentPreflight.Inspect<TmForgeJsonModel>(null!));
         }
 
         /// <summary>

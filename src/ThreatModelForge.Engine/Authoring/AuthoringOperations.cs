@@ -127,6 +127,14 @@ namespace ThreatModelForge.Engine
                     : (string.IsNullOrWhiteSpace(boundaryName) ? request.Boundary! : boundaryName);
                 int memberIndex = AuthoringSupport.CountBoundaryMembers(diagram, membershipKey);
                 (int insideLeft, int insideTop) = AuthoringSupport.PositionInsideBoundary(boundaryBox, memberIndex);
+                if ((long)insideLeft + placedComponent.Width >= (long)boundaryBox.Left + boundaryBox.Width
+                    || (long)insideTop + placedComponent.Height >= (long)boundaryBox.Top + boundaryBox.Height)
+                {
+                    editor.RemoveElement(diagram, id);
+                    error = "The component does not fit inside boundary '" + membershipKey + "'. Enlarge the boundary explicitly before adding this member.";
+                    return false;
+                }
+
                 editor.ResizeElement(diagram, id, insideLeft, insideTop, placedComponent.Width, placedComponent.Height);
                 DiagramElementHelper.SetCustomProperty(added, AuthoringSupport.BoundaryPropertyName, membershipKey);
             }

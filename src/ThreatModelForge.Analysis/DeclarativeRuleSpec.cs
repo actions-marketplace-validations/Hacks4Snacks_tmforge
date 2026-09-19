@@ -1,6 +1,7 @@
 namespace ThreatModelForge.Analysis
 {
     using System.Collections.Generic;
+    using System.Text.RegularExpressions;
 
     /// <summary>
     /// A single declarative rule. A finding is raised for each element of <see cref="AppliesTo"/> that
@@ -105,14 +106,41 @@ namespace ThreatModelForge.Analysis
             /// <summary>Gets or sets the expected element type.</summary>
             public string? Type { get; set; }
 
+            /// <summary>Gets or sets the expected primitive component kind.</summary>
+            public string? Kind { get; set; }
+
             /// <summary>Gets or sets the property to read.</summary>
             public string? Property { get; set; }
 
             /// <summary>Gets or sets accepted property values.</summary>
             public List<string>? ValueIn { get; set; }
 
+            /// <summary>Gets or sets the exclusive numeric lower bound.</summary>
+            public decimal? GreaterThan { get; set; }
+
+            /// <summary>Gets or sets the inclusive numeric lower bound.</summary>
+            public decimal? GreaterThanOrEqual { get; set; }
+
+            /// <summary>Gets or sets the exclusive numeric upper bound.</summary>
+            public decimal? LessThan { get; set; }
+
+            /// <summary>Gets or sets the inclusive numeric upper bound.</summary>
+            public decimal? LessThanOrEqual { get; set; }
+
+            /// <summary>Gets or sets the regular expression the property must match.</summary>
+            public string? Matches { get; set; }
+
             /// <summary>Gets or sets the specific crossed-boundary type.</summary>
             public string? Crosses { get; set; }
+
+            /// <summary>Gets or sets an upstream component filter for positive-length directed reachability.</summary>
+            public DeclarativeEndpoint? ReachableFrom { get; set; }
+
+            /// <summary>Gets or sets a component filter for one outgoing connector.</summary>
+            public DeclarativeEndpoint? ConnectsTo { get; set; }
+
+            /// <summary>Gets or sets the pattern prepared during pack validation.</summary>
+            internal Regex? CompiledPattern { get; set; }
         }
     }
 }

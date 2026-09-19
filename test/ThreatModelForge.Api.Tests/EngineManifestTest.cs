@@ -1,6 +1,7 @@
 namespace ThreatModelForge.Api.Tests
 {
     using System.Linq;
+    using System.Text;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.Engine;
 
@@ -47,6 +48,44 @@ namespace ThreatModelForge.Api.Tests
             CollectionAssert.Contains(result.Model.Elements!.Select(e => e.Name).ToList(), "API server");
             Assert.IsNotNull(result.Model.Flows);
             Assert.AreEqual("Create a certificate", result.Model.Flows![0].Name);
+        }
+
+        /// <summary>Unknown manifest fields fail before their values can be silently discarded.</summary>
+        [TestMethod]
+        public void ApplyManifestJson_RejectsMisspelledPropertiesEvenWithForce()
+        {
+            string json = SampleManifest.Replace("\"name\": \"API server\"", "\"name\": \"API server\", \"properties\": { \"Isolation\": \"Container\" }");
+
+            ApplyResultDto result = AuthoringService.ApplyManifestJson(json, force: true);
+
+            Assert.IsFalse(result.Success);
+            Assert.IsNull(result.Model);
+            StringAssert.Contains(result.Error, "$.elements[1].properties");
+            StringAssert.Contains(result.Error, "Use 'props'");
+        }
+
+        /// <summary>Preflight previews a manifest without inventing a format registration or evaluating rules.</summary>
+        [TestMethod]
+        public void Preflight_InspectsManifestAndReportsTargetLosses()
+        {
+            PreflightResultDto result = DocumentPreflight.Inspect(Encoding.UTF8.GetBytes(SampleManifest), targetFormat: "drawio");
+
+            Assert.IsTrue(result.Success);
+            Assert.AreEqual("tmforge-manifest", result.Format);
+            Assert.AreEqual("drawio", result.TargetFormat);
+            Assert.IsTrue(result.Diagnostics.Any(diagnostic => diagnostic.Code == "conversion.identity"));
+        }
+
+        /// <summary>Preflight returns machine-readable paths for misspelled manifest fields.</summary>
+        [TestMethod]
+        public void Preflight_ReportsManifestTypos()
+        {
+            string json = SampleManifest.Replace("\"name\": \"API server\"", "\"name\": \"API server\", \"properties\": {}");
+
+            PreflightResultDto result = DocumentPreflight.Inspect(Encoding.UTF8.GetBytes(json));
+
+            Assert.IsFalse(result.Success);
+            Assert.IsTrue(result.Diagnostics.Any(diagnostic => diagnostic.Code == "input.unknown-field" && diagnostic.Path == "$.elements[1].properties"));
         }
 
         /// <summary>

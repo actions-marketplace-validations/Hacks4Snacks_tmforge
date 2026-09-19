@@ -5,6 +5,8 @@ namespace ThreatModelForge.Cli
     using System.Globalization;
     using System.IO;
     using System.Linq;
+    using System.Text.Json;
+    using System.Text.Json.Nodes;
     using ThreatModelForge.Editing;
     using ThreatModelForge.Engine;
     using ThreatModelForge.Formats;
@@ -63,14 +65,17 @@ namespace ThreatModelForge.Cli
                 return 1;
             }
 
-            (ThreatModel model, IThreatModelFormat? format) = CliModelLoader.Load(input!);
-            if (format == null || (!check && !format.Capabilities.CanWrite))
+            LayoutOptions options = new LayoutOptions();
+            foreach (string name in new[] { "node-spacing", "layer-spacing" })
             {
-                Console.Error.WriteLine("The model's format does not support writing.");
-                return 1;
+                string? value = parsed.Get(name);
+                if (value != null && (!TryGetInt(parsed, name, out int spacing) || spacing < 1 || spacing > 4096))
+                {
+                    Console.Error.WriteLine("--" + name + " must be an integer between 1 and 4096.");
+                    return 1;
+                }
             }
 
-            LayoutOptions options = new LayoutOptions();
             if (TryGetInt(parsed, "node-spacing", out int nodeSpacing))
             {
                 options.NodeSpacing = nodeSpacing;
@@ -82,6 +87,18 @@ namespace ThreatModelForge.Cli
             }
 
             string? pageSpec = parsed.Get("page");
+            if (!check && !labelsOnly && IsCanonicalJson(input!))
+            {
+                return ArrangeJson(input!, pageSpec, options, parsed.Json);
+            }
+
+            (ThreatModel model, IThreatModelFormat? format) = CliModelLoader.Load(input!);
+            if (format == null || (!check && !format.Capabilities.CanWrite))
+            {
+                Console.Error.WriteLine("The model's format does not support writing.");
+                return 1;
+            }
+
             List<DrawingSurfaceModel> targets = new List<DrawingSurfaceModel>();
             if (string.IsNullOrEmpty(pageSpec))
             {
@@ -99,7 +116,14 @@ namespace ThreatModelForge.Cli
 
             int components = 0;
             int labelled = 0;
+            bool persistLabels = format is not TmForgeJsonFormat;
             List<LabelOverlap> overlaps = new List<LabelOverlap>();
+            if (!check && !labelsOnly && !LayoutOperations.TryApply(targets, options, out labelled, out string? layoutError))
+            {
+                Console.Error.WriteLine(layoutError);
+                return 1;
+            }
+
             foreach (DrawingSurfaceModel diagram in targets)
             {
                 components += diagram.Borders.Values.OfType<DrawingElement>().Count(element => !(element is BorderBoundary));
@@ -109,13 +133,9 @@ namespace ThreatModelForge.Cli
                     continue;
                 }
 
-                if (labelsOnly)
+                if (labelsOnly && persistLabels)
                 {
                     labelled += DiagramLabels.Deconflict(diagram, options);
-                }
-                else
-                {
-                    labelled += DiagramLayout.Apply(diagram, options);
                 }
 
                 overlaps.AddRange(DiagramLabels.Inspect(diagram, options));
@@ -126,7 +146,12 @@ namespace ThreatModelForge.Cli
                 return Report(parsed, targets.Count, components, overlaps);
             }
 
-            AuthoringSupport.Save(model, input!, format);
+            // Canonical JSON has no persisted connector handles. Labels-only is a no-op there;
+            // writing through its format provider would discard unrelated author-owned metadata.
+            if (persistLabels)
+            {
+                AuthoringSupport.Save(model, input!, format);
+            }
 
             if (parsed.Json)
             {
@@ -136,15 +161,97 @@ namespace ThreatModelForge.Cli
                     components,
                     labelsMoved = labelled,
                     labelOverlaps = overlaps.Count,
+                    labelsPersisted = persistLabels,
                 });
             }
             else
             {
-                Console.Error.WriteLine((labelsOnly
+                Console.Error.WriteLine(!persistLabels
+                    ? "Canonical JSON does not store engine label positions. Use Studio's Labels only action; no file was changed."
+                    : (labelsOnly
                     ? "Placed " + labelled + " flow label(s)"
                     : "Laid out " + components + " component(s)") +
                     " across " + targets.Count + " page(s) in " + input + ".");
                 WarnAboutOverlaps(overlaps);
+            }
+
+            return 0;
+        }
+
+        private static bool IsCanonicalJson(string path)
+        {
+            IThreatModelFormat? format = ThreatModelFormatRegistry.CreateDefault().FindByExtension(path);
+            if (format != null)
+            {
+                return format is TmForgeJsonFormat;
+            }
+
+            using FileStream stream = File.OpenRead(path);
+            return new TmForgeJsonFormat().CanRead(stream);
+        }
+
+        private static int ArrangeJson(string path, string? page, LayoutOptions options, bool json)
+        {
+            // Canonical JSON is already the author's document. A format write would re-key aliases,
+            // drop analysis settings and omit client view state. Patch only rectangles instead.
+            JsonNode document = JsonNode.Parse(File.ReadAllText(path), new JsonNodeOptions { PropertyNameCaseInsensitive = true })
+                ?? throw new JsonException("A model document is required.");
+            LayoutResultDto result = EngineService.Layout(new LayoutRequestDto
+            {
+                Model = document.Deserialize<TmForgeModelDto>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true }),
+                Page = page,
+                Options = options,
+            });
+            if (!result.Success)
+            {
+                Console.Error.WriteLine(result.Error);
+                return 1;
+            }
+
+            Dictionary<string, LayoutElementDto> geometry = result.Elements.ToDictionary(element => element.Id, StringComparer.Ordinal);
+            void Update(JsonNode? node)
+            {
+                if (node?["elements"] is not JsonArray elements)
+                {
+                    return;
+                }
+
+                foreach (JsonNode? element in elements)
+                {
+                    string? id = element?["id"]?.GetValue<string>();
+                    if (id == null || !geometry.TryGetValue(id, out LayoutElementDto? placed))
+                    {
+                        continue;
+                    }
+
+                    element!["x"] = placed.X;
+                    element["y"] = placed.Y;
+                    element["width"] = placed.Width;
+                    element["height"] = placed.Height;
+                }
+            }
+
+            Update(document);
+            if (document["diagrams"] is JsonArray diagrams)
+            {
+                foreach (JsonNode? diagram in diagrams)
+                {
+                    Update(diagram);
+                }
+            }
+
+            AuthoringSupport.WriteAtomically(path, stream =>
+            {
+                using Utf8JsonWriter writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
+                document.WriteTo(writer);
+            });
+            if (json)
+            {
+                CliJson.WriteEnvelope("layout", new { pages = result.Pages, components = result.Components, labelsMoved = 0, labelOverlaps = result.LabelOverlaps, labelsPersisted = false });
+            }
+            else
+            {
+                Console.Error.WriteLine($"Laid out {result.Components} component(s) across {result.Pages} page(s) in {path}. JSON retains its author-owned state; labels are rendered by the consuming host.");
             }
 
             return 0;
@@ -232,6 +339,7 @@ namespace ThreatModelForge.Cli
             Console.Error.WriteLine();
             Console.Error.WriteLine("Arranges components by their data flows so you need not hand-place coordinates.");
             Console.Error.WriteLine("Components keep the trust boundary they were in; boundaries are resized around them.");
+            Console.Error.WriteLine("Refuses layout without writing if any page's boundary memberships or flow crossings would change.");
             Console.Error.WriteLine("  --labels  Place only the flow labels, leaving hand-placed shapes exactly where they are.");
             Console.Error.WriteLine("  --check   Report obstructed flow labels without writing; exits 1 when any remain.");
         }

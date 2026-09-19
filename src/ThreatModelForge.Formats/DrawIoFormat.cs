@@ -92,7 +92,13 @@ namespace ThreatModelForge.Formats
         }
 
         /// <inheritdoc/>
-        public ThreatModel Read(Stream stream)
+        public ThreatModel Read(Stream stream) => this.Read(stream, null);
+
+        /// <summary>Reads the supported diagram structure and reports omitted or inferred content.</summary>
+        /// <param name="stream">The source XML.</param>
+        /// <param name="diagnostics">An optional collection for source-specific warnings.</param>
+        /// <returns>The structural model, or an error rather than a partial model for malformed input.</returns>
+        public ThreatModel Read(Stream stream, List<DocumentDiagnostic>? diagnostics)
         {
             if (stream == null)
             {
@@ -104,6 +110,10 @@ namespace ThreatModelForge.Formats
             // untrusted input. PreserveWhitespace matches the previous reader; the caller-owned stream is not
             // closed by XDocument.Load(Stream).
             XDocument document = XDocument.Load(stream, LoadOptions.PreserveWhitespace);
+            if (document.Root?.Name.LocalName != "mxfile" && document.Root?.Name.LocalName != "mxGraphModel")
+            {
+                throw new InvalidDataException("/: Not a draw.io document. Expected mxfile or mxGraphModel.");
+            }
 
             List<XElement> pages = document.Descendants().Where(e => e.Name.LocalName == "diagram").ToList();
             if (pages.Count == 0)
@@ -111,11 +121,21 @@ namespace ThreatModelForge.Formats
                 pages = document.Descendants().Where(e => e.Name.LocalName == "mxGraphModel").ToList();
             }
 
+            if (pages.Count == 0 || pages.Count > 1024)
+            {
+                throw new InvalidDataException("/mxfile: Expected between 1 and 1024 diagram pages.");
+            }
+
             ThreatModel model = new ThreatModel { Version = "1.0" };
             DiagramEditor editor = new DiagramEditor(model);
 
             foreach (XElement page in pages)
             {
+                if (page.Name.LocalName == "diagram" && !page.Elements().Any(element => element.Name.LocalName == "mxGraphModel"))
+                {
+                    throw new NotSupportedException("/mxfile/diagram: Compressed or missing draw.io graph content is not supported. Export uncompressed XML from diagrams.net before importing.");
+                }
+
                 DrawingSurfaceModel surface = new DrawingSurfaceModel
                 {
                     Guid = Guid.NewGuid(),
@@ -123,7 +143,7 @@ namespace ThreatModelForge.Formats
                         ?? ("Diagram " + (model.DrawingSurfaceList.Count + 1).ToString(System.Globalization.CultureInfo.InvariantCulture)),
                 };
                 model.DrawingSurfaceList.Add(surface);
-                ReadPage(editor, surface, page);
+                ReadPage(editor, surface, page, diagnostics);
             }
 
             if (model.DrawingSurfaceList.Count == 0)
@@ -321,10 +341,19 @@ namespace ThreatModelForge.Formats
             return string.Empty;
         }
 
-        private static void ReadPage(DiagramEditor editor, DrawingSurfaceModel surface, XElement page)
+        private static void ReadPage(DiagramEditor editor, DrawingSurfaceModel surface, XElement page, List<DocumentDiagnostic>? diagnostics)
         {
             List<XElement> cells = page.Descendants().Where(e => e.Name.LocalName == "mxCell").ToList();
             Dictionary<string, Guid> idMap = new Dictionary<string, Guid>(StringComparer.Ordinal);
+            HashSet<string> cellIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (XElement cell in cells)
+            {
+                string id = cell.Attribute("id")?.Value ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(id) || !cellIds.Add(id))
+                {
+                    throw new InvalidDataException("/mxCell/@id: Empty or duplicate draw.io cell id '" + id + "'.");
+                }
+            }
 
             foreach (XElement cell in cells)
             {
@@ -334,10 +363,6 @@ namespace ThreatModelForge.Formats
                 }
 
                 string id = cell.Attribute("id")?.Value ?? string.Empty;
-                if (string.IsNullOrEmpty(id))
-                {
-                    continue;
-                }
 
                 XElement? geometry = cell.Elements().FirstOrDefault(e => e.Name.LocalName == "mxGeometry");
                 int x = ParseCoord(geometry?.Attribute("x")?.Value);
@@ -345,7 +370,14 @@ namespace ThreatModelForge.Formats
                 int width = ParseCoord(geometry?.Attribute("width")?.Value);
                 int height = ParseCoord(geometry?.Attribute("height")?.Value);
 
-                StencilKind kind = KindFromStyle(cell.Attribute("style")?.Value ?? string.Empty);
+                string style = cell.Attribute("style")?.Value ?? string.Empty;
+                StencilKind kind = KindFromStyle(style);
+                if (diagnostics != null && kind == StencilKind.ExternalEntity
+                    && style.IndexOf("rounded=0", StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    JsonDocumentPreflight.Add(diagnostics, "import.inferred-kind", "/mxCell[@id='" + id + "']", "Shape '" + id + "' has no recognized DFD style and is mapped to an external entity. Confirm its kind after import.", "warning");
+                }
+
                 Guid guid = editor.AddElement(surface, kind, x, y);
                 if (width > 0 && height > 0)
                 {
@@ -367,16 +399,26 @@ namespace ThreatModelForge.Formats
                 string? target = cell.Attribute("target")?.Value;
                 if (source == null || target == null)
                 {
-                    // A free-floating edge (for example, a boundary line) has no glued endpoints; the
-                    // canonical wire model only represents connectors between two components.
+                    if (source != null || target != null)
+                    {
+                        throw new InvalidDataException("/mxCell[@id='" + cell.Attribute("id")?.Value + "']: Flow has only one attached endpoint.");
+                    }
+
+                    if (diagnostics != null)
+                    {
+                        JsonDocumentPreflight.Add(diagnostics, "import.omitted-edge", "/mxCell[@id='" + cell.Attribute("id")?.Value + "']", "This free-standing line or boundary is not represented by the draw.io reader and will be omitted. Keep the source document.", "warning");
+                    }
+
                     continue;
                 }
 
-                if (idMap.TryGetValue(source, out Guid sourceGuid) && idMap.TryGetValue(target, out Guid targetGuid))
+                if (!idMap.TryGetValue(source, out Guid sourceGuid) || !idMap.TryGetValue(target, out Guid targetGuid))
                 {
-                    Guid connector = editor.AddConnector(surface, sourceGuid, targetGuid);
-                    editor.SetElementName(surface, connector, cell.Attribute("value")?.Value ?? string.Empty);
+                    throw new InvalidDataException("/mxCell[@id='" + cell.Attribute("id")?.Value + "']: Unresolved flow endpoint '" + source + "' or '" + target + "' on this page.");
                 }
+
+                Guid connector = editor.AddConnector(surface, sourceGuid, targetGuid);
+                editor.SetElementName(surface, connector, cell.Attribute("value")?.Value ?? string.Empty);
             }
         }
 

@@ -2,10 +2,16 @@ namespace ThreatModelForge.Api.Tests
 {
     using System;
     using System.Collections.Generic;
+    using System.IO;
     using System.Linq;
     using System.Text;
+    using System.Text.Json;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
+    using ThreatModelForge.Editing;
     using ThreatModelForge.Engine;
+    using ThreatModelForge.Formats;
+    using ThreatModelForge.KnowledgeBase;
+    using ThreatModelForge.Model;
 
     /// <summary>
     /// Unit tests for the format-facing methods of <see cref="EngineService"/> —
@@ -241,6 +247,167 @@ namespace ThreatModelForge.Api.Tests
             Assert.IsFalse(
                 report.TrimStart().StartsWith("<svg", StringComparison.OrdinalIgnoreCase),
                 "The fallback should not be SVG.");
+        }
+
+        /// <summary>Imported threats retain their source, scope and treatment across engine operations.</summary>
+        /// <param name="formatId">The destination format.</param>
+        [TestMethod]
+        [DataRow("tmforge-json")]
+        [DataRow("tm7")]
+        public void ThreatDragonImportSurvivesEngineOperations(string formatId)
+        {
+            byte[] bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "threat-dragon-v2.json"));
+            TmForgeModelDto model = EngineService.ReadModel(bytes, null);
+            Assert.AreEqual("threat-dragon", EngineService.Detect(bytes)?.Id);
+            Assert.AreEqual("Model owner", model.Metadata?.Owner);
+            Assert.IsNotNull(model.Diagrams);
+            Assert.IsNotNull(model.Threats);
+            Assert.HasCount(2, model.Diagrams);
+            Assert.HasCount(3, model.Threats);
+            ThreatStateDto imported = model.Threats!.Single(threat => threat.Id == "manual:threat-dragon.linkability");
+            Assert.AreEqual("LINDDUN", imported.Source?["modelType"]);
+
+            AnalysisResultDto result = EngineService.RunAnalysis(model, null);
+            Assert.HasCount(3, result.Threats.Where(threat => threat.Manual));
+            Assert.IsTrue(result.Threats.Any(threat => !threat.Manual));
+            Assert.AreEqual("threat-dragon", result.Threats.Single(threat => threat.Id == imported.Id).Source?["format"]);
+
+            AuthoringResultDto edited = AuthoringService.EditThreat(model, new EditThreatRequest
+            {
+                Id = imported.Id,
+                Title = "Reviewed linkability",
+            });
+            Assert.IsTrue(edited.Success, edited.Error);
+            Assert.IsNotNull(edited.Model);
+            TmForgeModelDto restored = EngineService.ReadModel(EngineService.Convert(edited.Model!, formatId), formatId);
+            ThreatStateDto threat = restored.Threats!.Single(threat => threat.Id == imported.Id);
+            Assert.AreEqual("Reviewed linkability", threat.Title);
+            Assert.AreEqual("Linkability", threat.Category);
+            Assert.AreEqual("Accepted", threat.State);
+            Assert.AreEqual("Use short-lived identifiers.", threat.Mitigation);
+            Assert.AreEqual("linkability", threat.Source?["id"]);
+            CollectionAssert.AreEqual(imported.ElementIds!.ToArray(), threat.ElementIds!.ToArray());
+            Assert.AreEqual(model.Diagrams![1].Id, restored.Diagrams![1].Id);
+            Assert.AreEqual("Model owner", restored.Metadata?.Owner);
+            string report = Encoding.UTF8.GetString(EngineService.Report(restored, "html"));
+            StringAssert.Contains(report, "Reviewed linkability");
+            StringAssert.Contains(report, "Linkability");
+        }
+
+        /// <summary>Preflight distinguishes malformed, ambiguous and unsupported documents.</summary>
+        /// <param name="content">The source document.</param>
+        /// <param name="format">An optional format selection.</param>
+        /// <param name="code">The expected diagnostic.</param>
+        [TestMethod]
+        [DataRow("not a model", null, "input.unknown-format")]
+        [DataRow("{", null, "input.unreadable")]
+        [DataRow("{\"elements\":[]}", null, "input.ambiguous-json")]
+        [DataRow("{\"schema\":\"foreign\"}", null, "input.unsupported-format")]
+        [DataRow("{}", "foreign", "input.unsupported-format")]
+        [DataRow("null", "tmforge-json", "input.object-required")]
+        [DataRow("<mxfile><diagram>compressed</diagram></mxfile>", "drawio", "input.unreadable")]
+        [DataRow("{\"schema\":\"tmforge-manifest\",\"version\":99}", null, "manifest.invalid")]
+        [DataRow("{\"schema\":\"tmforge-manifest\",\"flows\":[{\"from\":\"missing\",\"to\":\"other\"}]}", null, "manifest.invalid")]
+        public void PreflightReportsUnusableInput(string content, string? format, string code)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(content);
+            byte[] original = (byte[])bytes.Clone();
+
+            PreflightResultDto result = DocumentPreflight.Inspect(bytes, format);
+
+            Assert.IsFalse(result.Success);
+            Assert.IsTrue(result.Diagnostics.Any(item => item.Code == code), string.Join("; ", result.Diagnostics.Select(item => item.Code + ": " + item.Message)));
+            CollectionAssert.AreEqual(original, bytes);
+        }
+
+        /// <summary>Unknown targets, oversized files and invalid encoding return bounded diagnostics.</summary>
+        [TestMethod]
+        public void PreflightBoundsAndValidatesRequests()
+        {
+            Assert.Throws<ArgumentNullException>(() => DocumentPreflight.Inspect(null!));
+            Assert.AreEqual("input.too-large", DocumentPreflight.Inspect(new byte[JsonDocumentPreflight.MaxBytes + 1]).Diagnostics.Single().Code);
+            Assert.IsFalse(DocumentPreflight.Inspect(new byte[] { 0xff }, "tmforge-json").Success);
+            byte[] model = EngineService.Convert(SingleProcessModel(), "tmforge-json");
+            Assert.IsTrue(DocumentPreflight.Inspect(model).Success);
+            Assert.IsTrue(DocumentPreflight.Inspect(model, "TMFORGE-JSON").Success);
+            Assert.AreEqual("conversion.unsupported-target", DocumentPreflight.Inspect(model, targetFormat: "threat-dragon").Diagnostics.Last().Code);
+            Assert.IsTrue(DocumentPreflight.Inspect(Encoding.UTF8.GetBytes("{\"name\":\"Legacy\"}"), "tmforge-manifest").Success);
+            Assert.IsTrue(DocumentPreflight.Inspect(Encoding.UTF8.GetBytes("\uFEFF\n\t{\"schema\":\"tmforge-json\"}")).Success);
+        }
+
+        /// <summary>Conversion warnings name the actual register, property and metadata losses.</summary>
+        /// <param name="target">The diagram format.</param>
+        [TestMethod]
+        [DataRow("drawio")]
+        [DataRow("vsdx")]
+        public void PreflightReportsDiagramConversionLosses(string target)
+        {
+            byte[] bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Fixtures", "threat-dragon-v2.json"));
+
+            PreflightResultDto result = DocumentPreflight.Inspect(bytes, targetFormat: target);
+
+            Assert.IsTrue(result.Success);
+            Assert.IsTrue(result.Diagnostics.Any(item => item.Code == "import.structural-mapping"));
+            Assert.IsTrue(result.Diagnostics.Any(item => item.Code == "conversion.threat-register"));
+            Assert.IsTrue(result.Diagnostics.Any(item => item.Code == "conversion.metadata"));
+            Assert.AreEqual(target == "drawio", result.Diagnostics.Any(item => item.Code == "conversion.properties"));
+        }
+
+        /// <summary>Canonical conversion warns about line boundaries, embedded rules and the generated register.</summary>
+        [TestMethod]
+        public void PreflightReportsTm7ProjectionLosses()
+        {
+            ThreatModel model = new ThreatModel { KnowledgeBase = new KnowledgeBaseData() };
+            DrawingSurfaceModel page = new DrawingSurfaceModel { Guid = Guid.NewGuid(), Header = "Context" };
+            model.DrawingSurfaceList.Add(page);
+            DiagramEditor editor = new DiagramEditor(model);
+            Guid process = editor.AddElement(page, StencilKind.Process, 30, 30);
+            LineBoundary boundary = new LineBoundary { Guid = Guid.NewGuid(), SourceX = 10, SourceY = 10, TargetX = 150, TargetY = 150 };
+            page.Lines.Add(boundary.Guid, boundary);
+            string key = process.ToString("N") + ":TM1000";
+            model.AllThreatsDictionary.Add(key, new Threat { Id = 1, InteractionKey = key, TypeId = "TM1000", SourceGuid = process });
+            using MemoryStream source = new MemoryStream();
+            model.Save(source);
+
+            PreflightResultDto result = DocumentPreflight.Inspect(source.ToArray(), targetFormat: "tmforge-json");
+
+            Assert.IsTrue(result.Success);
+            CollectionAssert.IsSubsetOf(new[] { "conversion.line-boundaries", "conversion.knowledge-base", "conversion.generated-register" }, result.Diagnostics.Select(item => item.Code).ToArray());
+        }
+
+        /// <summary>Recorded settings and out-of-range geometry are warned about without changing the input.</summary>
+        [TestMethod]
+        public void PreflightWarnsAboutSettingsAndCoordinateTranslation()
+        {
+            const string Json = "{\"schema\":\"tmforge-json\",\"analysis\":{\"disabledPacks\":[\"test\"]},\"elements\":[{\"id\":\"p\",\"x\":-50,\"y\":-20}]}";
+            byte[] content = Encoding.UTF8.GetBytes(Json);
+
+            PreflightResultDto result = DocumentPreflight.Inspect(content, targetFormat: "tm7");
+
+            Assert.IsTrue(result.Success);
+            Assert.IsTrue(result.Diagnostics.Any(item => item.Code == "conversion.analysis-settings"));
+            Assert.IsTrue(result.Diagnostics.Any(item => item.Code == "conversion.coordinates"));
+            Assert.AreEqual(Json, Encoding.UTF8.GetString(content));
+            Assert.IsFalse(DocumentPreflight.Inspect(content).Diagnostics.Any(item => item.Code.StartsWith("conversion.", StringComparison.Ordinal)));
+        }
+
+        /// <summary>Loaded foreign graphs with duplicate ids or detached flows are structurally invalid.</summary>
+        [TestMethod]
+        public void PreflightRejectsMalformedLoadedGraphs()
+        {
+            ThreatModel model = new ThreatModel();
+            DrawingSurfaceModel page = new DrawingSurfaceModel { Guid = Guid.Empty };
+            StencilEllipse element = new StencilEllipse { Guid = Guid.Empty };
+            Connector flow = new Connector { Guid = Guid.NewGuid(), SourceGuid = Guid.NewGuid(), TargetGuid = Guid.NewGuid() };
+            page.Borders.Add(element.Guid, element);
+            page.Lines.Add(flow.Guid, flow);
+            model.DrawingSurfaceList.Add(page);
+            List<DocumentDiagnostic> diagnostics = new List<DocumentDiagnostic>();
+
+            DocumentPreflight.InspectModel(model, diagnostics);
+
+            Assert.AreEqual(2, diagnostics.Count(item => item.Code == "model.duplicate-id"));
+            Assert.IsTrue(diagnostics.Any(item => item.Code == "model.unresolved-endpoint"));
         }
 
         private static TmForgeModelDto SingleProcessModel()

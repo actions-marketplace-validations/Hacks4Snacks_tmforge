@@ -21,4 +21,11 @@
     <ProjectReference Include="..\..\src\ThreatModelForge.Engine\ThreatModelForge.Engine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\Fixtures\additional-matchers.json" Link="Fixtures\additional-matchers.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\Fixtures\threat-dragon-v2.json" Link="Fixtures\threat-dragon-v2.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\examples\rule-packs\*.tmrules.json" Link="Fixtures\RulePacks\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\examples\rule-packs\starter-model.tmforge.json" Link="Fixtures\RulePacks\starter-model.tmforge.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

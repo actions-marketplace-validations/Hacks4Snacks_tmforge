@@ -2,7 +2,9 @@ namespace ThreatModelForge.Cli
 {
     using System;
     using System.IO;
+    using System.Linq;
     using ThreatModelForge.Analysis;
+    using ThreatModelForge.Engine;
     using ThreatModelForge.Formats;
     using ThreatModelForge.KnowledgeBase;
     using ThreatModelForge.Model;
@@ -28,7 +30,7 @@ namespace ThreatModelForge.Cli
                 return 1;
             }
 
-            CliArgs parsed = CliArgs.Parse(args, new[] { "to", "out", "knowledge-base" });
+            CliArgs parsed = CliArgs.Parse(args, new[] { "to", "out", "knowledge-base" }, new[] { "fail-on-loss" });
             if (parsed.Help)
             {
                 PrintUsage();
@@ -77,7 +79,33 @@ namespace ThreatModelForge.Cli
                 return 1;
             }
 
-            ThreatModel model = registry.Load(input!);
+            if (new FileInfo(input).Length > JsonDocumentPreflight.MaxBytes)
+            {
+                Console.Error.WriteLine("Preflight input exceeds the 8 MiB limit.");
+                return 1;
+            }
+
+            byte[] content = File.ReadAllBytes(input);
+            string? sourceFormat = registry.FindByExtension(input)?.Id;
+            PreflightResultDto preflight = DocumentPreflight.Inspect(content, sourceFormat, target.Id);
+            bool refused = !preflight.Success || (parsed.HasFlag("fail-on-loss") && preflight.Diagnostics.Any(diagnostic => diagnostic.Severity == "warning"));
+            foreach (DocumentDiagnostic diagnostic in preflight.Diagnostics)
+            {
+                Console.Error.WriteLine(diagnostic.Severity + " " + diagnostic.Code + " " + diagnostic.Path + ": " + diagnostic.Message);
+            }
+
+            if (refused)
+            {
+                if (parsed.Json)
+                {
+                    CliJson.WriteEnvelope("convert", new { input, output = (string?)null, format = target.Id, diagnostics = preflight.Diagnostics });
+                }
+
+                return preflight.Success ? 2 : 1;
+            }
+
+            using MemoryStream inputStream = new MemoryStream(content, writable: false);
+            ThreatModel model = registry.Load(inputStream, preflight.Format);
 
             string? knowledgeBasePath = parsed.Get("knowledge-base");
             if (!string.IsNullOrEmpty(knowledgeBasePath))
@@ -117,7 +145,7 @@ namespace ThreatModelForge.Cli
 
             if (parsed.Json)
             {
-                CliJson.WriteEnvelope("convert", new { input, output = outputPath, format = target.Id });
+                CliJson.WriteEnvelope("convert", new { input, output = outputPath, format = target.Id, diagnostics = preflight.Diagnostics });
             }
             else
             {
@@ -131,11 +159,12 @@ namespace ThreatModelForge.Cli
         {
             Console.Error.WriteLine("Threat Model Forge format converter.");
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  tmforge convert [--to <format>] [--out <path>] [--knowledge-base <file.tb7>] [--json] <input>");
+            Console.Error.WriteLine("  tmforge convert [--to <format>] [--out <path>] [--knowledge-base <file.tb7>] [--fail-on-loss] [--json] <input>");
             Console.Error.WriteLine();
             Console.Error.WriteLine("The target format is taken from --to, or inferred from the --out extension.");
             Console.Error.WriteLine("If --out is omitted, the input name is reused with the target extension.");
             Console.Error.WriteLine("Formats: tm7, tmforge-json, drawio, vsdx.");
+            Console.Error.WriteLine("--fail-on-loss refuses conversion warnings before opening the destination. Use preflight for a read-only preview.");
             Console.Error.WriteLine();
             Console.Error.WriteLine("A tm7 export embeds the Threat Model Forge knowledge base by default so the file opens");
             Console.Error.WriteLine("in the Microsoft Threat Modeling Tool; use --knowledge-base <file.tb7> to embed a different");

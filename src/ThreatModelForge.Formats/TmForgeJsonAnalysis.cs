@@ -14,5 +14,8 @@ namespace ThreatModelForge.Formats
 
         /// <summary>Gets the ids of individual rules to skip (for example, <c>TM1002</c>).</summary>
         public IReadOnlyList<string>? DisabledRuleIds { get; init; }
+
+        /// <summary>Gets the expected custom rule-pack identities carried by the wire model.</summary>
+        public IReadOnlyList<TmForgeJsonExpectedPack>? ExpectedPacks { get; init; }
     }
 }

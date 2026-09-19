@@ -130,8 +130,21 @@ namespace ThreatModelForge.Formats
                     char[] buffer = new char[512];
                     int count = reader.Read(buffer, 0, buffer.Length);
                     string prefix = new string(buffer, 0, count);
-                    return prefix.IndexOf(SchemaToken, StringComparison.Ordinal) >= 0;
+                    Utf8JsonReader json = new Utf8JsonReader(Encoding.UTF8.GetBytes(prefix), isFinalBlock: false, state: default);
+                    while (json.Read())
+                    {
+                        if (json.TokenType == JsonTokenType.PropertyName && json.CurrentDepth == 1 && json.ValueTextEquals("schema"))
+                        {
+                            return json.Read() && json.TokenType == JsonTokenType.String && json.ValueTextEquals(SchemaToken);
+                        }
+                    }
+
+                    return false;
                 }
+            }
+            catch (JsonException)
+            {
+                return false;
             }
             finally
             {
@@ -187,15 +200,16 @@ namespace ThreatModelForge.Formats
                 index++;
             }
 
-            // The top-level elements/flows mirror the first page so single-page readers keep working;
-            // the diagrams array is emitted only when the model has more than one page.
             TmForgeJsonModel document = new TmForgeJsonModel
             {
                 Schema = SchemaToken,
                 Version = "0.1",
+                Metadata = model.MetaInformation,
                 Elements = diagrams.Count > 0 ? diagrams[0].Elements : Array.Empty<TmForgeJsonElement>(),
                 Flows = diagrams.Count > 0 ? diagrams[0].Flows : Array.Empty<TmForgeJsonFlow>(),
-                Diagrams = diagrams.Count > 1 ? diagrams.ToArray() : null,
+                Diagrams = diagrams.Count > 0 && (diagrams.Count > 1
+                    || model.DrawingSurfaceList[0].Guid != DefaultSurfaceGuid
+                    || diagrams[0].Name != "Diagram 1") ? diagrams.ToArray() : null,
                 Analysis = analysis,
                 Threats = CollectTriage(model),
             };
@@ -232,21 +246,12 @@ namespace ThreatModelForge.Formats
                 throw new ArgumentNullException(nameof(stream));
             }
 
-            string text;
-            using (StreamReader reader = new StreamReader(
-                stream,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: true,
-                bufferSize: 1024,
-                leaveOpen: true))
-            {
-                text = reader.ReadToEnd();
-            }
-
+            string text = JsonDocumentPreflight.ReadText(stream);
+            JsonModelPreflight.ThrowIfInvalid(JsonModelPreflight.Inspect(text));
             TmForgeJsonModel document = JsonSerializer.Deserialize<TmForgeJsonModel>(text, SerializerOptions)
                 ?? new TmForgeJsonModel();
 
-            ThreatModel model = new ThreatModel { Version = "1.0" };
+            ThreatModel model = new ThreatModel { Version = "1.0", MetaInformation = document.Metadata };
             DiagramEditor editor = new DiagramEditor(model);
 
             if (document.Diagrams != null && document.Diagrams.Count > 0)
@@ -322,7 +327,12 @@ namespace ThreatModelForge.Formats
                     continue;
                 }
 
-                model.AllThreatsDictionary[entry.Id] = BuildOverlayThreat(entry, manual, state, surfaceGuid, nextId);
+                Threat threat = BuildOverlayThreat(entry, manual, state, surfaceGuid, nextId);
+                DrawingSurfaceModel? scopedPage = model.DrawingSurfaceList.FirstOrDefault(page =>
+                    page.Borders.ContainsKey(threat.SourceGuid) || page.Lines.ContainsKey(threat.SourceGuid)
+                    || page.Lines.ContainsKey(threat.FlowGuid));
+                threat.DrawingSurfaceGuid = scopedPage?.Guid ?? surfaceGuid;
+                model.AllThreatsDictionary[entry.Id] = threat;
                 nextId++;
             }
         }
@@ -381,6 +391,15 @@ namespace ThreatModelForge.Formats
                 {
                     ["Mitigation"] = entry.Mitigation!,
                 };
+            }
+
+            if (manual && entry.Source != null)
+            {
+                threat.Properties ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (KeyValuePair<string, string> provenance in entry.Source)
+                {
+                    threat.Properties["Source." + provenance.Key] = provenance.Value;
+                }
             }
 
             if (!manual && !string.IsNullOrEmpty(entry.Priority))
@@ -475,6 +494,7 @@ namespace ThreatModelForge.Formats
                     Title = manual || titleOverride ? NullIfEmpty(threat.Title) : null,
                     Description = NullIfEmpty(threat.UserThreatDescription),
                     Mitigation = manual ? MitigationOf(threat) : null,
+                    Source = manual ? SourceOf(threat) : null,
                     Priority = manual || priorityOverride || markerlessTriagedPriority ? NullIfEmpty(threat.Priority) : null,
                     ElementIds = manual ? ScopeIds(threat) : null,
                 });
@@ -490,6 +510,14 @@ namespace ThreatModelForge.Formats
         }
 
         private static string? NullIfEmpty(string? value) => string.IsNullOrEmpty(value) ? null : value;
+
+        private static IReadOnlyDictionary<string, string>? SourceOf(Threat threat)
+        {
+            Dictionary<string, string>? source = threat.Properties?
+                .Where(property => property.Key.StartsWith("Source.", StringComparison.OrdinalIgnoreCase))
+                .ToDictionary(property => property.Key.Substring("Source.".Length), property => property.Value, StringComparer.Ordinal);
+            return source?.Count > 0 ? source : null;
+        }
 
         private static string? MitigationOf(Threat threat)
         {

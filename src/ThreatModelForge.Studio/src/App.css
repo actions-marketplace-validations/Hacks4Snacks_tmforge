@@ -2132,6 +2132,43 @@ a.threat-ref:hover {
   padding: 20px 22px 22px;
 }
 
+.preflight-modal {
+  width: min(760px, 100%);
+  max-height: 85vh;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  min-width: 0;
+}
+
+.preflight-diagnostics {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: auto;
+  min-height: 0;
+  font-size: 13px;
+}
+
+.preflight-diagnostics li {
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.preflight-diagnostic-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.preflight-diagnostic-head strong { text-transform: capitalize; }
+.preflight-path { display: block; margin-top: 6px; color: var(--muted); }
+.preflight-diagnostics p { margin: 6px 0 0; line-height: 1.5; }
+.preflight-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; }
+
 .merge-head {
   display: flex;
   align-items: center;

@@ -115,6 +115,18 @@ describe('ThreatsPanel', () => {
     expect(heads).toEqual(['Spoofing2']);
   });
 
+  it('retains an imported non-STRIDE category while editing other threat fields', () => {
+    const imported = threat({ id: 'manual:threat-dragon.source', manual: true, category: 'Linkability', source: { format: 'threat-dragon' } });
+    const { onEditThreat } = renderPanel({ threats: [imported] });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.getByLabelText('Category')).toHaveValue('Linkability');
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Reviewed description' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect(onEditThreat).toHaveBeenCalledWith(imported, { state: 'Open', description: 'Reviewed description' });
+  });
+
   it('links CWE / CAPEC references to their MITRE catalog pages', () => {
     renderPanel();
 

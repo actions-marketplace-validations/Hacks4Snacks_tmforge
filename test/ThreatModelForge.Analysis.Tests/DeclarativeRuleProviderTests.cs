@@ -2,8 +2,11 @@ namespace ThreatModelForge.Analysis.Tests
 {
     using System;
     using System.Collections.Generic;
+    using System.Globalization;
     using System.IO;
     using System.Linq;
+    using System.Text.Json;
+    using System.Text.RegularExpressions;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.KnowledgeBase;
     using ThreatModelForge.Model;
@@ -144,6 +147,416 @@ namespace ThreatModelForge.Analysis.Tests
             context.SetDeclarativeOperationLimit(context.GetDeclarativeOperationCount());
 
             Assert.Throws<InvalidDataException>(() => rules[1].Evaluate(context));
+        }
+
+        /// <summary>Numeric guards use invariant decimals and never match missing or invalid values.</summary>
+        /// <param name="value">The stored property value, or null for an absent property.</param>
+        /// <param name="expected">Whether the numeric guard should match.</param>
+        [TestMethod]
+        [DataRow(null, false)]
+        [DataRow("", false)]
+        [DataRow("Unknown", false)]
+        [DataRow("NaN", false)]
+        [DataRow("Infinity", false)]
+        [DataRow("10,5", false)]
+        [DataRow("10", false)]
+        [DataRow("9", false)]
+        [DataRow("10.5", true)]
+        [DataRow("  +11  ", true)]
+        [DataRow("1e2", true)]
+        public void NumericGuardsUseInvariantValues(string? value, bool expected)
+        {
+            string rule =
+                "{\"id\":\"LIMIT\",\"appliesTo\":\"process\",\"message\":\"limit exceeded\"," +
+                "\"when\":{\"property\":\"Cache Type\",\"greaterThan\":10}}";
+            string spec = VersionTwoSpec("numeric", rule);
+            List<string> diagnostics = new List<string>();
+            RuleBundle bundle = DeclarativeRuleProvider.LoadBundle(new[] { this.WriteSpec(spec) }, diagnostics.Add);
+            Assert.AreEqual(1, bundle.Rules.Count, string.Join("; ", diagnostics));
+            StencilEllipse process = CreateEntity<StencilEllipse>("GE.P", "GE.P", "Worker");
+            if (value != null)
+            {
+                process.Properties.Add(new CustomStringDisplayAttribute { Value = "Cache Type:" + value });
+            }
+
+            DrawingSurfaceModel diagram = new DrawingSurfaceModel { Header = "Numeric" };
+            diagram.Borders.Add(process.Guid, process);
+            MockMessageWriter writer = new MockMessageWriter();
+            RuleEvaluationContext context = new RuleEvaluationContext(
+                new ThreatModel { DrawingSurfaceList = { diagram } },
+                writer);
+            CultureInfo originalCulture = CultureInfo.CurrentCulture;
+            try
+            {
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fr-FR");
+                bundle.Rules[0].Evaluate(context);
+            }
+            finally
+            {
+                CultureInfo.CurrentCulture = originalCulture;
+            }
+
+            Assert.AreEqual(expected ? 1 : 0, writer.Messages.Count);
+        }
+
+        /// <summary>Numeric comparisons agree on each subject in both rule dialects.</summary>
+        /// <param name="matcher">The numeric comparison.</param>
+        /// <param name="value">The property value.</param>
+        /// <param name="expected">Whether the comparison matches.</param>
+        [TestMethod]
+        [DataRow("\"greaterThan\":10", "9", false)]
+        [DataRow("\"greaterThan\":10", "10", false)]
+        [DataRow("\"greaterThan\":10", "11", true)]
+        [DataRow("\"greaterThanOrEqual\":10", "9", false)]
+        [DataRow("\"greaterThanOrEqual\":10", "10", true)]
+        [DataRow("\"greaterThanOrEqual\":10", "11", true)]
+        [DataRow("\"lessThan\":10", "9", true)]
+        [DataRow("\"lessThan\":10", "10", false)]
+        [DataRow("\"lessThan\":10", "11", false)]
+        [DataRow("\"lessThanOrEqual\":10", "9", true)]
+        [DataRow("\"lessThanOrEqual\":10", "10", true)]
+        [DataRow("\"lessThanOrEqual\":10", "11", false)]
+        [DataRow("\"greaterThanOrEqual\":10,\"lessThan\":20", "15", true)]
+        [DataRow("\"greaterThanOrEqual\":10,\"lessThan\":20", "20", false)]
+        [DataRow("\"greaterThan\":9,\"greaterThanOrEqual\":10,\"lessThan\":11,\"lessThanOrEqual\":10", "10", true)]
+        [DataRow("\"greaterThanOrEqual\":0", "1e99", false)]
+        [DataRow("\"greaterThanOrEqual\":0", "1,000", false)]
+        public void NumericPredicatesApplyAcrossSubjects(string matcher, string value, bool expected)
+        {
+            foreach (string form in new[] { "element", "flow", "source", "target", "interaction-source", "interaction-target", "interaction-flow" })
+            {
+                MockMessageWriter writer = this.RunPropertyRule(matcher, value, form);
+                Assert.AreEqual(expected ? 1 : 0, writer.Messages.Count, form);
+            }
+        }
+
+        /// <summary>Missing or invalid numeric evidence fails a requirement instead of proving it.</summary>
+        /// <param name="value">The absent or invalid evidence.</param>
+        [TestMethod]
+        [DataRow(null)]
+        [DataRow("")]
+        [DataRow("Unknown")]
+        [DataRow("not a number")]
+        public void NumericRequirementsFailWithoutEvidence(string? value)
+        {
+            MockMessageWriter writer = this.RunPropertyRule("\"lessThanOrEqual\":30", value, "element", requirement: true);
+            Assert.AreEqual(1, writer.Messages.Count);
+        }
+
+        /// <summary>Numeric parsing and comparison consume the invocation budget.</summary>
+        [TestMethod]
+        public void NumericEvaluationIsBounded()
+        {
+            Assert.Throws<InvalidDataException>(() => this.RunPropertyRule("\"greaterThan\":0", "1", "element", operationLimit: 1));
+            Assert.AreEqual(0, this.RunPropertyRule("\"greaterThanOrEqual\":0", new string('0', 257), "element").Messages.Count);
+        }
+
+        /// <summary>Invalid numeric constraints are diagnosed before a pack can be evaluated.</summary>
+        /// <param name="condition">The invalid condition.</param>
+        [TestMethod]
+        [DataRow("{\"greaterThan\":10}")]
+        [DataRow("{\"property\":\"Cache Type\",\"greaterThan\":\"10\"}")]
+        [DataRow("{\"property\":\"Cache Type\",\"greaterThan\":1e99}")]
+        [DataRow("{\"property\":\"Cache Type\",\"greaterThan\":null}")]
+        [DataRow("{\"property\":\"Cache Type\",\"greaterThan\":10,\"lessThanOrEqual\":10}")]
+        [DataRow("{\"property\":\"Cache Type\",\"greaterThanOrEqual\":11,\"lessThan\":10}")]
+        public void RejectsInvalidNumericConstraints(string condition)
+        {
+            string rule = "{\"id\":\"BAD\",\"appliesTo\":\"process\",\"message\":\"bad\",\"when\":" + condition + "}";
+            List<string> diagnostics = new List<string>();
+            RuleBundle bundle = DeclarativeRuleProvider.LoadBundle(
+                new[] { this.WriteSpec(VersionTwoSpec("numeric-invalid", rule)) }, diagnostics.Add);
+            Assert.AreEqual(0, bundle.Rules.Count);
+            Assert.AreEqual(0, bundle.Packs.Count);
+            Assert.IsTrue(diagnostics.Count > 0);
+        }
+
+        /// <summary>Regex predicates have identical subject and missing-value semantics in both dialects.</summary>
+        /// <param name="pattern">The regular expression.</param>
+        /// <param name="value">The property value.</param>
+        /// <param name="expected">Whether it should match.</param>
+        [TestMethod]
+        [DataRow("^svc-[0-9]+$", "svc-42", true)]
+        [DataRow("^svc-[0-9]+$", "SVC-42", false)]
+        [DataRow("(?i)^svc-[0-9]+$", "SVC-42", true)]
+        [DataRow("svc", "prefix-svc-suffix", true)]
+        [DataRow("^svc$", "prefix-svc-suffix", false)]
+        [DataRow("^svc$", null, false)]
+        [DataRow(".*", "", false)]
+        [DataRow(".*", "   ", false)]
+        [DataRow("^svc$", "Unknown", false)]
+        [DataRow("^Unknown$", "Unknown", true)]
+        public void RegexPredicatesApplyAcrossSubjects(string pattern, string? value, bool expected)
+        {
+            string matcher = "\"matches\":" + JsonSerializer.Serialize(pattern);
+            foreach (string form in new[] { "element", "flow", "source", "target", "interaction-source", "interaction-target", "interaction-flow" })
+            {
+                Assert.AreEqual(expected ? 1 : 0, this.RunPropertyRule(matcher, value, form).Messages.Count, form);
+            }
+        }
+
+        /// <summary>Missing evidence fails a regex requirement, and excessive input aborts analysis.</summary>
+        [TestMethod]
+        public void RegexRequirementsAndInputLimitsAreExplicit()
+        {
+            Assert.AreEqual(1, this.RunPropertyRule("\"matches\":\"^svc-\"", null, "element", requirement: true).Messages.Count);
+            Assert.AreEqual(1, this.RunPropertyRule("\"matches\":\"^a+$\"", new string('a', 4096), "element").Messages.Count);
+            InvalidDataException error = Assert.Throws<InvalidDataException>(
+                () => this.RunPropertyRule("\"matches\":\".*\"", new string('a', 4097), "element"));
+            StringAssert.Contains(error.Message, "regex input");
+            StringAssert.Contains(error.Message, "4096");
+        }
+
+        /// <summary>A timeout aborts analysis even when the failed predicate is under negation.</summary>
+        [TestMethod]
+        public void RegexTimeoutIsNeverAFalsePredicate()
+        {
+            string matcher = "\"matches\":\"^(a+)+$\"";
+            foreach (string form in new[] { "element", "interaction-source" })
+            {
+                InvalidDataException error = Assert.Throws<InvalidDataException>(
+                    () => this.RunPropertyRule(matcher, new string('a', 4095) + "!", form, requirement: true));
+                StringAssert.Contains(error.Message, "property-matchers/VALUE");
+                StringAssert.Contains(error.Message, "timeout");
+                Assert.IsInstanceOfType<RegexMatchTimeoutException>(error.InnerException);
+            }
+        }
+
+        /// <summary>The shared regex budget is cumulative and remains exhausted for subsequent rules.</summary>
+        [TestMethod]
+        public void RegexTimeBudgetIsShared()
+        {
+            RuleEvaluationContext context = new RuleEvaluationContext(new ThreatModel(), new MockMessageWriter());
+            context.AccountRegexTime(TimeSpan.FromMilliseconds(600));
+            Assert.Throws<InvalidDataException>(() => context.AccountRegexTime(TimeSpan.FromMilliseconds(401)));
+            Assert.Throws<InvalidDataException>(() => context.AccountRegexTime(TimeSpan.Zero));
+        }
+
+        /// <summary>Invalid patterns reject their whole pack with rule-local diagnostics.</summary>
+        /// <param name="pattern">An invalid or empty pattern.</param>
+        [TestMethod]
+        [DataRow("[")]
+        [DataRow("")]
+        [DataRow("(?invalid)")]
+        public void RejectsInvalidRegexPatterns(string pattern)
+        {
+            string predicate = "{\"property\":\"Cache Type\",\"matches\":" + JsonSerializer.Serialize(pattern) + "}";
+            string rule = "{\"id\":\"REGEX\",\"appliesTo\":\"process\",\"message\":\"regex\",\"when\":" + predicate + "}";
+            List<string> diagnostics = new List<string>();
+            RuleBundle bundle = DeclarativeRuleProvider.LoadBundle(
+                new[] { this.WriteSpec(VersionTwoSpec("regex-invalid", V2Rule + "," + rule)) }, diagnostics.Add);
+            Assert.AreEqual(0, bundle.Rules.Count);
+            Assert.AreEqual(0, bundle.Packs.Count);
+            Assert.IsTrue(diagnostics.Any(message => message.Contains("REGEX")));
+        }
+
+        /// <summary>Regex text and distinct-pattern counts are bounded across all loaded sources.</summary>
+        [TestMethod]
+        public void RegexPatternLimitsAndReuse()
+        {
+            string RuleText(string id, string pattern) =>
+                "{\"id\":\"" + id + "\",\"appliesTo\":\"process\",\"message\":\"regex\",\"when\":{\"property\":\"Cache Type\",\"matches\":" + JsonSerializer.Serialize(pattern) + "}}";
+            List<string> diagnostics = new List<string>();
+            string overlong = RuleText("LONG", new string('a', 1025));
+            RuleBundle rejected = DeclarativeRuleProvider.LoadBundle(
+                new[] { this.WriteSpec(VersionTwoSpec("regex-long", overlong)) }, diagnostics.Add);
+            Assert.AreEqual(0, rejected.Rules.Count);
+            Assert.IsTrue(diagnostics.Any(message => message.Contains("1024")));
+
+            string repeated = string.Join(",", Enumerable.Range(0, 130).Select(index => RuleText("R" + index, "^svc$")));
+            RuleBundle reused = DeclarativeRuleProvider.LoadBundle(new[] { this.WriteSpec(VersionTwoSpec("regex-reuse", repeated)) });
+            Assert.AreEqual(130, reused.Rules.Count);
+            DeclarativeRule first = (DeclarativeRule)reused.Rules[0];
+            DeclarativeRule second = (DeclarativeRule)reused.Rules[1];
+            Assert.AreSame(first.CompiledExpression.Pattern, second.CompiledExpression.Pattern);
+
+            string distinct = string.Join(",", Enumerable.Range(0, 128).Select(index => RuleText("D" + index, "^svc" + index + "$")));
+            string extra = RuleText("EXTRA", "^other$");
+            RuleBundle limited = DeclarativeRuleProvider.LoadBundle(
+                new[] { this.WriteSpec(VersionTwoSpec("regex-first", distinct)), this.WriteSpec(VersionTwoSpec("regex-extra", extra)) }, diagnostics.Add);
+            Assert.AreEqual(128, limited.Rules.Count);
+            Assert.AreEqual(1, limited.Packs.Count);
+            Assert.IsTrue(diagnostics.Any(message => message.Contains("128 distinct regex")));
+        }
+
+        /// <summary>Connectivity follows directed edges and never invents a zero-hop path.</summary>
+        /// <param name="predicate">The connectivity condition.</param>
+        /// <param name="appliesTo">The kind of component being checked.</param>
+        /// <param name="names">The expected finding targets.</param>
+        [TestMethod]
+        [DataRow("\"reachableFrom\":{\"kind\":\"external\"}", "process", "Gateway,Worker")]
+        [DataRow("\"reachableFrom\":{\"kind\":\"process\"}", "process", "Worker")]
+        [DataRow("\"reachableFrom\":{\"kind\":\"external\"}", "external", "")]
+        [DataRow("\"reachableFrom\":{\"kind\":\"datastore\"}", "process", "")]
+        [DataRow("\"connectsTo\":{\"kind\":\"datastore\"}", "process", "Worker")]
+        [DataRow("\"connectsTo\":{\"kind\":\"process\"}", "process", "Gateway")]
+        [DataRow("\"connectsTo\":{\"kind\":\"external\"}", "process", "")]
+        [DataRow("\"reachableFrom\":{\"kind\":\"external\"},\"connectsTo\":{\"kind\":\"datastore\"}", "process", "Worker")]
+        public void ConnectivityIsDirectedAndNonReflexive(string predicate, string appliesTo, string names)
+        {
+            ThreatModel model = CreateConnectivityModel();
+            Rule rule = this.LoadGraphRule(predicate, appliesTo: appliesTo);
+            MockMessageWriter writer = new MockMessageWriter();
+
+            rule.Evaluate(new RuleEvaluationContext(model, writer));
+
+            string actual = string.Join(",", writer.Messages.Select(message => message.Target!.Name()).OrderBy(name => name, StringComparer.Ordinal));
+            Assert.AreEqual(names, actual);
+        }
+
+        /// <summary>Interaction expressions can inspect connectivity and primitive kinds at either endpoint.</summary>
+        /// <param name="predicate">The endpoint predicate.</param>
+        /// <param name="subject">The endpoint being inspected.</param>
+        /// <param name="count">The expected matching flows.</param>
+        [TestMethod]
+        [DataRow("\"reachableFrom\":{\"kind\":\"external\"}", "target", 3)]
+        [DataRow("\"reachableFrom\":{\"kind\":\"external\"}", "source", 2)]
+        [DataRow("\"connectsTo\":{\"kind\":\"datastore\"}", "source", 1)]
+        [DataRow("\"connectsTo\":{\"kind\":\"datastore\"}", "target", 1)]
+        [DataRow("\"kind\":\"external\"", "source", 1)]
+        [DataRow("\"kind\":\"external\"", "target", 0)]
+        [DataRow("\"kind\":\"datastore\"", "target", 1)]
+        public void InteractionConnectivityUsesTheChosenEndpoint(string predicate, string subject, int count)
+        {
+            Rule rule = this.LoadGraphRule(predicate, interaction: true, subject: subject);
+            MockMessageWriter writer = new MockMessageWriter();
+            rule.Evaluate(new RuleEvaluationContext(CreateConnectivityModel(), writer));
+            Assert.AreEqual(count, writer.Messages.Count);
+        }
+
+        /// <summary>Explicit cycles and self-loops supply positive-length paths without infinite traversal.</summary>
+        [TestMethod]
+        public void ConnectivityHandlesCyclesSelfLoopsAndParallelEdges()
+        {
+            ThreatModel model = CreateConnectivityModel();
+            DrawingSurfaceModel page = model.DrawingSurfaceList[0];
+            Entity gateway = page.Components().Single(element => element.Name() == "Gateway");
+            Entity worker = page.Components().Single(element => element.Name() == "Worker");
+            Entity isolated = page.Components().Single(element => element.Name() == "Isolated");
+            AddGraphFlow(page, worker, gateway);
+            AddGraphFlow(page, worker, gateway);
+            AddGraphFlow(page, isolated, isolated);
+            Rule rule = this.LoadGraphRule("\"reachableFrom\":{\"kind\":\"process\"}");
+            MockMessageWriter writer = new MockMessageWriter();
+            rule.Evaluate(new RuleEvaluationContext(model, writer));
+            Assert.AreEqual(3, writer.Messages.Count);
+            Assert.AreEqual(3, writer.Messages.Select(message => message.Target!.Guid).Distinct().Count());
+        }
+
+        /// <summary>Connectivity is page-local and does not infer access control from boundary geometry.</summary>
+        [TestMethod]
+        public void ConnectivityIgnoresBoundaryGeometryButNeverCrossesPages()
+        {
+            ThreatModel model = CreateConnectivityModel();
+            DrawingSurfaceModel first = model.DrawingSurfaceList[0];
+            DrawingSurfaceModel second = new DrawingSurfaceModel { Header = "Other page" };
+            foreach (KeyValuePair<Guid, object> component in first.Borders)
+            {
+                second.Borders.Add(component.Key, component.Value);
+            }
+
+            model.DrawingSurfaceList.Add(second);
+            BorderBoundary boundary = new BorderBoundary { Guid = Guid.NewGuid(), Left = -1000, Top = -1000, Width = 2000, Height = 2000 };
+            first.Borders.Add(boundary.Guid, boundary);
+            Rule rule = this.LoadGraphRule("\"reachableFrom\":{\"kind\":\"external\"}");
+            MockMessageWriter before = new MockMessageWriter();
+            rule.Evaluate(new RuleEvaluationContext(model, before));
+            boundary.Left = 5000;
+            MockMessageWriter after = new MockMessageWriter();
+            rule.Evaluate(new RuleEvaluationContext(model, after));
+            Assert.AreEqual(2, after.Messages.Count);
+            Assert.IsTrue(after.Messages.All(message => ReferenceEquals(first, message.Model)));
+            CollectionAssert.AreEquivalent(before.Messages.Select(message => message.Target!.Guid).ToArray(), after.Messages.Select(message => message.Target!.Guid).ToArray());
+        }
+
+        /// <summary>Connectivity filters reuse property aliases, numeric/regex matching, and policy bindings.</summary>
+        /// <param name="interaction">Whether the rule uses the interaction dialect.</param>
+        [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void ConnectivityFiltersReusePropertyMatchers(bool interaction)
+        {
+            ThreatModel model = CreateConnectivityModel();
+            Entity entry = model.DrawingSurfaceList[0].Components().Single(element => element.Name() == "Entry");
+            entry.Properties.Add(new CustomStringDisplayAttribute { Value = "Cache Type:42" });
+            string predicate = "\"reachableFrom\":{\"kind\":\"external\",\"property\":\"cacheType\",\"greaterThan\":40,\"matches\":\"^[0-9]+$\"}";
+            Rule rule = this.LoadGraphRule(predicate, interaction: interaction);
+            MockMessageWriter writer = new MockMessageWriter();
+            rule.Evaluate(new RuleEvaluationContext(model, writer));
+            Assert.AreEqual(interaction ? 3 : 2, writer.Messages.Count);
+            Assert.IsTrue(rule.PropertyBindings.Any(binding => binding.AppliesTo == "external" && binding.PropertyName == "Cache Type"));
+            entry.Properties.RemoveAt(entry.Properties.Count - 1);
+            MockMessageWriter absent = new MockMessageWriter();
+            rule.Evaluate(new RuleEvaluationContext(model, absent));
+            Assert.AreEqual(0, absent.Messages.Count);
+        }
+
+        /// <summary>Long cyclic paths are iterative and consume work proportional to vertices and edges.</summary>
+        /// <param name="count">The number of intermediate components.</param>
+        [TestMethod]
+        [DataRow(256)]
+        [DataRow(4096)]
+        public void ConnectivityWorkIsLinearForLargeCycles(int count)
+        {
+            DrawingSurfaceModel page = new DrawingSurfaceModel();
+            List<StencilEllipse> nodes = Enumerable.Range(0, count)
+                .Select(index => CreateEntity<StencilEllipse>("GE.P", "GE.P", "Node " + index)).ToList();
+            StencilParallelLines store = CreateEntity<StencilParallelLines>("GE.DS", "GE.DS", "Store");
+            foreach (StencilEllipse node in nodes)
+            {
+                page.Borders.Add(node.Guid, node);
+            }
+
+            page.Borders.Add(store.Guid, store);
+            for (int index = 0; index < count - 1; index++)
+            {
+                AddGraphFlow(page, nodes[index], nodes[index + 1]);
+            }
+
+            AddGraphFlow(page, nodes[count - 1], nodes[0]);
+            AddGraphFlow(page, nodes[count - 1], store);
+            ThreatModel model = new ThreatModel { DrawingSurfaceList = { page } };
+            Rule rule = this.LoadGraphRule("\"reachableFrom\":{\"kind\":\"external\"}", appliesTo: "datastore");
+            MockMessageWriter writer = new MockMessageWriter();
+            RuleEvaluationContext context = new RuleEvaluationContext(model, writer);
+            context.SetDeclarativeOperationLimit((10 * count) + 100);
+            rule.Evaluate(context);
+            Assert.AreEqual(0, writer.Messages.Count);
+            Assert.IsTrue(context.GetDeclarativeOperationCount() < (10 * count) + 100);
+            context.SetDeclarativeOperationLimit(context.GetDeclarativeOperationCount() + count + 10);
+            Assert.Throws<InvalidDataException>(() => rule.Evaluate(context));
+        }
+
+        /// <summary>Connectivity rejects ambiguous filters and invalid subjects before evaluation.</summary>
+        /// <param name="predicate">The invalid predicate.</param>
+        /// <param name="interaction">Whether to use the interaction dialect.</param>
+        /// <param name="subject">The flat appliesTo or interaction subject.</param>
+        [TestMethod]
+        [DataRow("\"reachableFrom\":{}", false, "process")]
+        [DataRow("\"reachableFrom\":{\"kind\":\"flow\"}", false, "process")]
+        [DataRow("\"connectsTo\":{\"kind\":\"process\"}", false, "flow")]
+        [DataRow("\"connectsTo\":{\"kind\":\"process\"}", true, "flow")]
+        [DataRow("\"connectsTo\":{},\"reachableFrom\":{}", true, "source")]
+        [DataRow("\"connectsTo\":{\"greaterThan\":10}", true, "source")]
+        [DataRow("\"connectsTo\":{\"kind\":\"unknown\"}", true, "source")]
+        [DataRow("\"connectsTo\":{\"property\":\"Missing\"}", true, "source")]
+        [DataRow("\"connectsTo\":{\"property\":\"cacheType\",\"equals\":\"INVALID\"}", true, "source")]
+        [DataRow("\"kind\":\"process\",\"type\":\"GE.P\"", true, "source")]
+        [DataRow("\"kind\":\"process\"", true, "flow")]
+        public void RejectsInvalidConnectivityPredicates(string predicate, bool interaction, string subject)
+        {
+            string rule = GraphRuleText(predicate, interaction, subject, subject);
+            string spec = VersionTwoSpec("invalid-connectivity", rule);
+            if (interaction)
+            {
+                spec = spec.Replace(RulePackDialects.FlatV1, RulePackDialects.InteractionV1);
+            }
+
+            List<string> diagnostics = new List<string>();
+            RuleBundle bundle = DeclarativeRuleProvider.LoadBundle(new[] { this.WriteSpec(spec) }, diagnostics.Add);
+            Assert.AreEqual(0, bundle.Rules.Count);
+            Assert.AreEqual(0, bundle.Packs.Count);
+            Assert.IsTrue(diagnostics.Count > 0);
         }
 
         /// <summary>
@@ -1408,6 +1821,38 @@ namespace ThreatModelForge.Analysis.Tests
             return entity;
         }
 
+        private static ThreatModel CreateConnectivityModel()
+        {
+            DrawingSurfaceModel page = new DrawingSurfaceModel { Header = "Connectivity" };
+            StencilRectangle entry = CreateEntity<StencilRectangle>("GE.EI", "GE.EI", "Entry");
+            StencilEllipse gateway = CreateEntity<StencilEllipse>("GE.P", "GE.P", "Gateway");
+            StencilEllipse worker = CreateEntity<StencilEllipse>("GE.P", "GE.P", "Worker");
+            StencilParallelLines store = CreateEntity<StencilParallelLines>("GE.DS", "GE.DS", "Store");
+            StencilEllipse isolated = CreateEntity<StencilEllipse>("GE.P", "GE.P", "Isolated");
+            foreach (Entity component in new Entity[] { entry, gateway, worker, store, isolated })
+            {
+                page.Borders.Add(component.Guid, component);
+            }
+
+            AddGraphFlow(page, entry, gateway);
+            AddGraphFlow(page, gateway, worker);
+            AddGraphFlow(page, worker, store);
+            return new ThreatModel { DrawingSurfaceList = { page } };
+        }
+
+        private static void AddGraphFlow(DrawingSurfaceModel page, Entity source, Entity target)
+        {
+            Connector flow = CreateEntity<Connector>("GE.DF", "GE.DF", "Flow");
+            flow.SourceGuid = source.Guid;
+            flow.TargetGuid = target.Guid;
+            page.Lines.Add(flow.Guid, flow);
+        }
+
+        private static string GraphRuleText(string predicate, bool interaction, string subject, string appliesTo) =>
+            interaction
+                ? "{\"id\":\"GRAPH\",\"message\":\"graph\",\"expression\":{\"subject\":\"" + subject + "\"," + predicate + "}}"
+                : "{\"id\":\"GRAPH\",\"appliesTo\":\"" + appliesTo + "\",\"message\":\"graph\",\"when\":{" + predicate + "}}";
+
         private string WriteSpec(string json, string? fileName = null)
         {
             string path = Path.Join(
@@ -1415,6 +1860,79 @@ namespace ThreatModelForge.Analysis.Tests
                 fileName ?? Guid.NewGuid().ToString("N") + ".tmrules.json");
             File.WriteAllText(path, json);
             return path;
+        }
+
+        private Rule LoadGraphRule(string predicate, bool interaction = false, string subject = "target", string appliesTo = "process")
+        {
+            string spec = VersionTwoSpec("connectivity", GraphRuleText(predicate, interaction, subject, appliesTo));
+            if (interaction)
+            {
+                spec = spec.Replace(RulePackDialects.FlatV1, RulePackDialects.InteractionV1);
+            }
+
+            List<string> diagnostics = new List<string>();
+            RuleBundle bundle = DeclarativeRuleProvider.LoadBundle(new[] { this.WriteSpec(spec) }, diagnostics.Add);
+            Assert.AreEqual(1, bundle.Rules.Count, string.Join("; ", diagnostics));
+            return bundle.Rules[0];
+        }
+
+        private MockMessageWriter RunPropertyRule(
+            string matcher,
+            string? value,
+            string form,
+            bool requirement = false,
+            long? operationLimit = null)
+        {
+            bool interaction = form.StartsWith("interaction-", StringComparison.Ordinal);
+            string subject = interaction ? form.Substring("interaction-".Length) : form;
+            string predicate = "{\"property\":\"cacheType\"," + matcher + "}";
+            string condition = subject == "source" || subject == "target"
+                ? "{\"" + subject + "\":" + predicate + "}"
+                : predicate;
+            string rule = interaction
+                ? "{\"id\":\"VALUE\",\"message\":\"value\",\"expression\":{\"subject\":\"" + subject + "\",\"property\":\"cacheType\"," + matcher + "}}"
+                : "{\"id\":\"VALUE\",\"message\":\"value\",\"appliesTo\":\"" + (subject == "element" ? "process" : "flow") +
+                    "\",\"" + (requirement ? "assert" : "when") + "\":" + condition + "}";
+            if (interaction && requirement)
+            {
+                using JsonDocument document = JsonDocument.Parse(rule);
+                string expression = document.RootElement.GetProperty("expression").GetRawText();
+                rule = "{\"id\":\"VALUE\",\"message\":\"value\",\"expression\":{\"not\":" + expression + "}}";
+            }
+
+            string spec = VersionTwoSpec("property-matchers", rule);
+            if (interaction)
+            {
+                spec = spec.Replace(RulePackDialects.FlatV1, RulePackDialects.InteractionV1);
+            }
+
+            List<string> diagnostics = new List<string>();
+            RuleBundle bundle = DeclarativeRuleProvider.LoadBundle(new[] { this.WriteSpec(spec) }, diagnostics.Add);
+            Assert.AreEqual(1, bundle.Rules.Count, string.Join("; ", diagnostics));
+            StencilEllipse source = CreateEntity<StencilEllipse>("GE.P", "GE.P", "Source");
+            StencilRectangle target = CreateEntity<StencilRectangle>("GE.EI", "GE.EI", "Target");
+            Connector flow = CreateEntity<Connector>("GE.DF", "GE.DF", "Flow");
+            flow.SourceGuid = source.Guid;
+            flow.TargetGuid = target.Guid;
+            Entity candidate = subject == "flow" ? flow : subject == "target" ? target : source;
+            if (value != null)
+            {
+                candidate.Properties.Add(new CustomStringDisplayAttribute { Value = "Cache Type:" + value });
+            }
+
+            DrawingSurfaceModel diagram = new DrawingSurfaceModel { Header = "Matchers" };
+            diagram.Borders.Add(source.Guid, source);
+            diagram.Borders.Add(target.Guid, target);
+            diagram.Lines.Add(flow.Guid, flow);
+            MockMessageWriter writer = new MockMessageWriter();
+            RuleEvaluationContext context = new RuleEvaluationContext(new ThreatModel { DrawingSurfaceList = { diagram } }, writer);
+            if (operationLimit.HasValue)
+            {
+                context.SetDeclarativeOperationLimit(operationLimit.Value);
+            }
+
+            bundle.Rules[0].Evaluate(context);
+            return writer;
         }
     }
 }

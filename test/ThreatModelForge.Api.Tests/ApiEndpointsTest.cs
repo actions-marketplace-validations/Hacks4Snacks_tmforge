@@ -2,14 +2,17 @@ namespace ThreatModelForge.Api.Tests
 {
     using System;
     using System.Collections.Generic;
+    using System.IO;
     using System.Linq;
     using System.Net;
     using System.Net.Http;
     using System.Text;
     using System.Text.Json;
+    using System.Text.Json.Nodes;
     using System.Threading.Tasks;
     using Microsoft.AspNetCore.Mvc.Testing;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
+    using ThreatModelForge.Engine;
 
     /// <summary>
     /// Tests the hosted <c>/v1</c> surface over real HTTP. The rest of this project drives
@@ -159,6 +162,54 @@ namespace ThreatModelForge.Api.Tests
             Assert.AreEqual(JsonValueKind.Object, body.RootElement.ValueKind);
         }
 
+        /// <summary>The HTTP layout route returns exactly the shared facade's author-id geometry.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Layout_MatchesTheSharedEngine()
+        {
+            string request = "{\"model\":" + Model + ",\"positions\":[{\"id\":\"a\",\"x\":100,\"y\":150,\"width\":240,\"height\":120}]}";
+            JsonSerializerOptions options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            LayoutRequestDto input = JsonSerializer.Deserialize<LayoutRequestDto>(request, options) ?? new LayoutRequestDto();
+            string expected = JsonSerializer.Serialize(EngineService.Layout(input), options);
+
+            using HttpResponseMessage response = await PostJson("/v1/model/layout", request);
+
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.AreEqual(expected, await response.Content.ReadAsStringAsync());
+        }
+
+        /// <summary>The HTTP route validates a Tidy candidate without moving it into new layers.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Layout_PreservesProposedTidyPositions()
+        {
+            string request = "{\"model\":" + Model + ",\"positions\":[{\"id\":\"a\",\"x\":345,\"y\":678,\"width\":200,\"height\":120}]}";
+
+            using HttpResponseMessage response = await PostJson("/v1/model/layout", request);
+
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.IsTrue(body.RootElement.GetProperty("success").GetBoolean());
+            JsonElement element = body.RootElement.GetProperty("elements")[0];
+            Assert.AreEqual("a", element.GetProperty("id").GetString());
+            Assert.AreEqual(345, element.GetProperty("x").GetInt32());
+            Assert.AreEqual(678, element.GetProperty("y").GetInt32());
+        }
+
+        /// <summary>A refusal is explicit and carries no partial geometry.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Layout_ReportsInvalidInputWithoutPatches()
+        {
+            using HttpResponseMessage response = await PostJson("/v1/model/layout", "{}");
+
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.IsFalse(body.RootElement.GetProperty("success").GetBoolean());
+            Assert.AreEqual(0, body.RootElement.GetProperty("elements").GetArrayLength());
+            Assert.IsFalse(string.IsNullOrWhiteSpace(body.RootElement.GetProperty("error").GetString()));
+        }
+
         /// <summary>Verifies the .tm7 export is delivered as a downloadable XML document.</summary>
         /// <returns>A task.</returns>
         [TestMethod]
@@ -258,6 +309,64 @@ namespace ThreatModelForge.Api.Tests
             Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
             using JsonDocument body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
             Assert.AreEqual("Alpha", body.RootElement.GetProperty("elements")[0].GetProperty("name").GetString());
+        }
+
+        /// <summary>HTTP import returns the shared model or an actionable caller-input error.</summary>
+        /// <param name="variation">A valid file or an unsupported or malformed variant.</param>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        [DataRow("valid")]
+        [DataRow("dangling")]
+        [DataRow("curved")]
+        public async Task Read_ThreatDragonPreservesEvidenceOrReportsInputError(string variation)
+        {
+            string json = File.ReadAllText(Path.Join(AppContext.BaseDirectory, "Fixtures", "threat-dragon-v2.json"));
+            JsonNode document = JsonNode.Parse(json) ?? throw new InvalidDataException("Missing fixture.");
+            JsonNode cells = document["detail"]?["diagrams"]?[0]?["cells"]
+                ?? throw new InvalidDataException("Missing fixture cells.");
+            if (variation == "dangling")
+            {
+                JsonNode source = cells[4]?["source"] ?? throw new InvalidDataException("Missing source.");
+                source["cell"] = "missing";
+            }
+            else if (variation == "curved")
+            {
+                JsonNode data = cells[3]?["data"] ?? throw new InvalidDataException("Missing boundary.");
+                data["type"] = "tm.Boundary";
+            }
+
+            string request = JsonSerializer.Serialize(new { contentBase64 = Base64(document.ToJsonString()) });
+            using HttpResponseMessage response = await PostJson("/v1/model/read", request);
+            string body = await response.Content.ReadAsStringAsync();
+            if (variation != "valid")
+            {
+                Assert.AreEqual(HttpStatusCode.BadRequest, response.StatusCode);
+                Assert.AreEqual("application/problem+json", response.Content.Headers.ContentType?.MediaType);
+                StringAssert.Contains(body, variation == "dangling" ? "missing" : "curved trust boundary");
+                return;
+            }
+
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            using JsonDocument model = JsonDocument.Parse(body);
+            Assert.AreEqual("Model owner", model.RootElement.GetProperty("metadata").GetProperty("owner").GetString());
+            JsonElement threats = model.RootElement.GetProperty("threats");
+            Assert.AreEqual(3, threats.GetArrayLength());
+            Assert.IsTrue(threats.EnumerateArray().All(threat => threat.GetProperty("source").GetProperty("format").GetString() == "threat-dragon"));
+        }
+
+        /// <summary>The HTTP preflight endpoint returns the same diagnostics as the shared service.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Preflight_ReturnsStructuredErrorsWithoutReadingAPartialModel()
+        {
+            const string Invalid = "{\"schema\":\"tmforge-json\",\"elements\":[],\"flows\":[{\"id\":\"broken\",\"source\":\"missing\",\"target\":\"also-missing\"}]}";
+            string request = JsonSerializer.Serialize(new { contentBase64 = Base64(Invalid) });
+            string expected = JsonSerializer.Serialize(DocumentPreflight.Inspect(Encoding.UTF8.GetBytes(Invalid), targetFormat: "tm7"), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+            using HttpResponseMessage response = await PostJson("/v1/model/preflight?to=tm7", request);
+
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(await response.Content.ReadAsStringAsync())));
         }
 
         /// <summary>Verifies format detection answers with the format it recognized.</summary>

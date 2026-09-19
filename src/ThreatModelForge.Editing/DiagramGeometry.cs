@@ -10,6 +10,38 @@ namespace ThreatModelForge.Editing
     /// </summary>
     public static class DiagramGeometry
     {
+        /// <summary>Reattaches component-to-component flows to their facing edges after placement.</summary>
+        /// <param name="diagram">The diagram whose component rectangles were placed.</param>
+        public static void RerouteConnectors(DrawingSurfaceModel diagram)
+        {
+            if (diagram == null)
+            {
+                throw new ArgumentNullException(nameof(diagram));
+            }
+
+            foreach (Connector connector in diagram.Lines.Values.OfType<Connector>())
+            {
+                if (!diagram.Borders.TryGetValue(connector.SourceGuid, out object? source)
+                    || source is not DrawingElement || source is BorderBoundary
+                    || !diagram.Borders.TryGetValue(connector.TargetGuid, out object? target)
+                    || target is not DrawingElement || target is BorderBoundary)
+                {
+                    continue;
+                }
+
+                (int sourceCenterX, int sourceCenterY) = CenterOf(diagram, connector.SourceGuid);
+                (int targetCenterX, int targetCenterY) = CenterOf(diagram, connector.TargetGuid);
+                (int sourceX, int sourceY) = EdgePoint(diagram, connector.SourceGuid, targetCenterX, targetCenterY);
+                (int targetX, int targetY) = EdgePoint(diagram, connector.TargetGuid, sourceCenterX, sourceCenterY);
+                connector.SourceX = sourceX;
+                connector.SourceY = sourceY;
+                connector.TargetX = targetX;
+                connector.TargetY = targetY;
+                connector.HandleX = (sourceX + targetX) / 2;
+                connector.HandleY = (sourceY + targetY) / 2;
+            }
+        }
+
         /// <summary>
         /// Computes the bounding box that encloses every element in a diagram. Returns a default
         /// 100x100 box when the diagram is empty.

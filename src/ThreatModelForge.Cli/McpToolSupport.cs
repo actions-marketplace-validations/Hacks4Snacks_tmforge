@@ -38,6 +38,13 @@ namespace ThreatModelForge.Cli
             "    \"props\": { \"Protocol\": \"HTTPS\", \"Port\": \"443\" }   // optional\n" +
             "  } ]\n" +
             "}\n" +
+            "The optional versioned envelope is \"schema\": \"tmforge-manifest\", \"version\": 1; " +
+            "unversioned manifests remain supported. Optional \"pages\" is an array of {\"alias\":\"page-id\",\"name\":\"Page title\"}. " +
+            "A boundary or element can select a page with \"page\":\"page-id\"; omission uses the first page. " +
+            "Both flow endpoints must be on the same page.\n" +
+            "Boundaries and elements accept optional integer \"x\"/\"y\" coordinates and \"width\"/\"height\" dimensions. " +
+            "Supply coordinates as a pair and dimensions as a pair; omitted geometry uses deterministic placement. " +
+            "Flows can declare an \"alias\" for stable connector identity and later edits.\n" +
             "Elements and flow endpoints are referenced by alias (or unique name), so the manifest needs no GUIDs " +
             "and round-trips with the export_manifest tool. Property values are validated against the property_schema " +
             "tool's catalog; pass force=true to store unknown names or values.";

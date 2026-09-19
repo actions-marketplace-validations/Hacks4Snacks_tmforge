@@ -127,6 +127,7 @@ export function fromModel(model: TmForgeModel): { nodes: DfdNode[]; edges: DfdEd
 export interface PageGraph {
   id: string;
   name: string;
+  preserveIdentity?: boolean;
   nodes: DfdNode[];
   edges: DfdEdge[];
 }
@@ -144,7 +145,7 @@ export function pagesFromModel(model: TmForgeModel): PageGraph[] {
         elements: d.elements ?? [],
         flows: d.flows ?? [],
       });
-      return { id: d.id || crypto.randomUUID(), name: d.name || `Page ${i + 1}`, nodes, edges };
+      return { id: d.id || crypto.randomUUID(), name: d.name || `Page ${i + 1}`, preserveIdentity: true, nodes, edges };
     });
   }
   const { nodes, edges } = fromModel(model);
@@ -154,9 +155,15 @@ export function pagesFromModel(model: TmForgeModel): PageGraph[] {
 /**
  * Editor pages -> canonical model. Mirrors the engine's `TmForgeJsonFormat`: the top-level
  * `elements`/`flows` carry the first page for single-page readers, and `diagrams` is emitted only
- * when there is more than one page. The per-model analysis selection is attached when present.
+ * when there is more than one page or an imported page has an explicit identity. Author-owned
+ * metadata, threats and the analysis selection are attached when present.
  */
-export function modelFromPages(pages: PageGraph[], analysis?: TmForgeAnalysis): TmForgeModel {
+export function modelFromPages(
+  pages: PageGraph[],
+  analysis?: TmForgeAnalysis,
+  threats?: TmForgeModel['threats'],
+  metadata?: TmForgeModel['metadata'],
+): TmForgeModel {
   const perPage = pages.map((p) => ({ page: p, graph: toModel(p.nodes, p.edges) }));
   const first = perPage[0]?.graph;
   const model: TmForgeModel = {
@@ -165,7 +172,7 @@ export function modelFromPages(pages: PageGraph[], analysis?: TmForgeAnalysis): 
     elements: first?.elements ?? [],
     flows: first?.flows ?? [],
   };
-  if (pages.length > 1) {
+  if (pages.length > 1 || pages[0]?.preserveIdentity) {
     model.diagrams = perPage.map(({ page, graph }) => ({
       id: page.id,
       name: page.name,
@@ -175,6 +182,12 @@ export function modelFromPages(pages: PageGraph[], analysis?: TmForgeAnalysis): 
   }
   if (analysis) {
     model.analysis = analysis;
+  }
+  if (threats?.length) {
+    model.threats = threats;
+  }
+  if (metadata) {
+    model.metadata = metadata;
   }
   return model;
 }

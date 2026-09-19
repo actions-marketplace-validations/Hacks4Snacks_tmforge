@@ -3,6 +3,7 @@ namespace ThreatModelForge.Analysis
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Text.RegularExpressions;
     using ThreatModelForge.Model;
     using ThreatModelForge.Model.Abstracts;
 
@@ -138,6 +139,45 @@ namespace ThreatModelForge.Analysis
             }
         }
 
+        /// <summary>Lowers a component filter into the common expression tree.</summary>
+        /// <param name="endpoint">The kind and property filter.</param>
+        /// <param name="subject">The subject evaluated by the filter.</param>
+        /// <returns>The immutable filter.</returns>
+        internal static InteractionExpression CompileEndpoint(
+            DeclarativeEndpoint endpoint,
+            string subject)
+        {
+            List<InteractionExpression> expressions = new List<InteractionExpression>
+            {
+                InteractionExpression.SubjectExists(subject),
+            };
+
+            if (endpoint.Kind != null)
+            {
+                expressions.Add(InteractionExpression.KindIs(subject, endpoint.Kind));
+            }
+
+            if (endpoint.Property != null)
+            {
+                AddPropertyExpressions(
+                    expressions,
+                    subject,
+                    endpoint.Property,
+                    endpoint.AnyOf,
+                    endpoint.NotAnyOf,
+                    endpoint.EqualTo,
+                    endpoint.Present,
+                    endpoint.GreaterThan,
+                    endpoint.GreaterThanOrEqual,
+                    endpoint.LessThan,
+                    endpoint.LessThanOrEqual,
+                    endpoint.CompiledPattern,
+                    endpoint.Kind);
+            }
+
+            return Conjunction(expressions, subject);
+        }
+
         private static InteractionExpression.EvaluationContext CreateEvaluationContext(
             DrawingSurfaceModel diagram,
             Entity element)
@@ -192,7 +232,12 @@ namespace ThreatModelForge.Analysis
                     condition.AnyOf,
                     condition.NotAnyOf,
                     condition.EqualTo,
-                    condition.Present);
+                    condition.Present,
+                    condition.GreaterThan,
+                    condition.GreaterThanOrEqual,
+                    condition.LessThan,
+                    condition.LessThanOrEqual,
+                    condition.CompiledPattern);
             }
 
             if (condition.CrossesTrustBoundary.HasValue)
@@ -213,36 +258,19 @@ namespace ThreatModelForge.Analysis
                 expressions.Add(CompileEndpoint(condition.Target, "target"));
             }
 
+            if (condition.ReachableFrom != null)
+            {
+                expressions.Add(InteractionExpression.Connectivity(
+                    candidateSubject, CompileEndpoint(condition.ReachableFrom, "source"), incoming: true));
+            }
+
+            if (condition.ConnectsTo != null)
+            {
+                expressions.Add(InteractionExpression.Connectivity(
+                    candidateSubject, CompileEndpoint(condition.ConnectsTo, "source"), incoming: false));
+            }
+
             return Conjunction(expressions, candidateSubject);
-        }
-
-        private static InteractionExpression CompileEndpoint(
-            DeclarativeEndpoint endpoint,
-            string subject)
-        {
-            List<InteractionExpression> expressions = new List<InteractionExpression>
-            {
-                InteractionExpression.SubjectExists(subject),
-            };
-
-            if (endpoint.Kind != null)
-            {
-                expressions.Add(InteractionExpression.KindIs(subject, endpoint.Kind));
-            }
-
-            if (endpoint.Property != null)
-            {
-                AddPropertyExpressions(
-                    expressions,
-                    subject,
-                    endpoint.Property,
-                    endpoint.AnyOf,
-                    endpoint.NotAnyOf,
-                    endpoint.EqualTo,
-                    endpoint.Present);
-            }
-
-            return Conjunction(expressions, subject);
         }
 
         private static void AddPropertyExpressions(
@@ -252,7 +280,13 @@ namespace ThreatModelForge.Analysis
             IReadOnlyList<string>? anyOf,
             IReadOnlyList<string>? notAnyOf,
             string? equalTo,
-            bool? present)
+            bool? present,
+            decimal? greaterThan,
+            decimal? greaterThanOrEqual,
+            decimal? lessThan,
+            decimal? lessThanOrEqual,
+            Regex? pattern,
+            string? kind = null)
         {
             expressions.Add(InteractionExpression.FlatPropertyCondition(
                 subject,
@@ -260,7 +294,13 @@ namespace ThreatModelForge.Analysis
                 anyOf,
                 notAnyOf,
                 equalTo,
-                present));
+                present,
+                greaterThan,
+                greaterThanOrEqual,
+                lessThan,
+                lessThanOrEqual,
+                pattern,
+                kind));
         }
 
         private static InteractionExpression Conjunction(
@@ -300,17 +340,22 @@ namespace ThreatModelForge.Analysis
 
             AddEndpointBinding(bindings, condition.Source);
             AddEndpointBinding(bindings, condition.Target);
+            AddEndpointBinding(bindings, condition.ReachableFrom);
+            AddEndpointBinding(bindings, condition.ConnectsTo);
         }
 
         private static void AddEndpointBinding(List<PropertyBinding> bindings, DeclarativeEndpoint? endpoint)
         {
-            if (endpoint?.Property == null || endpoint.Kind == null)
+            if (endpoint?.Property == null)
             {
                 return;
             }
 
             string[] flagged = (endpoint.NotAnyOf ?? new List<string>()).ToArray();
-            bindings.Add(new PropertyBinding(endpoint.Kind, endpoint.Property, flagged));
+            foreach (string kind in endpoint.Kind == null ? new[] { "process", "datastore", "external" } : new[] { endpoint.Kind })
+            {
+                bindings.Add(new PropertyBinding(kind, endpoint.Property, flagged));
+            }
         }
 
         private IEnumerable<Entity> Candidates(DrawingSurfaceModel diagram, RuleEvaluationContext context)

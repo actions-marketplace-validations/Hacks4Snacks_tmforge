@@ -1,0 +1,51 @@
+{
+  "schema": "tmforge-rules",
+  "version": 2,
+  "dialect": "urn:tmforge:rules:flat-v1",
+  "pack": {
+    "id": "example-internal-service",
+    "name": "Internal-service starter policy",
+    "version": "1.0.0",
+    "description": "Illustrative policies over recorded model properties and connections, not an organization standard. These examples do not certify compliance or verify deployed controls.",
+    "source": {
+      "type": "urn:tmforge:source:example-policy",
+      "name": "Illustrative internal-service policy; logging guidance from OWASP",
+      "uri": "https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html"
+    }
+  },
+  "properties": [
+    { "name": "ServiceScope", "allowedValues": ["Internal", "External", "Unknown"] },
+    { "name": "ServiceName" },
+    { "name": "StoresLogData", "allowedValues": ["Yes", "No", "Unknown"] }
+  ],
+  "rules": [
+    {
+      "id": "SERVICE-NAME",
+      "severity": "warning",
+      "appliesTo": "process",
+      "message": "{name} is marked Internal but does not record a ServiceName matching the example svc-name convention.",
+      "fullDescription": "EXAMPLE-SVC-1: Internal services use a svc- prefix and lowercase alphanumeric segments separated by single hyphens. This is an illustrative naming policy, not an OWASP requirement or evidence of a security control.",
+      "helpText": "Record an evidenced ServiceName such as svc-billing, or adapt the example pattern to your own naming policy. Missing names also fail this requirement.",
+      "provenance": { "sourceId": "EXAMPLE-SVC-1", "location": "examples/README.md#starter-rule-packs" },
+      "when": { "property": "ServiceScope", "equals": "Internal" },
+      "assert": { "property": "ServiceName", "matches": "\\Asvc-[a-z0-9]+(?:-[a-z0-9]+)*\\z" }
+    },
+    {
+      "id": "AUDIT-CONNECTION",
+      "severity": "warning",
+      "appliesTo": "process",
+      "stride": "Repudiation",
+      "message": "{name} is an externally reachable Internal service with no direct outgoing connection to a store marked StoresLogData=Yes.",
+      "fullDescription": "EXAMPLE-SVC-2: A service reachable along modeled directed paths from an external entity should have an explicit audit destination. The direct-store topology is an illustrative policy, not a requirement imposed by OWASP. It does not prove that events are actually logged.",
+      "helpText": "Model the evidenced audit-store connection and mark that store StoresLogData=Yes. Adapt this example for brokered or collector-based logging; an indirect path does not satisfy connectsTo.",
+      "helpUri": "https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html",
+      "provenance": { "sourceId": "EXAMPLE-SVC-2", "location": "OWASP Logging Cheat Sheet: Event collection" },
+      "when": {
+        "property": "ServiceScope",
+        "equals": "Internal",
+        "reachableFrom": { "kind": "external" }
+      },
+      "assert": { "connectsTo": { "kind": "datastore", "property": "StoresLogData", "equals": "Yes" } }
+    }
+  ]
+}

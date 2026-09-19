@@ -274,6 +274,18 @@
           }
         },
         {
+          "if": {
+            "properties": { "appliesTo": { "const": "flow" } },
+            "required": ["appliesTo"]
+          },
+          "then": {
+            "properties": {
+              "when": { "properties": { "reachableFrom": false, "connectsTo": false } },
+              "assert": { "properties": { "reachableFrom": false, "connectsTo": false } }
+            }
+          }
+        },
+        {
           "if": { "required": ["defaultPriority"] },
           "then": {
             "anyOf": [
@@ -336,7 +348,11 @@
         { "$ref": "#/$defs/anyExpression" },
         { "$ref": "#/$defs/notExpression" },
         { "$ref": "#/$defs/typeExpression" },
+        { "$ref": "#/$defs/kindExpression" },
         { "$ref": "#/$defs/propertyExpression" },
+        { "$ref": "#/$defs/numericExpression" },
+        { "$ref": "#/$defs/regexExpression" },
+        { "$ref": "#/$defs/connectivityExpression" },
         { "$ref": "#/$defs/crossesExpression" }
       ]
     },
@@ -399,6 +415,30 @@
         "type": { "$ref": "#/$defs/nonEmptyString" }
       }
     },
+    "kindExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "kind"],
+      "properties": {
+        "subject": { "enum": ["source", "target"] },
+        "kind": { "enum": ["process", "datastore", "external"] }
+      }
+    },
+    "connectivityFilter": {
+      "allOf": [ { "$ref": "#/$defs/endpoint" } ],
+      "anyOf": [ { "required": ["kind"] }, { "required": ["property"] } ]
+    },
+    "connectivityExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject"],
+      "oneOf": [ { "required": ["reachableFrom"] }, { "required": ["connectsTo"] } ],
+      "properties": {
+        "subject": { "enum": ["source", "target"] },
+        "reachableFrom": { "$ref": "#/$defs/connectivityFilter" },
+        "connectsTo": { "$ref": "#/$defs/connectivityFilter" }
+      }
+    },
     "propertyExpression": {
       "type": "object",
       "additionalProperties": false,
@@ -412,6 +452,45 @@
           "maxItems": 65536,
           "items": { "$ref": "#/$defs/boundedString" }
         }
+      }
+    },
+    "decimal": {
+      "type": "number",
+      "minimum": -79228162514264337593543950335,
+      "maximum": 79228162514264337593543950335
+    },
+    "numericExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "property"],
+      "anyOf": [
+        { "required": ["greaterThan"] },
+        { "required": ["greaterThanOrEqual"] },
+        { "required": ["lessThan"] },
+        { "required": ["lessThanOrEqual"] }
+      ],
+      "properties": {
+        "subject": { "enum": ["source", "target", "flow"] },
+        "property": { "$ref": "#/$defs/nonEmptyString" },
+        "greaterThan": { "$ref": "#/$defs/decimal" },
+        "greaterThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "lessThan": { "$ref": "#/$defs/decimal" },
+        "lessThanOrEqual": { "$ref": "#/$defs/decimal" }
+      }
+    },
+    "regexPattern": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "regexExpression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "property", "matches"],
+      "properties": {
+        "subject": { "enum": ["source", "target", "flow"] },
+        "property": { "$ref": "#/$defs/nonEmptyString" },
+        "matches": { "$ref": "#/$defs/regexPattern" }
       }
     },
     "crossesExpression": {
@@ -429,7 +508,12 @@
         "anyOf": ["property"],
         "notAnyOf": ["property"],
         "equals": ["property"],
-        "present": ["property"]
+        "present": ["property"],
+        "greaterThan": ["property"],
+        "greaterThanOrEqual": ["property"],
+        "lessThan": ["property"],
+        "lessThanOrEqual": ["property"],
+        "matches": ["property"]
       },
       "properties": {
         "property": { "$ref": "#/$defs/nonEmptyString" },
@@ -447,9 +531,16 @@
         },
         "equals": { "$ref": "#/$defs/boundedString" },
         "present": { "type": "boolean" },
+        "greaterThan": { "$ref": "#/$defs/decimal" },
+        "greaterThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "lessThan": { "$ref": "#/$defs/decimal" },
+        "lessThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "matches": { "$ref": "#/$defs/regexPattern" },
         "crossesTrustBoundary": { "type": "boolean" },
         "source": { "$ref": "#/$defs/endpoint" },
-        "target": { "$ref": "#/$defs/endpoint" }
+        "target": { "$ref": "#/$defs/endpoint" },
+        "reachableFrom": { "$ref": "#/$defs/connectivityFilter" },
+        "connectsTo": { "$ref": "#/$defs/connectivityFilter" }
       }
     },
     "nonRelationalCondition": {
@@ -459,7 +550,12 @@
         "anyOf": ["property"],
         "notAnyOf": ["property"],
         "equals": ["property"],
-        "present": ["property"]
+        "present": ["property"],
+        "greaterThan": ["property"],
+        "greaterThanOrEqual": ["property"],
+        "lessThan": ["property"],
+        "lessThanOrEqual": ["property"],
+        "matches": ["property"]
       },
       "properties": {
         "property": { "$ref": "#/$defs/nonEmptyString" },
@@ -476,7 +572,14 @@
           "items": { "$ref": "#/$defs/boundedString" }
         },
         "equals": { "$ref": "#/$defs/boundedString" },
-        "present": { "type": "boolean" }
+        "present": { "type": "boolean" },
+        "greaterThan": { "$ref": "#/$defs/decimal" },
+        "greaterThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "lessThan": { "$ref": "#/$defs/decimal" },
+        "lessThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "matches": { "$ref": "#/$defs/regexPattern" },
+        "reachableFrom": { "$ref": "#/$defs/connectivityFilter" },
+        "connectsTo": { "$ref": "#/$defs/connectivityFilter" }
       }
     },
     "endpoint": {
@@ -486,7 +589,12 @@
         "anyOf": ["property"],
         "notAnyOf": ["property"],
         "equals": ["property"],
-        "present": ["property"]
+        "present": ["property"],
+        "greaterThan": ["property"],
+        "greaterThanOrEqual": ["property"],
+        "lessThan": ["property"],
+        "lessThanOrEqual": ["property"],
+        "matches": ["property"]
       },
       "properties": {
         "kind": { "enum": ["process", "datastore", "external"] },
@@ -504,7 +612,12 @@
           "items": { "$ref": "#/$defs/boundedString" }
         },
         "equals": { "$ref": "#/$defs/boundedString" },
-        "present": { "type": "boolean" }
+        "present": { "type": "boolean" },
+        "greaterThan": { "$ref": "#/$defs/decimal" },
+        "greaterThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "lessThan": { "$ref": "#/$defs/decimal" },
+        "lessThanOrEqual": { "$ref": "#/$defs/decimal" },
+        "matches": { "$ref": "#/$defs/regexPattern" }
       }
     }
   }

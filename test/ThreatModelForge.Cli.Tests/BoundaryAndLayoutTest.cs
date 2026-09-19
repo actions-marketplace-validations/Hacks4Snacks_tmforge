@@ -5,7 +5,9 @@ namespace ThreatModelForge.Cli.Tests
     using System.Linq;
     using System.Text.Json;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
+    using ThreatModelForge.Analysis;
     using ThreatModelForge.Editing;
+    using ThreatModelForge.Engine;
     using ThreatModelForge.Model;
     using ThreatModelForge.Model.Abstracts;
 
@@ -173,6 +175,276 @@ namespace ThreatModelForge.Cli.Tests
             Assert.AreEqual(0, Capture(() => LayoutCommand.Run(new[] { path, "--check" })).Exit);
         }
 
+        /// <summary>A layout must not discard one of an element's overlapping trust claims.</summary>
+        [TestMethod]
+        public void LayoutRefusesOverlappingMembershipWithoutWriting()
+        {
+            ThreatModel model = LayoutFixture(overlapping: true);
+            string path = this.SaveFixture(model);
+            string before = File.ReadAllText(path);
+            Assert.AreEqual(2, BoundaryCrossingDiff.Capture(model).Single().Boundaries.Count);
+
+            Assert.AreEqual(1, Capture(() => LayoutCommand.Run(new[] { path, "--json" })).Exit);
+
+            Assert.AreEqual(before, File.ReadAllText(path), "a refused layout must not write anything");
+        }
+
+        /// <summary>Connector coordinates, rather than node centers, determine the actual crossings.</summary>
+        [TestMethod]
+        public void LayoutRefusesConnectorCrossingChangesWithoutWriting()
+        {
+            ThreatModel model = LayoutFixture(overlapping: false);
+            Connector flow = model.DrawingSurfaceList[0].Lines.Values.OfType<Connector>().Single();
+            flow.SourceX = 50;
+            Assert.AreEqual(0, BoundaryCrossingDiff.Capture(model).Single().Boundaries.Count);
+            string path = this.SaveFixture(model);
+            string before = File.ReadAllText(path);
+
+            Assert.AreEqual(1, Capture(() => LayoutCommand.Run(new[] { path })).Exit);
+
+            Assert.AreEqual(before, File.ReadAllText(path));
+        }
+
+        /// <summary>Nested boundary memberships and crossings survive successful arrangement and save.</summary>
+        [TestMethod]
+        public void LayoutPreservesNestedBoundaryCrossings()
+        {
+            ThreatModel model = LayoutFixture(overlapping: false);
+            DrawingSurfaceModel surface = model.DrawingSurfaceList[0];
+            AddFixtureBoundary(surface, 100, 100, 600, 600, "Outer");
+            string path = this.SaveFixture(model);
+            Assert.AreEqual(2, BoundaryCrossingDiff.Capture(model).Single().Boundaries.Count);
+
+            Assert.AreEqual(0, Capture(() => LayoutCommand.Run(new[] { path })).Exit);
+
+            (ThreatModel after, _) = CliModelLoader.Load(path);
+            Assert.IsTrue(BoundaryCrossingDiff.Compare(model, after).IsEmpty);
+            Assert.IsTrue(ModelDiff.Compare(model, after).IsEmpty, "layout must not change identities, topology or properties");
+        }
+
+        /// <summary>An unsafe later page must prevent an earlier page from being saved too.</summary>
+        [TestMethod]
+        public void LayoutRefusesAllPagesAtomically()
+        {
+            ThreatModel model = LayoutFixture(overlapping: false);
+            model.DrawingSurfaceList.Add(LayoutFixture(overlapping: true).DrawingSurfaceList[0]);
+            string path = this.SaveFixture(model);
+            string before = File.ReadAllText(path);
+
+            Assert.AreEqual(1, Capture(() => LayoutCommand.Run(new[] { path })).Exit);
+
+            Assert.AreEqual(before, File.ReadAllText(path));
+        }
+
+        /// <summary>Label-only cleanup remains usable when full layout would change trust claims.</summary>
+        [TestMethod]
+        public void LayoutLabelsPreservesOverlappingBoundaryCrossings()
+        {
+            ThreatModel model = LayoutFixture(overlapping: true);
+            string path = this.SaveFixture(model);
+
+            Assert.AreEqual(0, Capture(() => LayoutCommand.Run(new[] { path, "--labels" })).Exit);
+
+            (ThreatModel after, _) = CliModelLoader.Load(path);
+            Assert.IsTrue(BoundaryCrossingDiff.Compare(model, after).IsEmpty);
+        }
+
+        /// <summary>Line trust boundaries use intersection semantics and must also be preserved.</summary>
+        [TestMethod]
+        public void LayoutRefusesChangedLineBoundaryIntersections()
+        {
+            ThreatModel model = LayoutFixture(overlapping: false);
+            DrawingSurfaceModel surface = model.DrawingSurfaceList[0];
+            LineBoundary boundary = new LineBoundary
+            {
+                Guid = Guid.NewGuid(), SourceX = 600, SourceY = 100, TargetX = 600, TargetY = 900,
+            };
+            surface.Lines.Add(boundary.Guid, boundary);
+            Assert.AreEqual(2, BoundaryCrossingDiff.Capture(model).Single().Boundaries.Count);
+            string path = this.SaveFixture(model);
+            string before = File.ReadAllText(path);
+
+            Assert.AreEqual(1, Capture(() => LayoutCommand.Run(new[] { path })).Exit);
+
+            Assert.AreEqual(before, File.ReadAllText(path));
+        }
+
+        /// <summary>A refused multi-page operation leaves the original in-memory geometry untouched.</summary>
+        [TestMethod]
+        public void SharedLayoutRefusalIsAtomicInMemory()
+        {
+            ThreatModel model = LayoutFixture(overlapping: false);
+            model.DrawingSurfaceList.Add(LayoutFixture(overlapping: true).DrawingSurfaceList[0]);
+            string before = Geometry(model);
+
+            bool success = LayoutOperations.TryApply(model.DrawingSurfaceList, null, out int moved, out string? error);
+
+            Assert.IsFalse(success);
+            Assert.AreEqual(0, moved);
+            StringAssert.Contains(error, "No pages were changed");
+            Assert.AreEqual(before, Geometry(model));
+        }
+
+        /// <summary>Scoping layout to a safe page does not arrange an unsafe sibling.</summary>
+        [TestMethod]
+        public void LayoutCanScopeToOnePage()
+        {
+            ThreatModel model = LayoutFixture(overlapping: false);
+            model.DrawingSurfaceList.Add(LayoutFixture(overlapping: true).DrawingSurfaceList[0]);
+            string path = this.SaveFixture(model);
+
+            Assert.AreEqual(0, Capture(() => LayoutCommand.Run(new[] { path, "--page", "1" })).Exit);
+
+            (ThreatModel after, _) = CliModelLoader.Load(path);
+            Assert.IsTrue(BoundaryCrossingDiff.Compare(model, after).IsEmpty);
+            Assert.AreEqual(
+                model.DrawingSurfaceList[1].Borders.Values.OfType<BorderBoundary>().First().Left,
+                after.DrawingSurfaceList[1].Borders.Values.OfType<BorderBoundary>().First().Left);
+        }
+
+        /// <summary>Boundary placement refuses a clipped shape rather than claiming it is contained.</summary>
+        [TestMethod]
+        public void AddBoundaryRefusesAnOversizedMemberWithoutWriting()
+        {
+            string path = this.NewModel();
+            Assert.AreEqual(0, Capture(() => AddCommand.Run(new[] { "boundary", path, "--alias", "TB" })).Exit);
+            string before = File.ReadAllText(path);
+
+            string[] arguments = new[]
+            {
+                "process", path, "--name", "Oversized", "--boundary", "TB", "--width", "400", "--height", "200",
+            };
+            Assert.AreEqual(1, Capture(() => AddCommand.Run(arguments)).Exit);
+
+            Assert.AreEqual(before, File.ReadAllText(path));
+        }
+
+        /// <summary>Canonical JSON layout patches geometry instead of rewriting identities or author state.</summary>
+        [TestMethod]
+        public void LayoutPreservesCanonicalJsonIdentityAndMetadata()
+        {
+            const string Json = """
+                {"schema":"tmforge-json","version":"0.1",
+                 "elements":[{"id":"source","kind":"process","name":"A","x":600,"y":600,"width":100,"height":60},
+                             {"id":"target","kind":"process","name":"B","x":100,"y":100,"width":100,"height":60}],
+                 "flows":[{"id":"f","source":"source","target":"target","name":"Request","labelOffset":{"x":20,"y":30}}],
+                 "analysis":{"disabledRuleIds":["TM1003"],"expectedPacks":[{"id":"policy","fingerprint":"sha256:pinned"}]},
+                 "threats":[{"id":"manual:review","manual":true,"state":"Accepted","title":"Decision","justification":"Reviewed"}],
+                 "extension":{"ownedBy":"author"}}
+                """;
+            string path = Path.Join(this.WorkingDirectory, "layout.tmforge.json");
+            File.WriteAllText(path, Json);
+
+            Assert.AreEqual(0, Capture(() => LayoutCommand.Run(new[] { path })).Exit);
+
+            using JsonDocument before = JsonDocument.Parse(Json);
+            using JsonDocument after = JsonDocument.Parse(File.ReadAllText(path));
+            Assert.AreEqual("source", after.RootElement.GetProperty("elements")[0].GetProperty("id").GetString());
+            Assert.AreNotEqual(600, after.RootElement.GetProperty("elements")[0].GetProperty("x").GetInt32());
+            foreach (string field in new[] { "flows", "analysis", "threats", "extension" })
+            {
+                Assert.IsTrue(JsonElement.DeepEquals(before.RootElement.GetProperty(field), after.RootElement.GetProperty(field)), field);
+            }
+        }
+
+        /// <summary>Duplicate wire ids must be refused before the reader silently rekeys the duplicate.</summary>
+        [TestMethod]
+        public void LayoutRefusesDuplicateCanonicalJsonIdsWithoutWriting()
+        {
+            const string Json = """
+                {"schema":"tmforge-json","version":"0.1","elements":[
+                    {"id":"p","kind":"process","x":100,"y":100,"width":100,"height":60},
+                    {"id":"p","kind":"process","x":600,"y":100,"width":100,"height":60}],"flows":[]}
+                """;
+            string path = Path.Join(this.WorkingDirectory, "duplicate.tmforge.json");
+            File.WriteAllText(path, Json);
+
+            Assert.AreEqual(1, Capture(() => LayoutCommand.Run(new[] { path })).Exit);
+
+            Assert.AreEqual(Json, File.ReadAllText(path));
+        }
+
+        /// <summary>JSON cannot store engine label handles, so labels-only reports a non-persisted no-op.</summary>
+        [TestMethod]
+        public void LayoutJsonLabelsOnlyReportsNoPersistedChange()
+        {
+            const string Json = """
+                {"schema":"tmforge-json","version":"0.1","elements":[
+                    {"id":"p","kind":"process","x":100,"y":100,"width":100,"height":60}],"flows":[],
+                 "extension":"retain"}
+                """;
+            string path = Path.Join(this.WorkingDirectory, "labels.tmforge.json");
+            File.WriteAllText(path, Json);
+
+            (int exit, string output) = Capture(() => LayoutCommand.Run(new[] { path, "--labels", "--json" }));
+
+            Assert.AreEqual(0, exit);
+            Assert.AreEqual(Json, File.ReadAllText(path));
+            using JsonDocument report = JsonDocument.Parse(output);
+            Assert.IsFalse(report.RootElement.GetProperty("data").GetProperty("labelsPersisted").GetBoolean());
+            Assert.AreEqual(0, report.RootElement.GetProperty("data").GetProperty("labelsMoved").GetInt32());
+        }
+
+        /// <summary>Invalid spacing must be rejected, not ignored or allowed to overlap components.</summary>
+        /// <param name="spacing">The invalid spacing argument.</param>
+        [TestMethod]
+        [DataRow("0")]
+        [DataRow("-1")]
+        [DataRow("2147483647")]
+        [DataRow("not-a-number")]
+        public void LayoutRejectsInvalidSpacingWithoutWriting(string spacing)
+        {
+            string path = this.SaveFixture(LayoutFixture(overlapping: false));
+            string before = File.ReadAllText(path);
+
+            Assert.AreEqual(1, Capture(() => LayoutCommand.Run(new[] { path, "--node-spacing", spacing })).Exit);
+
+            Assert.AreEqual(before, File.ReadAllText(path));
+        }
+
+        private static string Geometry(ThreatModel model)
+        {
+            return JsonSerializer.Serialize(model.DrawingSurfaceList.Select(surface => new
+            {
+                shapes = surface.Borders.Values.OfType<DrawingElement>().Select(element => new
+                {
+                    element.Guid, element.Left, element.Top, element.Width, element.Height,
+                }),
+                lines = surface.Lines.Values.OfType<LineElement>().Select(line => new
+                {
+                    line.Guid, line.SourceX, line.SourceY, line.TargetX, line.TargetY, line.HandleX, line.HandleY,
+                }),
+            }));
+        }
+
+        private static ThreatModel LayoutFixture(bool overlapping)
+        {
+            ThreatModel model = new ThreatModel();
+            DrawingSurfaceModel surface = new DrawingSurfaceModel { Header = "Layout", Guid = Guid.NewGuid() };
+            model.DrawingSurfaceList.Add(surface);
+            DiagramEditor editor = new DiagramEditor(model);
+            Guid source = editor.AddElement(surface, StencilKind.Process, 340, 250);
+            Guid target = editor.AddElement(surface, StencilKind.Process, 760, 250);
+            editor.SetElementName(surface, source, "Source");
+            editor.SetElementName(surface, target, "Target");
+            Guid flow = editor.AddConnector(surface, source, target);
+            editor.SetElementName(surface, flow, "Request");
+            AddFixtureBoundary(surface, 100, 100, 400, 400, "First");
+            if (overlapping)
+            {
+                AddFixtureBoundary(surface, 300, 100, 400, 400, "Second");
+            }
+
+            return model;
+        }
+
+        private static void AddFixtureBoundary(DrawingSurfaceModel surface, int x, int y, int width, int height, string name)
+        {
+            BorderBoundary boundary = new BorderBoundary { Guid = Guid.NewGuid(), Left = x, Top = y, Width = width, Height = height };
+            DiagramElementHelper.SetName(boundary, name);
+            surface.Borders.Add(boundary.Guid, boundary);
+        }
+
         private static string AddElement(string kind, string path, string name)
         {
             (int exit, string stdout) = Capture(() => AddCommand.Run(new[] { kind, path, "--name", name, "--json" }));
@@ -225,6 +497,14 @@ namespace ThreatModelForge.Cli.Tests
         {
             string path = Path.Join(this.WorkingDirectory, "model.tm7");
             Capture(() => NewCommand.Run(new[] { path, "--name", "Test" }));
+            return path;
+        }
+
+        private string SaveFixture(ThreatModel model)
+        {
+            string path = Path.Join(this.WorkingDirectory, "layout.tm7");
+            using FileStream stream = File.Create(path);
+            model.Save(stream);
             return path;
         }
     }

@@ -1,0 +1,51 @@
+{
+  "schema": "tmforge-rules",
+  "version": 2,
+  "dialect": "urn:tmforge:rules:flat-v1",
+  "pack": {
+    "id": "example-pci",
+    "name": "PCI-inspired starter policy",
+    "version": "1.0.0",
+    "description": "Two illustrative model checks inspired by PCI DSS v4.0.1, not a complete implementation of any requirement. These examples do not certify compliance or verify deployed controls.",
+    "source": {
+      "type": "urn:tmforge:source:example-policy",
+      "name": "PCI DSS",
+      "version": "4.0.1",
+      "uri": "https://www.pcisecuritystandards.org/document_library/"
+    }
+  },
+  "properties": [
+    { "name": "StoresPAN", "allowedValues": ["Yes", "No", "Unknown"] },
+    { "name": "Encrypted", "allowedValues": ["Unknown", "No", "At-rest", "TDE", "Client-side", "Platform"] },
+    { "name": "AuditScope", "allowedValues": ["CDE", "Other", "Unknown"] },
+    { "name": "RetentionMonths" }
+  ],
+  "rules": [
+    {
+      "id": "PAN-ENCRYPTION",
+      "severity": "warning",
+      "appliesTo": "datastore",
+      "stride": "InformationDisclosure",
+      "message": "{name} is marked StoresPAN=Yes but does not evidence an allowed at-rest encryption mode.",
+      "fullDescription": "Encryption-focused example inspired by PCI DSS v4.0.1 requirement 3.5.1 (protect stored PAN). The standard also permits non-encryption approaches; this rule intentionally covers only encryption-based designs. An encryption label does not establish strong cryptography, key management, or full requirement satisfaction.",
+      "helpText": "Record the implemented Encrypted mode as At-rest, TDE, Client-side, or Platform. Adapt the policy for evidenced tokenization, truncation, or hashing designs rather than claiming encryption that is not implemented. Missing or Unknown scope is not assessed.",
+      "helpUri": "https://www.pcisecuritystandards.org/document_library/",
+      "provenance": { "sourceId": "PCI-DSS-4.0.1-3.5.1", "location": "PCI DSS v4.0.1, requirement 3.5.1; encryption-only example" },
+      "when": { "property": "StoresPAN", "equals": "Yes" },
+      "assert": { "property": "Encrypted", "anyOf": ["At-rest", "TDE", "Client-side", "Platform"] }
+    },
+    {
+      "id": "AUDIT-RETENTION",
+      "severity": "warning",
+      "appliesTo": "datastore",
+      "stride": "Repudiation",
+      "message": "{name} is marked AuditScope=CDE but does not evidence at least 12 months of audit-log retention.",
+      "fullDescription": "Retention-duration example inspired by PCI DSS v4.0.1 requirement 10.5.1. It checks only a declared minimum of 12 months, not actual log history, the recent three months' availability, or the other logging requirements. Months are used deliberately rather than approximating a year with 365 days.",
+      "helpText": "For an audit store in the cardholder data environment, set AuditScope=CDE and record the evidenced RetentionMonths value. A missing, non-numeric, or Unknown duration fails; unclassified stores are not assessed.",
+      "helpUri": "https://www.pcisecuritystandards.org/document_library/",
+      "provenance": { "sourceId": "PCI-DSS-4.0.1-10.5.1", "location": "PCI DSS v4.0.1, requirement 10.5.1; minimum duration only" },
+      "when": { "property": "AuditScope", "equals": "CDE" },
+      "assert": { "property": "RetentionMonths", "greaterThanOrEqual": 12 }
+    }
+  ]
+}

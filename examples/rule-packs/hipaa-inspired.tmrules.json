@@ -1,0 +1,64 @@
+{
+  "schema": "tmforge-rules",
+  "version": 2,
+  "dialect": "urn:tmforge:rules:interaction-v1",
+  "pack": {
+    "id": "example-hipaa",
+    "name": "HIPAA-inspired starter policy",
+    "version": "1.0.0",
+    "description": "Two illustrative model checks inspired by HIPAA technical safeguards, not a complete implementation of the Security Rule. These examples do not certify compliance or verify deployed controls.",
+    "source": {
+      "type": "urn:tmforge:source:example-policy",
+      "name": "HHS Summary of the HIPAA Security Rule; 45 CFR 164.312",
+      "uri": "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html"
+    }
+  },
+  "properties": [
+    { "name": "DataClassification", "allowedValues": ["ePHI", "Other", "Unknown"] },
+    { "name": "Protocol", "allowedValues": ["Unknown", "HTTPS", "HTTP", "TLS", "mTLS", "gRPC", "AMQP", "SQL", "SSH", "FTP", "Other"] },
+    { "name": "CertificateValidation", "allowedValues": ["Yes", "No", "Unknown"] },
+    { "name": "StoresLogData", "allowedValues": ["Yes", "No", "Unknown"] }
+  ],
+  "rules": [
+    {
+      "id": "EPHI-TRANSPORT",
+      "severity": "warning",
+      "stride": "InformationDisclosure",
+      "message": "{flow.Name} is marked ePHI but does not evidence both an allowed TLS transport and certificate validation.",
+      "fullDescription": "Example TLS policy inspired by 45 CFR 164.312(e), transmission security. The allowlist and CertificateValidation=Yes are example design choices, not the legal text. Encryption under 164.312(e)(2)(ii) is addressable: a documented assessment and appropriate implementation or alternative is still required. A protocol label alone cannot prove deployed protection.",
+      "helpText": "For an explicitly ePHI flow, record Protocol as HTTPS, TLS, or mTLS and CertificateValidation=Yes only when evidenced. Adapt this policy for other justified protections; do not relabel an unencrypted flow or treat Unknown classification as out-of-scope evidence.",
+      "helpUri": "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html",
+      "provenance": { "sourceId": "45-CFR-164.312(e)", "location": "45 CFR 164.312(e)(1) and (e)(2)(ii); illustrative TLS policy" },
+      "expression": {
+        "allOf": [
+          { "subject": "flow", "property": "DataClassification", "valueIn": ["ePHI"] },
+          {
+            "not": {
+              "allOf": [
+                { "subject": "flow", "property": "Protocol", "valueIn": ["HTTPS", "TLS", "mTLS"] },
+                { "subject": "flow", "property": "CertificateValidation", "valueIn": ["Yes"] }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "EPHI-AUDIT",
+      "severity": "warning",
+      "stride": "Repudiation",
+      "message": "{target.Name} receives ePHI on {flow.Name} but has no direct outgoing connection to a store marked StoresLogData=Yes.",
+      "fullDescription": "Audit-destination example inspired by 45 CFR 164.312(b), audit controls. A modeled process receiving an explicitly ePHI flow should have an audit destination. A direct store connection is an example topology, not a HIPAA requirement, and does not prove that the required activities are recorded or examined. Findings are per incoming ePHI flow.",
+      "helpText": "Model the evidenced audit destination and mark the destination StoresLogData=Yes. Adapt the direct-connection policy for collectors or message brokers. This interaction rule does not assess isolated processes or infer ePHI classification from a name or boundary.",
+      "helpUri": "https://www.hhs.gov/hipaa/for-professionals/security/laws-regulations/index.html",
+      "provenance": { "sourceId": "45-CFR-164.312(b)", "location": "45 CFR 164.312(b); illustrative audit-destination policy" },
+      "expression": {
+        "allOf": [
+          { "subject": "flow", "property": "DataClassification", "valueIn": ["ePHI"] },
+          { "subject": "target", "kind": "process" },
+          { "not": { "subject": "target", "connectsTo": { "kind": "datastore", "property": "StoresLogData", "equals": "Yes" } } }
+        ]
+      }
+    }
+  ]
+}

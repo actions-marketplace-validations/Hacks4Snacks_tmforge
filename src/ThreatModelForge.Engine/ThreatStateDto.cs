@@ -35,6 +35,9 @@ namespace ThreatModelForge.Engine
         /// <summary>Gets the author-set mitigation override.</summary>
         public string? Mitigation { get; init; }
 
+        /// <summary>Gets informational source provenance for an imported manual threat, never rule input.</summary>
+        public IReadOnlyDictionary<string, string>? Source { get; init; }
+
         /// <summary>Gets the author-set priority (<c>High</c> / <c>Medium</c> / <c>Low</c>).</summary>
         public string? Priority { get; init; }
 

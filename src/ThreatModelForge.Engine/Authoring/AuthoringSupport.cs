@@ -623,6 +623,19 @@ namespace ThreatModelForge.Engine
                 }
             }
 
+            WriteAtomically(path, stream => format.Write(model, stream));
+        }
+
+        /// <summary>Writes document content via a same-directory temporary file and atomic rename.</summary>
+        /// <param name="path">The destination path.</param>
+        /// <param name="write">The content writer, called before the destination is replaced.</param>
+        public static void WriteAtomically(string path, Action<Stream> write)
+        {
+            if (write == null)
+            {
+                throw new ArgumentNullException(nameof(write));
+            }
+
             string fullPath = Path.GetFullPath(path);
             string directory = Path.GetDirectoryName(fullPath) ?? ".";
             string temp = Path.Join(directory, "." + Path.GetFileName(fullPath) + "." + Guid.NewGuid().ToString("N") + ".tmp");
@@ -630,7 +643,7 @@ namespace ThreatModelForge.Engine
             {
                 using (FileStream stream = File.Create(temp))
                 {
-                    format.Write(model, stream);
+                    write(stream);
                 }
 
                 File.Move(temp, fullPath, overwrite: true);

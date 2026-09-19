@@ -52,6 +52,50 @@ namespace ThreatModelForge.Analysis.Tests
             Assert.AreEqual(variables["Bar"], target.Variables["BAR"]);
         }
 
+        /// <summary>The graph is constructed once, directed, and partitioned by page.</summary>
+        [TestMethod]
+        public void ConnectivityGraphIsSharedAndPageScoped()
+        {
+            StencilEllipse source = new StencilEllipse { Guid = Guid.NewGuid(), GenericTypeId = "GE.P" };
+            StencilEllipse target = new StencilEllipse { Guid = Guid.NewGuid(), GenericTypeId = "GE.P" };
+            Connector flow = new Connector { Guid = Guid.NewGuid(), SourceGuid = source.Guid, TargetGuid = target.Guid };
+            DrawingSurfaceModel first = new DrawingSurfaceModel();
+            first.Borders.Add(source.Guid, source);
+            first.Borders.Add(target.Guid, target);
+            first.Lines.Add(flow.Guid, flow);
+            DrawingSurfaceModel second = new DrawingSurfaceModel();
+            second.Borders.Add(source.Guid, source);
+            RuleEvaluationContext context = new RuleEvaluationContext(
+                new ThreatModel { DrawingSurfaceList = { first, second } }, new MockMessageWriter());
+
+            RuleEvaluationContext.ConnectivityGraph graph = context.GetConnectivityGraph();
+            long buildCost = context.GetDeclarativeOperationCount();
+            Assert.IsTrue(buildCost > 0);
+            Assert.AreSame(graph, context.GetConnectivityGraph());
+            Assert.AreEqual(buildCost, context.GetDeclarativeOperationCount());
+            Assert.AreSame(target, graph.Neighbors(first, source.Guid, incoming: false)[0]);
+            Assert.AreSame(source, graph.Neighbors(first, target.Guid, incoming: true)[0]);
+            Assert.AreEqual(0, graph.Neighbors(first, target.Guid, incoming: false).Count);
+            Assert.AreEqual(0, graph.Neighbors(second, source.Guid, incoming: false).Count);
+            Assert.AreEqual(0, graph.Neighbors(first, Guid.NewGuid(), incoming: true).Count);
+        }
+
+        /// <summary>Graph construction is charged before scanning lines and rejects malformed topology.</summary>
+        [TestMethod]
+        public void ConnectivityGraphRejectsInvalidTopologyAndBudgetExhaustion()
+        {
+            DrawingSurfaceModel diagram = new DrawingSurfaceModel();
+            Connector dangling = new Connector { Guid = Guid.NewGuid(), SourceGuid = Guid.NewGuid(), TargetGuid = Guid.NewGuid() };
+            diagram.Lines.Add(dangling.Guid, dangling);
+            ThreatModel model = new ThreatModel { DrawingSurfaceList = { diagram } };
+            RuleEvaluationContext invalid = new RuleEvaluationContext(model, new MockMessageWriter());
+            InvalidDataException error = Assert.Throws<InvalidDataException>(() => invalid.GetConnectivityGraph());
+            StringAssert.Contains(error.Message, "same page");
+            RuleEvaluationContext limited = new RuleEvaluationContext(model, new MockMessageWriter());
+            limited.SetDeclarativeOperationLimit(0);
+            Assert.Throws<InvalidDataException>(() => limited.GetConnectivityGraph());
+        }
+
         /// <summary>
         /// Unit test for the <see cref="RuleEvaluationContext"/> constructor.
         /// </summary>

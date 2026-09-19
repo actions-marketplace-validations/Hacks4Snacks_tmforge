@@ -54,10 +54,35 @@ connection, not the geometry.
 | Select several objects | Hold `Cmd` (`Ctrl` on Windows/Linux) and click, or drag a selection box with `Shift`. |
 | Delete the selection | `Delete` key. Deleting an element takes its flows with it, and the whole deletion is a single undo step. |
 | Resize a trust boundary | Drag its handles (it's a resizable region). |
-| Tidy the diagram | Click **Tidy** to fit labels, separate overlapping shapes and peer trust boundaries, route flows, and deconflict flow labels. Each boundary also keeps a clear strip at its top so nothing covers its own name. Nested boundaries remain nested, and each boundary moves with its members. |
+| Tidy the diagram | Click **Tidy** to clean up the existing arrangement: fit text, separate overlaps, route flows and deconflict labels. The adjacent **Tidy options** menu offers offline **Labels only** with fixed rectangles. |
 | Pan / zoom | Drag the canvas / scroll; use the minimap and **fit** control to navigate. |
 | Step through the flows | `Alt+↓` / `Alt+↑` selects the next / previous flow in the outline's order. |
 | Undo / redo | `Cmd+Z` / `Shift+Cmd+Z` (covers every edit). |
+
+Arrangement applies to the **active page**, as one undo step. A failed or unsafe candidate changes
+nothing and consumes no undo step. If an edit or page switch occurs while the engine is working,
+the response is discarded rather than overwriting newer work. Repeating an unchanged arrangement is
+a no-op.
+
+**Tidy preserves the author's arrangement**, using the released Studio cleanup algorithm. It does
+not move an already horizontal sketch into graph layers or shrink boundaries around newly ordered
+groups. Objects move only as text fitting and overlap separation require. The engine validates the
+proposed rectangles without rearranging them again, so the boundary-safety checks still apply.
+
+Studio does not offer full layout rearrangement. The CLI's explicit `layout` command remains
+available for callers that want to generate placement rather than tidy an existing drawing.
+
+The engine preserves the **actual geometric trust claims**, including all memberships when regions
+overlap; it never chooses one claim and discards another. If the candidate cannot preserve them,
+Studio explains the refusal. Use **Labels only**, or edit the boundary placement explicitly before
+trying again. Opening a file now preserves its shape and boundary rectangles: automatic import
+cleanup is limited to visual routing and label offsets. Text-fit sizing requires an explicit
+arrangement so importing a model cannot silently change analysis.
+
+A single-page model can still contain a detached flow. An imported connector whose source or target
+id is all zeros is not attached to an element. Tidy names the affected flow and endpoint; reconnect
+it in the source model, or remove the flow if it is unintended. Tidy never guesses the missing target
+or silently drops the connection. **Labels only** remains available without rearranging shapes.
 
 ### Pages
 
@@ -104,9 +129,10 @@ the listed order, wrapping at either end, so a review can be worked through flow
 hunted for. Each step also opens that flow in the inspector, so its properties are right there while
 you read it.
 
-An object is placed in a boundary by its authored `Boundary` property when it has one, and otherwise
-by the smallest boundary region it sits inside — the same rule **Tidy** uses, so the list and the
-drawing always agree.
+The outline groups an object by its authored `Boundary` property when it has one, and otherwise by
+the smallest boundary region containing its center. Arrangement instead preserves the complete
+geometry-derived membership set used for analysis. If a declared property disagrees with the
+drawing, resolve that disagreement explicitly rather than relying on Tidy to change the trust claim.
 
 ### The inspector
 
@@ -241,6 +267,19 @@ then `tmforge analyze` / `tmforge report` / `tmforge convert` in a pipeline, or 
 > or `.drawio` itself. Use the API's `convert` / `read` endpoints or the CLI for those. Studio
 > speaks `tmforge-json`; the engine handles every other format behind `/v1`.
 
+### Preflight review
+
+Before replacing the canvas, **Open File** runs preflight through the active engine. Structural
+errors appear with their source paths and must be corrected in the input. Known import losses appear
+in a review dialog with **Continue** and **Cancel**. Closing or cancelling leaves the current model
+and undo history unchanged; a delayed import is discarded if the workspace changes while it runs.
+
+**Save** and **Export** also review known conversion losses before writing. Native JSON saves do not
+perform the engine's structural conversion, so they retain the existing wire state. Importing a new
+file requires the API or WASM engine to be ready; offline authoring and saving the current JSON
+workspace remain available. These diagnostics are separate from **Analyze** and do not accept or
+mitigate threats. See [preflight coverage and limits](formats.md#preflight-and-import-diagnostics).
+
 ### Opening an authoring manifest
 
 **Open File** also accepts a declarative [authoring manifest](cli-reference.md#apply) — the
@@ -256,6 +295,23 @@ it. To change the model, edit the manifest and re-apply, or save the model as it
 > A manifest that declares no `schema` (the concise pre-envelope form) is still accepted by
 > `tmforge apply`, but Studio cannot recognize it: every manifest field is optional, so a recognizer
 > that accepted an absent envelope would claim any JSON file. Add the envelope to open it here.
+
+### Opening Threat Dragon v2 JSON
+
+**Open File** recognizes supported OWASP Threat Dragon v2 JSON through the active engine. Imported
+threats appear as manual entries alongside tmforge-generated threats after **Analyze**, retaining
+their original category, text, treatment and scope. Model metadata and threat provenance survive
+saving, reopening and exporting to `.tm7`.
+
+This is import-only: Studio does not bind the original file for overwriting. **Save** offers a new
+`.tmforge.json` filename, and Threat Dragon is not offered as an export target. Keep the original
+for Threat Dragon-specific content such as styling and routing.
+
+The first delivery supports rectangular boundaries and directed flows. Curved boundaries,
+bidirectional flows, fractional rectangles and unsupported treatment states are refused, with no
+partial replacement of the current workspace. Out-of-scope flags remain source information and do
+not disable tmforge rules. See the [full import contract](formats.md#threat-dragon-owasp-threat-dragon-v2-import)
+before migrating a model.
 
 ## Merging edits from two branches
 

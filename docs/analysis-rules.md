@@ -201,6 +201,10 @@ tmforge analyze model.tm7 --rules ./rules.tmrules.json   # one spec file
 tmforge analyze model.tm7 --rules ./rules/               # a directory of specs (searched recursively)
 ```
 
+The [starter rule-pack library](../examples/README.md#starter-rule-packs) provides opt-in PCI-inspired,
+HIPAA-inspired, and internal-service examples, with a runnable synthetic model, source/control
+references, and tested command snippets. These examples do not certify compliance.
+
 To compile an existing MTMT template instead of hand-authoring JSON, use [`rules import`](cli-reference.md#rules):
 
 ```bash
@@ -454,8 +458,102 @@ present":
 | `property` + `notAnyOf` | any | The value is none of the listed values. |
 | `property` + `equals` | any | The value equals a single value. |
 | `property` + `present` | any | The property is present (`true`) or absent (`false`). |
+| `property` + numeric bounds | any | Invariant-decimal `greaterThan`, `greaterThanOrEqual`, `lessThan`, or `lessThanOrEqual`. All supplied bounds must hold. |
+| `property` + `matches` | any | The non-blank value matches a bounded .NET regular expression. |
 | `crossesTrustBoundary` | `flow` | The flow crosses (`true`) or does not cross (`false`) a trust boundary. |
 | `source` / `target` | `flow` | A condition on the flow's endpoint: its `kind` (`process`/`datastore`/`external`) and/or a property matcher. |
+| `reachableFrom` | component | A matching component has a directed path of one or more edges to this component. |
+| `connectsTo` | component | This component has a direct outgoing connector to a matching component. |
+
+#### Numeric and regex predicates
+
+Property matchers also work inside `source`/`target` and connectivity filters. For example:
+
+```json
+{
+  "id": "RETENTION",
+  "appliesTo": "datastore",
+  "message": "{name} must declare retention between 1 and 30 days.",
+  "assert": { "property": "RetentionDays", "greaterThanOrEqual": 1, "lessThanOrEqual": 30 }
+}
+```
+
+Numeric bounds are JSON numbers within `System.Decimal` range, not quoted strings. Model values
+use invariant decimal parsing: `.` is the decimal separator; signs, surrounding whitespace, and
+exponents are allowed; thousands separators are not. Decimal precision and rounding apply. Absent,
+blank, `Unknown`, non-numeric, overflowing, or longer-than-256-character values do not match.
+Consequently a numeric `when` skips them, while a numeric `assert` reports the missing requirement.
+Contradictory bounds reject the pack. To require numeric equality, use equal inclusive lower and
+upper bounds; `equals` continues to compare strings.
+
+`matches` searches the value rather than requiring a whole-string match. Use anchors when needed,
+for example `"matches": "^svc-[a-z0-9-]+$"`. Matching is case-sensitive and culture-invariant;
+inline `(?i)` enables case-insensitive matching. Missing and blank values never match, even `.*`.
+`Unknown` is an ordinary recorded string and can match a permissive pattern; do not treat `.*`
+as evidence of a control.
+
+Patterns are prepared once per distinct pattern per load, using the .NET interpreter (no dynamic
+code generation). Limits are 1,024 pattern characters, 128 distinct patterns per load, 4,096 input
+characters, and a 50 ms match timeout. Regex evaluation shares a 1,000 ms budget across the entire
+analysis, in addition to the declarative operation budget. Pattern construction has a 250 ms
+per-pattern and 1,000 ms shared load budget, checked after each constructor returns: the .NET
+constructor is not cancellable, so these are not preemptive compilation timeouts. Pattern length
+and count also bound that work. Invalid patterns reject the whole containing pack with a rule-local
+diagnostic. Evaluation timeouts and oversized input abort analysis with an error, never `false`;
+`not` cannot turn a timeout into evidence that a requirement holds.
+
+Use a version 2 pack for new matchers: an older engine rejects unknown v2 fields rather than silently
+ignoring them as extensions in an unversioned pack. Existing legacy string predicates are unchanged.
+
+The interaction dialect accepts `{"subject":"flow","property":"Port","greaterThan":1024}`
+or `{"subject":"source","property":"ServiceName","matches":"^svc-"}`. Choose exactly one
+property matcher family per interaction leaf (`valueIn`, numeric bounds, or `matches`); combine
+families using `allOf`. Interaction property predicates match any stored value, with all numeric
+bounds applied to the same value. Flat rules and endpoint/connectivity filters retain their
+first-value behavior.
+
+#### Directed connectivity
+
+Connectivity selectors require `kind`, `property`, or both, and reuse endpoint property matchers:
+
+```json
+{
+  "id": "AUDIT-PATH",
+  "appliesTo": "process",
+  "message": "{name} is externally reachable but lacks a direct audit-store connection.",
+  "when": { "reachableFrom": { "kind": "external" } },
+  "assert": { "connectsTo": { "kind": "datastore", "property": "StoresLogData", "equals": "Yes" } }
+}
+```
+
+`reachableFrom` walks incoming connectors to find an upstream match; `connectsTo` checks one outgoing
+edge only. There is no implicit zero-hop match. An explicit self-loop or cycle can establish a
+positive-length path back to the same component. Parallel connectors do not duplicate findings.
+Traversal stays on the candidate's page. Rectangular and line trust boundaries do not block it:
+a boundary documents a trust transition, not an enforced network policy. Boundaries and annotations
+are not graph vertices, and connectors ending on them do not create component paths. Dangling or
+cross-page connectors still present in the loaded model cause a diagnostic when the graph is built.
+This is not a raw-file topology validator: the existing canonical JSON reader drops flows whose
+endpoints cannot be resolved on their page before analysis, so those flows never reach this guard.
+Connectivity describes the loaded model; it does not recover omitted or malformed links.
+
+For per-flow rules, use interaction leaves such as
+`{"subject":"target","reachableFrom":{"kind":"external"}}` or
+`{"subject":"source","connectsTo":{"kind":"datastore"}}`. Primitive-kind filters are also
+available as `{"subject":"target","kind":"datastore"}` without a type catalog entry.
+These predicates accept `source`/`target`, not the flow itself. Flat connectivity predicates require
+a component `appliesTo` (`process`, `datastore`, or `external`). Filters cannot recursively contain
+connectivity predicates.
+
+One lazy, page-partitioned adjacency index is shared across all rules in an evaluation. The model's
+topology must remain fixed for that evaluation context. Index construction is linear; each
+reachability query visits at most the page's vertices and edges, without recursion. Index building,
+edge visits, and filter evaluation charge the shared operation budget; interaction predicates also
+charge their per-rule budget. Graph construction allows at most 1,024 pages, 100,000 shapes, and
+200,000 lines across the model. Repeated queries remain bounded by the invocation budget rather
+than allocating an all-pairs reachability table.
+
+#### Compatibility and controls
 
 - **Assert what a control *is*, not what it is not.** `anyOf` and `equals` compare exact strings, so
   `Unknown` satisfies them only if you list it. `notAnyOf` is a denylist: `{"property": "Encrypted",
@@ -476,14 +574,10 @@ present":
   an invalid envelope/catalog is skipped rather than partially interpreted.
 - **Threats.** A custom rule that declares a `stride` category is projected into
   [`threats`](cli-reference.md#threats) exactly like a built-in threat-bearing rule.
-- **CLI only (and why).** `--rules` works on the CLI; the HTTP API (`/v1`) and the in-browser
-  (WebAssembly) engine load the built-in rules only. This is deliberate, not an oversight: (1) those
-  hosts share a **stateless** engine facade — a model in, findings out — with no per-request channel
-  for selecting rule sources; (2) the **WebAssembly host has no filesystem**, so the file/directory
-  loader behind `--rules` cannot read spec files there; and (3) loading rules over a shared service is
-  a security-sensitive contract change (in-memory rule injection, and treating rule-loading as a
-  privileged action) deferred to a later increment. The rule engine itself is portable the
-  limitation is the injection surface, not the DSL.
+- **Every engine surface.** These matchers use the same evaluator for CLI, API, WASM/Studio, and
+  MCP. Rule sources still follow each host's existing policy: CLI paths, MCP sandboxed paths,
+  trusted API startup configuration, or in-memory content on WASM. No per-request API rule injection
+  is added. See [Custom rules on every surface](#custom-rules-on-every-surface).
 
 ### Rule variables
 

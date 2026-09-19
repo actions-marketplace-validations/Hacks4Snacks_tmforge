@@ -109,6 +109,11 @@ namespace ThreatModelForge.Api
                 .WithName("MergeModels")
                 .WithTags("Model");
             app.MapPost(
+                "/v1/model/layout",
+                (LayoutRequestDto request) => TypedResults.Ok(EngineService.Layout(request)))
+                .WithName("LayoutModel")
+                .WithTags("Model");
+            app.MapPost(
                 "/v1/model/export/tm7",
                 (TmForgeModelDto model) => TypedResults.File(EngineService.ExportTm7(model, rules), "application/xml", "model.tm7"))
                 .WithName("ExportModelTm7")
@@ -126,6 +131,12 @@ namespace ThreatModelForge.Api
                 (FileContentDto file) => TypedResults.Ok(
                     EngineService.ReadModel(Convert.FromBase64String(file.ContentBase64), file.FormatId)))
                 .WithName("ReadModel")
+                .WithTags("Model");
+            app.MapPost(
+                "/v1/model/preflight",
+                (FileContentDto file, string? to) => TypedResults.Ok(
+                    DocumentPreflight.Inspect(Convert.FromBase64String(file.ContentBase64), file.FormatId, to)))
+                .WithName("PreflightModel")
                 .WithTags("Model");
 
             // A declarative authoring manifest is a threat model's reviewable source, not one of the

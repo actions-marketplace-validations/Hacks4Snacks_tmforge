@@ -32,6 +32,23 @@ describe('mapping — property round-trip (inspector edits reach the engine)', (
     expect(pages[0].edges[0].data?.properties).toEqual({ Protocol: 'HTTPS', Port: '443', Algorithm: 'AES-GCM' });
   });
 
+  it('preserves an explicitly identified single page and its imported evidence', () => {
+    const graph = toModel(nodes, edges);
+    const model = {
+      ...graph,
+      metadata: { owner: 'Reviewer', threatModelName: 'Imported model' },
+      diagrams: [{ id: 'imported-page', name: 'Requests', elements: graph.elements, flows: graph.flows }],
+      threats: [{ id: 'manual:threat-dragon.original', state: 'Accepted' as const, source: { format: 'threat-dragon', id: 'original' } }],
+    };
+
+    const restored = modelFromPages(pagesFromModel(model), undefined, model.threats, model.metadata);
+
+    expect(restored.diagrams?.[0]).toMatchObject({ id: 'imported-page', name: 'Requests' });
+    expect(restored.threats).toEqual(model.threats);
+    expect(restored.metadata).toEqual(model.metadata);
+    expect(modelFromPages(pagesFromModel(graph)).diagrams).toBeUndefined();
+  });
+
   it('omits the properties key entirely for an element with no custom properties', () => {
     const model = toModel(nodes, edges);
     // n2 (User) had an empty properties bag — it should not serialize a properties object.

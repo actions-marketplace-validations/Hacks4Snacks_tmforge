@@ -87,7 +87,8 @@ namespace ThreatModelForge.Cli
             builder.Services
                 .AddMcpServer()
                 .WithStdioServerTransport()
-                .WithToolsFromAssembly(typeof(McpCommand).Assembly);
+                .WithToolsFromAssembly(typeof(McpCommand).Assembly)
+                .WithResourcesFromAssembly(typeof(McpCommand).Assembly);
 
             await builder.Build().RunAsync().ConfigureAwait(false);
         }
@@ -105,6 +106,10 @@ namespace ThreatModelForge.Cli
             Console.Error.WriteLine("Exposes tmforge's engine and authoring facade as MCP tools: read, apply, add, connect,");
             Console.Error.WriteLine("set, rename, remove, analyze, threats, report, save, merge, export_manifest, plus grounding");
             Console.Error.WriteLine("(formats, stencils, property_schema, rules, rule_packs, manifest_schema, detect).");
+            Console.Error.WriteLine();
+            Console.Error.WriteLine("Also exposes versioned grounding resources at tmforge://grounding/v1/:");
+            Console.Error.WriteLine("formats, property-schema, manifest-schema, rule-packs, and a sandboxed custom-pack template.");
+            Console.Error.WriteLine("Existing grounding tools remain available for clients without resource support.");
             Console.Error.WriteLine();
             Console.Error.WriteLine("Configure your MCP client to launch: command \"tmforge\", args [\"mcp\"].");
         }

@@ -84,5 +84,39 @@ namespace ThreatModelForge.Analysis.Tests
                 definitions.GetProperty("flatRule").GetProperty("properties")
                     .GetProperty("defaultPriority").GetProperty("$ref").GetString());
         }
+
+        /// <summary>The published schema exposes the bounded property and connectivity matcher contracts.</summary>
+        [TestMethod]
+        public void VersionTwoSchemaDeclaresAdditionalMatchers()
+        {
+            using JsonDocument schema = JsonDocument.Parse(RulePackSchema.VersionTwo);
+            JsonElement definitions = schema.RootElement.GetProperty("$defs");
+            foreach (string shape in new[] { "condition", "nonRelationalCondition", "endpoint" })
+            {
+                JsonElement definition = definitions.GetProperty(shape);
+                foreach (string matcher in new[] { "greaterThan", "greaterThanOrEqual", "lessThan", "lessThanOrEqual", "matches" })
+                {
+                    Assert.IsTrue(definition.GetProperty("properties").TryGetProperty(matcher, out _), shape + ":" + matcher);
+                    Assert.AreEqual("property", definition.GetProperty("dependentRequired").GetProperty(matcher)[0].GetString());
+                }
+            }
+
+            JsonElement pattern = definitions.GetProperty("regexPattern");
+            Assert.AreEqual(1, pattern.GetProperty("minLength").GetInt32());
+            Assert.AreEqual(1024, pattern.GetProperty("maxLength").GetInt32());
+            Assert.AreEqual(decimal.MinValue, definitions.GetProperty("decimal").GetProperty("minimum").GetDecimal());
+            Assert.AreEqual(decimal.MaxValue, definitions.GetProperty("decimal").GetProperty("maximum").GetDecimal());
+            string[] expressions = definitions.GetProperty("interactionExpression").GetProperty("oneOf").EnumerateArray()
+                .Select(expression => expression.GetProperty("$ref").GetString() ?? string.Empty).ToArray();
+            foreach (string expression in new[] { "numericExpression", "regexExpression", "kindExpression", "connectivityExpression" })
+            {
+                CollectionAssert.Contains(expressions, "#/$defs/" + expression);
+            }
+
+            CollectionAssert.AreEquivalent(
+                new[] { "source", "target" },
+                definitions.GetProperty("connectivityExpression").GetProperty("properties").GetProperty("subject")
+                    .GetProperty("enum").EnumerateArray().Select(value => value.GetString()).ToArray());
+        }
     }
 }

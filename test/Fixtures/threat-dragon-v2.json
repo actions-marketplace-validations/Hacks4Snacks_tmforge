@@ -1,0 +1,131 @@
+{
+  "version": "2.6.2",
+  "summary": {
+    "title": "Threat Dragon import fixture",
+    "owner": "Model owner",
+    "description": "Synthetic v2 model for structural and threat import tests."
+  },
+  "detail": {
+    "reviewer": "Security reviewer",
+    "diagrams": [
+      {
+        "id": 0,
+        "title": "Requests",
+        "diagramType": "STRIDE",
+        "version": "2.0",
+        "cells": [
+          {
+            "id": "actor",
+            "shape": "actor",
+            "position": { "x": 20, "y": 100 },
+            "size": { "width": 120, "height": 80 },
+            "data": { "type": "tm.Actor", "name": "Caller", "providesAuthentication": false }
+          },
+          {
+            "id": "api",
+            "shape": "process",
+            "position": { "x": 300, "y": 100 },
+            "size": { "width": 100, "height": 100 },
+            "data": { "type": "tm.Process", "name": "API", "outOfScope": false }
+          },
+          {
+            "id": "store",
+            "shape": "store",
+            "position": { "x": 500, "y": 100 },
+            "size": { "width": 160, "height": 80 },
+            "data": {
+              "type": "tm.Store",
+              "name": "Credentials",
+              "storesCredentials": true,
+              "isEncrypted": false,
+              "isALog": false,
+              "isSigned": false,
+              "threats": [
+                {
+                  "id": "credential-disclosure",
+                  "title": "Credentials exposed",
+                  "type": "Information disclosure",
+                  "modelType": "STRIDE",
+                  "description": "Stored credentials are readable.",
+                  "mitigation": "Encrypt stored credentials.",
+                  "severity": "High",
+                  "status": "Open"
+                }
+              ]
+            }
+          },
+          {
+            "id": "boundary",
+            "shape": "trust-boundary-box",
+            "position": { "x": 250, "y": 40 },
+            "size": { "width": 450, "height": 220 },
+            "data": { "type": "tm.BoundaryBox", "name": "Service zone", "isTrustBoundary": true }
+          },
+          {
+            "id": "request",
+            "shape": "flow",
+            "source": { "cell": "actor" },
+            "target": { "cell": "api" },
+            "data": {
+              "type": "tm.Flow",
+              "name": "Request",
+              "protocol": "HTTPS",
+              "isEncrypted": true,
+              "isPublicNetwork": true,
+              "threats": [
+                {
+                  "threatId": "request-tampering",
+                  "title": "Request tampering",
+                  "type": "Tampering",
+                  "modelType": "STRIDE",
+                  "description": "Requests can be modified in transit.",
+                  "mitigation": "Require TLS.",
+                  "severity": "Medium",
+                  "status": "Mitigated"
+                }
+              ]
+            }
+          },
+          {
+            "id": "query",
+            "shape": "flow",
+            "source": { "cell": "api" },
+            "target": { "cell": "store" },
+            "data": { "type": "tm.Flow", "name": "Query" }
+          }
+        ]
+      },
+      {
+        "id": 1,
+        "title": "Privacy review",
+        "diagramType": "LINDDUN",
+        "version": "2.0",
+        "cells": [
+          {
+            "id": "worker",
+            "shape": "process",
+            "position": { "x": 30, "y": 50 },
+            "size": { "width": 120, "height": 100 },
+            "data": {
+              "type": "tm.Process",
+              "name": "Worker",
+              "threats": [
+                {
+                  "id": "linkability",
+                  "title": "Records can be linked",
+                  "type": "Linkability",
+                  "modelType": "LINDDUN",
+                  "description": "Stable identifiers link records.",
+                  "mitigation": "Use short-lived identifiers.",
+                  "severity": "Low",
+                  "status": "Accepted",
+                  "justification": "Approved for the documented retention window."
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

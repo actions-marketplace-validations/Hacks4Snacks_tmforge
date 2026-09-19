@@ -107,13 +107,13 @@ export interface TmForgeDiagram {
 export interface TmForgeModel {
   schema: 'tmforge-json';
   version: '0.1';
+  metadata?: Record<string, string | null | undefined>;
   elements: TmForgeElement[];
   flows: TmForgeFlow[];
   /**
    * Named pages. When present, this is the authoritative multi-page form and the top-level
-   * `elements`/`flows` mirror the first page for older single-page readers. Absent for single-page
-   * models. Studio page-tab wiring lands in a later phase; the field is defined here so the wire
-   * contract matches the engine.
+  * `elements`/`flows` mirror the first page for older single-page readers. An explicitly identified
+  * single page also uses this form so imports retain its name and identity.
    */
   diagrams?: TmForgeDiagram[];
   /** Which rule packs or rules to skip when validating this model. */
@@ -147,6 +147,7 @@ export interface ThreatTriage {
   description?: string;
   /** The author-set mitigation. */
   mitigation?: string;
+  source?: Record<string, string>;
   /** The author-set priority (`Critical` / `High` / `Medium` / `Low`). */
   priority?: string;
   /** Element ids a manual threat is scoped to (source[, target, flow]); empty means model-wide. */

@@ -1,0 +1,59 @@
+{
+  "pack": {
+    "schema": "tmforge-rules",
+    "version": 2,
+    "dialect": "urn:tmforge:rules:flat-v1",
+    "pack": { "id": "rule005", "name": "Additional matcher contract", "version": "1.0" },
+    "categories": [ { "id": "policy", "name": "Policy" } ],
+    "properties": [
+      { "name": "RetentionDays" },
+      { "name": "ServiceName" },
+      { "name": "StoresLogData", "allowedValues": ["Yes", "No", "Unknown"] }
+    ],
+    "rules": [
+      {
+        "id": "RETENTION",
+        "severity": "error",
+        "categoryId": "policy",
+        "defaultPriority": "High",
+        "appliesTo": "datastore",
+        "message": "{name} must declare retention between 1 and 30 days.",
+        "assert": { "property": "RetentionDays", "greaterThanOrEqual": 1, "lessThanOrEqual": 30 }
+      },
+      {
+        "id": "SERVICE-NAME",
+        "severity": "error",
+        "categoryId": "policy",
+        "defaultPriority": "High",
+        "appliesTo": "process",
+        "message": "{name} must use a service name beginning with svc-.",
+        "assert": { "property": "ServiceName", "matches": "^svc-[a-z0-9-]+$" }
+      },
+      {
+        "id": "AUDIT-PATH",
+        "severity": "error",
+        "categoryId": "policy",
+        "defaultPriority": "High",
+        "appliesTo": "process",
+        "message": "{name} is externally reachable but lacks a direct audit-store connection.",
+        "when": { "reachableFrom": { "kind": "external" } },
+        "assert": { "connectsTo": { "kind": "datastore", "property": "StoresLogData", "equals": "Yes" } }
+      }
+    ]
+  },
+  "model": {
+    "schema": "tmforge-json",
+    "version": "0.1",
+    "elements": [
+      { "id": "11111111-1111-4111-8111-111111111111", "kind": "external", "name": "Entry", "x": 10, "y": 50, "width": 120, "height": 60 },
+      { "id": "22222222-2222-4222-8222-222222222222", "kind": "process", "name": "Gateway", "x": 200, "y": 50, "width": 120, "height": 60, "properties": { "ServiceName": "frontend" } },
+      { "id": "33333333-3333-4333-8333-333333333333", "kind": "process", "name": "Worker", "x": 400, "y": 50, "width": 120, "height": 60, "properties": { "ServiceName": "svc-worker" } },
+      { "id": "44444444-4444-4444-8444-444444444444", "kind": "datastore", "name": "Audit", "x": 600, "y": 50, "width": 120, "height": 60, "properties": { "StoresLogData": "Yes", "RetentionDays": "90" } }
+    ],
+    "flows": [
+      { "id": "55555555-5555-4555-8555-555555555555", "name": "Request", "source": "11111111-1111-4111-8111-111111111111", "target": "22222222-2222-4222-8222-222222222222" },
+      { "id": "66666666-6666-4666-8666-666666666666", "name": "Work", "source": "22222222-2222-4222-8222-222222222222", "target": "33333333-3333-4333-8333-333333333333" },
+      { "id": "77777777-7777-4777-8777-777777777777", "name": "Audit", "source": "33333333-3333-4333-8333-333333333333", "target": "44444444-4444-4444-8444-444444444444" }
+    ]
+  }
+}

@@ -2,6 +2,7 @@ namespace ThreatModelForge.Analysis
 {
     using System.Collections.Generic;
     using System.Text.Json.Serialization;
+    using System.Text.RegularExpressions;
 
     /// <summary>
     /// A condition on the element at one end of a flow, resolved through the flow's source or target
@@ -27,5 +28,23 @@ namespace ThreatModelForge.Analysis
 
         /// <summary>Gets or sets whether the property must be present (<c>true</c>) or absent (<c>false</c>).</summary>
         public bool? Present { get; set; }
+
+        /// <summary>Gets or sets the exclusive numeric lower bound.</summary>
+        public decimal? GreaterThan { get; set; }
+
+        /// <summary>Gets or sets the inclusive numeric lower bound.</summary>
+        public decimal? GreaterThanOrEqual { get; set; }
+
+        /// <summary>Gets or sets the exclusive numeric upper bound.</summary>
+        public decimal? LessThan { get; set; }
+
+        /// <summary>Gets or sets the inclusive numeric upper bound.</summary>
+        public decimal? LessThanOrEqual { get; set; }
+
+        /// <summary>Gets or sets the regular expression the property must match.</summary>
+        public string? Matches { get; set; }
+
+        /// <summary>Gets or sets the pattern prepared during pack validation.</summary>
+        internal Regex? CompiledPattern { get; set; }
     }
 }

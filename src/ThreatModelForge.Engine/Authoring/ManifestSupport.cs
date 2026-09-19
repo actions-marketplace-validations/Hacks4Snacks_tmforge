@@ -8,6 +8,7 @@ namespace ThreatModelForge.Engine
     using System.Text.Json;
     using System.Text.Json.Serialization;
     using ThreatModelForge.Editing;
+    using ThreatModelForge.Formats;
     using ThreatModelForge.Model;
     using ThreatModelForge.Model.Abstracts;
 
@@ -36,6 +37,7 @@ namespace ThreatModelForge.Engine
         /// <returns>The manifest, or <see langword="null"/> when the JSON is the literal <c>null</c>.</returns>
         public static Manifest? Deserialize(string json)
         {
+            JsonModelPreflight.ThrowIfInvalid(JsonDocumentPreflight.Inspect<Manifest>(json));
             return JsonSerializer.Deserialize<Manifest>(json, SerializerOptions);
         }
 
@@ -101,6 +103,13 @@ namespace ThreatModelForge.Engine
                     {
                         return false;
                     }
+                }
+
+                IReadOnlyList<DocumentDiagnostic> diagnostics = JsonDocumentPreflight.Inspect<Manifest>(json);
+                if (diagnostics.Any(diagnostic => diagnostic.Severity == "error"))
+                {
+                    error = string.Join(Environment.NewLine, diagnostics.Select(diagnostic => diagnostic.Path + ": " + diagnostic.Message));
+                    return false;
                 }
 
                 manifest = JsonSerializer.Deserialize<Manifest>(json, SerializerOptions);

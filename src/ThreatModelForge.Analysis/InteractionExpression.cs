@@ -2,8 +2,11 @@ namespace ThreatModelForge.Analysis
 {
     using System;
     using System.Collections.Generic;
+    using System.Diagnostics;
+    using System.Globalization;
     using System.IO;
     using System.Linq;
+    using System.Text.RegularExpressions;
     using ThreatModelForge.Model;
     using ThreatModelForge.Model.Abstracts;
 
@@ -25,7 +28,12 @@ namespace ThreatModelForge.Analysis
             string? equalTo = null,
             bool? present = null,
             string? boundaryType = null,
-            bool firstValueOnly = false)
+            bool firstValueOnly = false,
+            decimal? greaterThan = null,
+            decimal? greaterThanOrEqual = null,
+            decimal? lessThan = null,
+            decimal? lessThanOrEqual = null,
+            Regex? pattern = null)
         {
             this.Operation = operation;
             this.Children = children ?? Array.Empty<InteractionExpression>();
@@ -40,6 +48,11 @@ namespace ThreatModelForge.Analysis
             this.Present = present;
             this.BoundaryType = boundaryType;
             this.FirstValueOnly = firstValueOnly;
+            this.GreaterThan = greaterThan;
+            this.GreaterThanOrEqual = greaterThanOrEqual;
+            this.LessThan = lessThan;
+            this.LessThanOrEqual = lessThanOrEqual;
+            this.Pattern = pattern;
         }
 
         /// <summary>The operation represented by this node.</summary>
@@ -74,6 +87,12 @@ namespace ThreatModelForge.Analysis
 
             /// <summary>Specific crossed-boundary type.</summary>
             Crosses,
+
+            /// <summary>Positive-length reachability from a filtered upstream component.</summary>
+            ReachableFrom,
+
+            /// <summary>A direct outgoing connector to a filtered component.</summary>
+            ConnectsTo,
         }
 
         /// <summary>Gets the node operation.</summary>
@@ -108,6 +127,25 @@ namespace ThreatModelForge.Analysis
 
         /// <summary>Gets the required presence state for a composite flat condition.</summary>
         public bool? Present { get; }
+
+        /// <summary>Gets the exclusive numeric lower bound.</summary>
+        public decimal? GreaterThan { get; }
+
+        /// <summary>Gets the inclusive numeric lower bound.</summary>
+        public decimal? GreaterThanOrEqual { get; }
+
+        /// <summary>Gets the exclusive numeric upper bound.</summary>
+        public decimal? LessThan { get; }
+
+        /// <summary>Gets the inclusive numeric upper bound.</summary>
+        public decimal? LessThanOrEqual { get; }
+
+        /// <summary>Gets a value indicating whether a numeric constraint is present.</summary>
+        public bool HasNumericMatcher => this.GreaterThan.HasValue || this.GreaterThanOrEqual.HasValue ||
+            this.LessThan.HasValue || this.LessThanOrEqual.HasValue;
+
+        /// <summary>Gets the validated, reusable regular expression.</summary>
+        public Regex? Pattern { get; }
 
         /// <summary>Gets the expected crossed-boundary type.</summary>
         public string? BoundaryType { get; }
@@ -161,6 +199,38 @@ namespace ThreatModelForge.Analysis
         public static InteractionExpression PropertyIn(string subject, string property, IReadOnlyList<string> values) =>
             new InteractionExpression(OperationKind.Property, subject: subject, property: property, values: values);
 
+        /// <summary>Creates a regular-expression property predicate.</summary>
+        /// <param name="subject">The subject to read.</param>
+        /// <param name="property">The property to read.</param>
+        /// <param name="pattern">The validated expression with a match timeout.</param>
+        /// <returns>The regular-expression predicate.</returns>
+        public static InteractionExpression RegexProperty(string subject, string property, Regex pattern) =>
+            new InteractionExpression(OperationKind.Property, subject: subject, property: property, pattern: pattern);
+
+        /// <summary>Creates a numeric property predicate.</summary>
+        /// <param name="subject">The subject to read.</param>
+        /// <param name="property">The property to read.</param>
+        /// <param name="greaterThan">The exclusive lower bound.</param>
+        /// <param name="greaterThanOrEqual">The inclusive lower bound.</param>
+        /// <param name="lessThan">The exclusive upper bound.</param>
+        /// <param name="lessThanOrEqual">The inclusive upper bound.</param>
+        /// <returns>The numeric predicate.</returns>
+        public static InteractionExpression NumericProperty(
+            string subject,
+            string property,
+            decimal? greaterThan,
+            decimal? greaterThanOrEqual,
+            decimal? lessThan,
+            decimal? lessThanOrEqual) =>
+            new InteractionExpression(
+                OperationKind.Property,
+                subject: subject,
+                property: property,
+                greaterThan: greaterThan,
+                greaterThanOrEqual: greaterThanOrEqual,
+                lessThan: lessThan,
+                lessThanOrEqual: lessThanOrEqual);
+
         /// <summary>Creates a first-value property predicate for legacy flat-rule compatibility.</summary>
         /// <param name="subject">The interaction subject.</param>
         /// <param name="property">The runtime property name.</param>
@@ -195,6 +265,12 @@ namespace ThreatModelForge.Analysis
         /// <param name="notAnyOf">The rejected values.</param>
         /// <param name="equalTo">The required equality value.</param>
         /// <param name="present">The required presence state.</param>
+        /// <param name="greaterThan">The exclusive numeric lower bound.</param>
+        /// <param name="greaterThanOrEqual">The inclusive numeric lower bound.</param>
+        /// <param name="lessThan">The exclusive numeric upper bound.</param>
+        /// <param name="lessThanOrEqual">The inclusive numeric upper bound.</param>
+        /// <param name="pattern">The optional validated regular expression.</param>
+        /// <param name="kind">The optional enclosing component-kind filter for property policy.</param>
         /// <returns>The composite property condition.</returns>
         public static InteractionExpression FlatPropertyCondition(
             string subject,
@@ -202,7 +278,13 @@ namespace ThreatModelForge.Analysis
             IReadOnlyList<string>? anyOf,
             IReadOnlyList<string>? notAnyOf,
             string? equalTo,
-            bool? present) =>
+            bool? present,
+            decimal? greaterThan = null,
+            decimal? greaterThanOrEqual = null,
+            decimal? lessThan = null,
+            decimal? lessThanOrEqual = null,
+            Regex? pattern = null,
+            string? kind = null) =>
             new InteractionExpression(
                 OperationKind.FlatProperty,
                 subject: subject,
@@ -211,7 +293,13 @@ namespace ThreatModelForge.Analysis
                 rejectedValues: notAnyOf?.ToArray(),
                 equalTo: equalTo,
                 present: present,
-                firstValueOnly: true);
+                firstValueOnly: true,
+                greaterThan: greaterThan,
+                greaterThanOrEqual: greaterThanOrEqual,
+                lessThan: lessThan,
+                lessThanOrEqual: lessThanOrEqual,
+                pattern: pattern,
+                kind: kind);
 
         /// <summary>Creates a crossed-boundary predicate.</summary>
         /// <param name="boundaryType">The expected boundary type.</param>
@@ -223,6 +311,14 @@ namespace ThreatModelForge.Analysis
         /// <returns>The generic crossed-boundary predicate.</returns>
         public static InteractionExpression CrossesAnyBoundary() =>
             new InteractionExpression(OperationKind.Crosses);
+
+        /// <summary>Creates a directed component connectivity predicate.</summary>
+        /// <param name="subject">The component subject.</param>
+        /// <param name="filter">The filter evaluated against each connected component as source.</param>
+        /// <param name="incoming">Whether to follow incoming paths rather than one outgoing edge.</param>
+        /// <returns>The connectivity predicate.</returns>
+        public static InteractionExpression Connectivity(string subject, InteractionExpression filter, bool incoming) =>
+            new InteractionExpression(incoming ? OperationKind.ReachableFrom : OperationKind.ConnectsTo, child: filter, subject: subject);
 
         /// <summary>Checks whether an entity belongs to one of the flat dialect's primitive kinds.</summary>
         /// <param name="entity">The entity to classify.</param>
@@ -411,6 +507,9 @@ namespace ThreatModelForge.Analysis
                         return this.EvaluatePresence(expression, interaction, context, ref operations);
                     case OperationKind.FlatProperty:
                         return this.EvaluateFlatProperty(expression, interaction, context, ref operations);
+                    case OperationKind.ReachableFrom:
+                    case OperationKind.ConnectsTo:
+                        return this.EvaluateConnectivity(expression, interaction, context, ref operations);
                     default:
                         return false;
                 }
@@ -420,6 +519,51 @@ namespace ThreatModelForge.Analysis
                 boundary is BorderBoundary border
                     ? flow.Crosses(border)
                     : boundary is LineBoundary line && flow.Crosses(line);
+
+            private bool EvaluateConnectivity(
+                InteractionExpression expression,
+                EvaluationContext interaction,
+                RuleEvaluationContext context,
+                ref int operations)
+            {
+                Entity? subject = interaction.Subject(expression.Subject!);
+                if (subject == null || subject is Connector || !subject.IsComponent())
+                {
+                    return false;
+                }
+
+                RuleEvaluationContext.ConnectivityGraph graph = context.GetConnectivityGraph();
+                bool incoming = expression.Operation == OperationKind.ReachableFrom;
+                Queue<Guid> pending = new Queue<Guid>();
+                HashSet<Guid> visited = new HashSet<Guid>();
+                pending.Enqueue(subject.Guid);
+                while (pending.Count > 0)
+                {
+                    this.AccountOperation(context, ref operations);
+                    Guid current = pending.Dequeue();
+                    foreach (Entity neighbor in graph.Neighbors(interaction.Diagram, current, incoming))
+                    {
+                        this.AccountOperation(context, ref operations);
+                        if (!visited.Add(neighbor.Guid))
+                        {
+                            continue;
+                        }
+
+                        EvaluationContext candidate = new EvaluationContext(interaction.Diagram, neighbor, null, null, isRoot: false);
+                        if (this.Evaluate(expression.Child!, candidate, context, ref operations))
+                        {
+                            return true;
+                        }
+
+                        if (incoming)
+                        {
+                            pending.Enqueue(neighbor.Guid);
+                        }
+                    }
+                }
+
+                return false;
+            }
 
             private bool EvaluateCrosses(
                 InteractionExpression expression,
@@ -463,6 +607,26 @@ namespace ThreatModelForge.Analysis
                 IEnumerable<string> candidates = expression.FirstValueOnly ? values.Take(1) : values;
                 foreach (string value in candidates)
                 {
+                    if (expression.Pattern != null)
+                    {
+                        if (this.MatchesRegexValue(expression, value, context, ref operations))
+                        {
+                            return true;
+                        }
+
+                        continue;
+                    }
+
+                    if (expression.HasNumericMatcher)
+                    {
+                        if (this.MatchesNumericValue(expression, value, context, ref operations))
+                        {
+                            return true;
+                        }
+
+                        continue;
+                    }
+
                     if (expression.FirstValueOnly && string.IsNullOrWhiteSpace(value))
                     {
                         return false;
@@ -518,7 +682,8 @@ namespace ThreatModelForge.Analysis
                 bool hasMatcher = expression.Present.HasValue ||
                     expression.EqualTo != null ||
                     expression.Values.Count > 0 ||
-                    expression.RejectedValues.Count > 0;
+                    expression.RejectedValues.Count > 0 ||
+                    expression.HasNumericMatcher || expression.Pattern != null;
                 if (!hasMatcher)
                 {
                     return isPresent;
@@ -551,7 +716,60 @@ namespace ThreatModelForge.Analysis
                     return false;
                 }
 
-                return true;
+                return (!expression.HasNumericMatcher ||
+                    (isPresent && this.MatchesNumericValue(expression, value, context, ref operations))) &&
+                    (expression.Pattern == null ||
+                    (isPresent && this.MatchesRegexValue(expression, value, context, ref operations)));
+            }
+
+            private bool MatchesRegexValue(
+                InteractionExpression expression,
+                string value,
+                RuleEvaluationContext context,
+                ref int operations)
+            {
+                const int maximumLength = 4096;
+                if (value.Length > maximumLength)
+                {
+                    throw new InvalidDataException($"Rule '{this.ruleId}' regex input for '{expression.Property}' exceeds {maximumLength} characters.");
+                }
+
+                this.AccountOperations(context, ref operations, value.Length + 1);
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    return false;
+                }
+
+                context.AccountRegexTime(TimeSpan.Zero);
+                Stopwatch elapsed = Stopwatch.StartNew();
+                try
+                {
+                    return expression.Pattern!.IsMatch(value);
+                }
+                catch (RegexMatchTimeoutException ex)
+                {
+                    throw new InvalidDataException($"Rule '{this.ruleId}' regex match for '{expression.Property}' exceeded the 50 ms timeout.", ex);
+                }
+                finally
+                {
+                    context.AccountRegexTime(elapsed.Elapsed);
+                }
+            }
+
+            private bool MatchesNumericValue(
+                InteractionExpression expression,
+                string value,
+                RuleEvaluationContext context,
+                ref int operations)
+            {
+                const int maximumLength = 256;
+                this.AccountOperations(context, ref operations, Math.Min(value.Length, maximumLength) + 1);
+                return value.Length <= maximumLength &&
+                    decimal.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal number) &&
+                    (!expression.GreaterThan.HasValue || number > expression.GreaterThan.Value) &&
+                    (!expression.GreaterThanOrEqual.HasValue || number >= expression.GreaterThanOrEqual.Value) &&
+                    (!expression.LessThan.HasValue || number < expression.LessThan.Value) &&
+                    (!expression.LessThanOrEqual.HasValue || number <= expression.LessThanOrEqual.Value);
             }
 
             private bool ContainsFlatValue(

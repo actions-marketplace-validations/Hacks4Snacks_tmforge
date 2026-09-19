@@ -30,18 +30,19 @@ import { Toolbar } from './Toolbar';
 import { Inspector } from './Inspector';
 import { AnalysisSettings } from './AnalysisSettings';
 import { FALLBACK_PACKS, FALLBACK_STENCILS } from './stencils';
-import { createHttpEngine, loadWasmEngine, looksLikeManifest, offlineEngine, probeEngine, type AnalysisReportFormat, type Finding, type FormatInfo, type IEngineClient, type PackInfo, type PropertyDescriptorInfo, type RuleBundle, type RuleInfo, type RulePackInfo, type StencilInfo, type Threat } from './engineClient';
+import { createHttpEngine, loadWasmEngine, looksLikeManifest, offlineEngine, probeEngine, type AnalysisReportFormat, type Finding, type FormatInfo, type IEngineClient, type PackInfo, type PreflightResult, type PropertyDescriptorInfo, type RuleBundle, type RuleInfo, type RulePackInfo, type StencilInfo, type Threat } from './engineClient';
 import { ThreatsPanel, type NewThreatDraft, type ThreatEdit, type ThreatScopeOption } from './ThreatsPanel';
 import { CanvasSearch, type SearchItem } from './CanvasSearch';
 import { ModelOutline } from './ModelOutline';
 import { buildOutline, type OutlineOrder } from './outline';
-import { DEFAULT_NODE_SIZE, modelFromPages, pagesFromModel, type PageGraph } from './mapping';
-import { tidyGraph } from './autosize';
+import { DEFAULT_NODE_SIZE, modelFromPages, pagesFromModel, toModel, type PageGraph } from './mapping';
+import { applyLayoutGeometry, tidyGraph, tidyLabels } from './autosize';
 import { cloneGraph, type Clipboard } from './clipboard';
 import { useUndoRedo } from './useUndoRedo';
 import { FlowEdge } from './edges/FlowEdge';
 import { PageTabs } from './PageTabs';
 import { MergeResolveModal } from './MergeResolveModal';
+import { PreflightDialog } from './PreflightDialog';
 import { DfdActionsContext, type DfdActions } from './editorContext';
 import { Toaster, toast } from './toast';
 import type { DfdEdge, DfdKind, DfdNode, ThreatTriage, TmForgeModel, TmForgeAnalysis, TmForgeExpectedRulePack } from './types';
@@ -112,6 +113,7 @@ interface StoredWorkspace {
   activePageId: string;
   analysis?: TmForgeAnalysis;
   threats?: ThreatTriage[];
+  metadata?: TmForgeModel['metadata'];
 }
 
 /** Reads the saved multi-page workspace (v2), migrating a legacy single-page model (v1) when present. */
@@ -123,7 +125,7 @@ export function loadStoredWorkspace(): StoredWorkspace | null {
       if (parsed?.model?.schema === 'tmforge-json') {
         const pages = pagesFromModel(parsed.model);
         const activePageId = pages.some((p) => p.id === parsed.activePageId) ? parsed.activePageId! : pages[0].id;
-        return { pages, activePageId, analysis: parsed.model.analysis, threats: parsed.model.threats };
+        return { pages, activePageId, analysis: parsed.model.analysis, threats: parsed.model.threats, metadata: parsed.model.metadata };
       }
     }
   } catch {
@@ -135,7 +137,7 @@ export function loadStoredWorkspace(): StoredWorkspace | null {
       const model = JSON.parse(raw) as TmForgeModel;
       if (model?.schema === 'tmforge-json') {
         const pages = pagesFromModel(model);
-        return { pages, activePageId: pages[0].id, analysis: model.analysis, threats: model.threats };
+        return { pages, activePageId: pages[0].id, analysis: model.analysis, threats: model.threats, metadata: model.metadata };
       }
     }
   } catch {
@@ -200,6 +202,8 @@ const INITIAL_SAVED_JSON = JSON.stringify(
   modelFromPages(
     INITIAL_WORKSPACE.pages,
     buildAnalysis(INITIAL_DISABLED_PACKS, INITIAL_DISABLED_RULE_IDS, INITIAL_EXPECTED_PACKS),
+    INITIAL_WORKSPACE.threats,
+    INITIAL_WORKSPACE.metadata,
   ),
 );
 
@@ -241,9 +245,9 @@ interface OpenedDocument {
   model: TmForgeModel;
   /** The format Save writes in: the source format when it is writable, else tmforge-json. */
   saveFormat: string;
-  /** The name to bind, which is not the source name when the source was a manifest. */
+  /** The name to bind, using a new name for manifests and read-only source formats. */
   fileName: string;
-  /** Whether Save may overwrite the file this came from. False for an authoring manifest. */
+  /** Whether Save may overwrite the source. False for manifests and read-only formats. */
   bindable: boolean;
 }
 
@@ -424,6 +428,7 @@ export function Editor() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [threats, setThreats] = useState<Threat[]>([]);
   const [threatTriage, setThreatTriage] = useState<ThreatTriage[]>(INITIAL_WORKSPACE.threats ?? []);
+  const [metadata, setMetadata] = useState<TmForgeModel['metadata']>(INITIAL_WORKSPACE.metadata);
   const flaggedIdsRef = useRef<ReadonlySet<string>>(new Set());
   const [engine, setEngine] = useState<IEngineClient>(offlineEngine);
   const [engineOnline, setEngineOnline] = useState(false);
@@ -445,6 +450,9 @@ export function Editor() {
   const [ruleCatalogToken, setRuleCatalogToken] = useState(0);
   const [showRules, setShowRules] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
+  const [preflightReview, setPreflightReview] = useState<{ title: string; result: PreflightResult } | null>(null);
+  const preflightDecision = useRef<((proceed: boolean) => void) | undefined>(undefined);
+  const preflightVersion = useRef(0);
   const [showOutline, setShowOutline] = useState(false);
   const [outlineOrder, setOutlineOrder] = useState<OutlineOrder>(loadOutlineOrder);
   const [outlineCrossingOnly, setOutlineCrossingOnly] = useState(false);
@@ -643,9 +651,8 @@ export function Editor() {
   // the last explicit Save. A debounced localStorage write of the whole workspace (pages + active
   // tab) runs on every change as a crash-recovery net, so a reload never loses work.
   const currentModel = useMemo(() => {
-    const model = modelFromPages(allPages, buildAnalysis(disabledRulePacks, disabledRuleIds, expectedPacks));
-    return threatTriage.length > 0 ? { ...model, threats: threatTriage } : model;
-  }, [allPages, disabledRulePacks, disabledRuleIds, expectedPacks, threatTriage]);
+    return modelFromPages(allPages, buildAnalysis(disabledRulePacks, disabledRuleIds, expectedPacks), threatTriage, metadata);
+  }, [allPages, disabledRulePacks, disabledRuleIds, expectedPacks, threatTriage, metadata]);
   const currentJson = useMemo(() => JSON.stringify(currentModel), [currentModel]);
   const [savedJson, setSavedJson] = useState(INITIAL_SAVED_JSON);
   const dirty = currentJson !== savedJson;
@@ -654,6 +661,12 @@ export function Editor() {
     () => JSON.stringify({ v: 2, activePageId, model: currentModel }),
     [activePageId, currentModel],
   );
+  const layoutStateRef = useRef({ workspaceJson, nodes, edges });
+  layoutStateRef.current = { workspaceJson, nodes, edges };
+  const layoutRequestRef = useRef(0);
+  const layoutPendingRef = useRef(false);
+  const [tidying, setTidying] = useState(false);
+  useEffect(() => () => { layoutRequestRef.current += 1; }, []);
   useEffect(() => {
     const id = window.setTimeout(() => {
       try {
@@ -778,14 +791,52 @@ export function Editor() {
     return set;
   }, [findings, threats, elementPageIndex]);
 
+  const finishPreflight = useCallback((proceed: boolean) => {
+    const decide = preflightDecision.current;
+    preflightDecision.current = undefined;
+    setPreflightReview(null);
+    decide?.(proceed);
+  }, []);
+
+  const checkDocument = useCallback(async (bytes: Uint8Array, format: string | undefined, target: string | undefined, operation: 'import' | 'export') => {
+    const version = ++preflightVersion.current;
+    const baseline = layoutStateRef.current.workspaceJson;
+    finishPreflight(false);
+    const result = await engine.preflight(bytes, format, target);
+    const ensureCurrent = () => {
+      if (version !== preflightVersion.current || baseline !== layoutStateRef.current.workspaceJson) {
+        throw new DOMException('The workspace changed during preflight.', 'AbortError');
+      }
+    };
+    ensureCurrent();
+    if (!result.success || result.diagnostics.length > 0) {
+      const accepted = await new Promise<boolean>((resolve) => {
+        preflightDecision.current = resolve;
+        setPreflightReview({ title: result.success ? `Review ${operation}` : `${operation === 'import' ? 'Import' : 'Export'} blocked`, result });
+      });
+      ensureCurrent();
+      if (!accepted || !result.success) {
+        throw new DOMException('Preflight cancelled.', 'AbortError');
+      }
+    }
+    return result;
+  }, [engine, finishPreflight]);
+
   const serializeModel = useCallback(
     async (formatId: string): Promise<Blob> => {
-      if (formatId === 'tmforge-json') {
-        return new Blob([await engine.write(currentModel)], { type: 'application/json' });
+      const baseline = layoutStateRef.current.workspaceJson;
+      if (engine !== offlineEngine) {
+        await checkDocument(new TextEncoder().encode(JSON.stringify(currentModel)), 'tmforge-json', formatId === 'tmforge-json' ? undefined : formatId, 'export');
       }
-      return engine.convert(currentModel, formatId);
+      const blob = formatId === 'tmforge-json'
+        ? new Blob([await engine.write(currentModel)], { type: 'application/json' })
+        : await engine.convert(currentModel, formatId);
+      if (baseline !== layoutStateRef.current.workspaceJson) {
+        throw new DOMException('The workspace changed before export completed.', 'AbortError');
+      }
+      return blob;
     },
-    [engine, currentModel],
+    [engine, currentModel, checkDocument],
   );
 
   const writeToHandle = useCallback(
@@ -833,7 +884,7 @@ export function Editor() {
       await writeToHandle(handle, fileFormatRef.current);
       setSavedJson(currentJson);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Could not write the file.', 'error');
+      if (!isAbortError(err)) toast(err instanceof Error ? err.message : 'Could not write the file.', 'error');
     }
   }, [currentJson, saveAs, writeToHandle]);
 
@@ -1505,13 +1556,13 @@ export function Editor() {
     async (formatId: string) => {
       const format = formats.find((f) => f.id === formatId);
       try {
-        const blob = await engine.convert(currentModel, formatId);
+        const blob = await serializeModel(formatId);
         downloadBlob(blob, `model${format?.extensions[0] ?? ''}`);
       } catch (err) {
-        toast(err instanceof Error ? err.message : String(err), 'error');
+        if (!isAbortError(err)) toast(err instanceof Error ? err.message : String(err), 'error');
       }
     },
-    [engine, currentModel, formats],
+    [serializeModel, formats],
   );
 
   // Download a report from the engine. The threat-model report and the diagram describe the model;
@@ -1538,12 +1589,10 @@ export function Editor() {
 
   const loadModel = useCallback(
     (model: TmForgeModel) => {
-      // Auto-fit each page as it loads: grow shapes so a name never overruns its boundary, route
-      // flows through the ports that face their endpoints, and pull apart overlapping flow labels, so
-      // an imported (for example, CLI-authored) model is readable without manual clean-up. `grow`
-      // never shrinks a hand-tuned size, and labels already dragged aside are left as they are.
+      // Import never changes trust claims. Routing and label offsets are presentation-only; shape
+      // sizing and arrangement require an explicit Tidy action and the engine's preservation guard.
       const nextPages = pagesFromModel(model).map((p) => {
-        const tidied = tidyGraph(p.nodes, p.edges, 'grow');
+        const tidied = tidyLabels(p.nodes, p.edges);
         return { ...p, nodes: tidied.nodes, edges: tidied.edges };
       });
       const nextPacks = model.analysis?.disabledPacks ?? [];
@@ -1560,13 +1609,14 @@ export function Editor() {
       setFindings([]);
       setThreats([]);
       setThreatTriage(model.threats ?? []);
+      setMetadata(model.metadata);
       flaggedIdsRef.current = new Set();
       analysisActiveRef.current = false;
       setSelection({ nodes: [], edges: [] });
       reset();
       // A freshly loaded model is the new saved baseline, so it does not read as dirty.
       setSavedJson(
-        JSON.stringify(modelFromPages(nextPages, buildAnalysis(nextPacks, nextRuleIds, nextExpected))),
+        JSON.stringify(modelFromPages(nextPages, buildAnalysis(nextPacks, nextRuleIds, nextExpected), model.threats, model.metadata)),
       );
       window.setTimeout(() => fitView({ padding: 0.25, maxZoom: 1.15, duration: 300 }), 0);
     },
@@ -1591,38 +1641,47 @@ export function Editor() {
   // reported as an unreadable model.
   const readDocument = useCallback(
     async (bytes: Uint8Array, name: string): Promise<OpenedDocument> => {
+      const baseline = layoutStateRef.current.workspaceJson;
       const detected = await engine.detect(bytes).catch(() => null);
+      await checkDocument(bytes, detected?.id, detected?.id === 'tmforge-json' ? undefined : 'tmforge-json', 'import');
+      const version = preflightVersion.current;
+      const complete = (opened: OpenedDocument) => {
+        if (baseline !== layoutStateRef.current.workspaceJson || version !== preflightVersion.current) {
+          throw new DOMException('The workspace changed while the document was read.', 'AbortError');
+        }
+        return opened;
+      };
       if (detected) {
-        return {
+        return complete({
           model: await readModelFromBytes(bytes, detected.id),
           saveFormat: detected.canWrite ? detected.id : 'tmforge-json',
-          fileName: name,
-          bindable: true,
-        };
+          fileName: detected.canWrite ? name : modelNameForManifest(name),
+          bindable: detected.canWrite,
+        });
       }
 
       const text = new TextDecoder().decode(bytes);
       if (looksLikeManifest(text)) {
-        return {
+        return complete({
           model: await engine.applyManifest(text),
           saveFormat: 'tmforge-json',
           fileName: modelNameForManifest(name),
           // A manifest is an authoring source, not a model file. Binding a writable handle to it
           // would let Save overwrite the reviewable source with the model built from it.
           bindable: false,
-        };
+        });
       }
 
       // Nothing claimed it and it is not a manifest: fall back to tmforge-json so the reader reports
       // what is actually wrong with the document.
-      return {
+      return complete({
         model: await readModelFromBytes(bytes, 'tmforge-json'),
         saveFormat: 'tmforge-json',
         fileName: name,
         bindable: true,
-      };
+      });
     },
-    [engine, readModelFromBytes],
+    [engine, readModelFromBytes, checkDocument],
   );
 
   const onImportFile = useCallback(
@@ -1635,7 +1694,7 @@ export function Editor() {
         fileFormatRef.current = opened.saveFormat;
         setFileName(opened.fileName);
       } catch (err) {
-        toast(err instanceof Error ? err.message : 'Could not open that file.', 'error');
+        if (!isAbortError(err)) toast(err instanceof Error ? err.message : 'Could not open that file.', 'error');
       }
     },
     [loadModel, readDocument],
@@ -1673,26 +1732,56 @@ export function Editor() {
     setFindings([]);
     setThreats([]);
     setThreatTriage([]);
+    setMetadata(undefined);
     flaggedIdsRef.current = new Set();
     analysisActiveRef.current = false;
     setSelection({ nodes: [], edges: [] });
     reset();
   }, [setNodes, setEdges, reset]);
 
-  // Auto-layout the active page: fit every shape to its label (so a name can't overrun its boundary),
-  // route each flow through the ports that face its endpoints, and separate flow labels that overlap.
-  // One undo snapshot covers the whole tidy, then the view is re-framed. This is the on-demand form
-  // of the grow-only pass that runs when a model is loaded.
-  const tidyActivePage = useCallback(() => {
-    if (nodes.length === 0) {
+  // Preserve the author's arrangement and validate the cleanup before creating an undoable edit.
+  const tidyActivePage = useCallback(async (mode: 'tidy' | 'labels' = 'tidy') => {
+    if (nodes.length === 0 || layoutPendingRef.current) {
       return;
     }
-    takeSnapshot();
-    const tidied = tidyGraph(nodes, edges, 'exact');
-    setNodes(tidied.nodes);
-    setEdges(tidied.edges);
-    window.setTimeout(() => fitView({ padding: 0.25, maxZoom: 1.15, duration: 300 }), 0);
-  }, [nodes, edges, setNodes, setEdges, takeSnapshot, fitView]);
+    const version = ++layoutRequestRef.current;
+    const baseline = layoutStateRef.current.workspaceJson;
+    layoutPendingRef.current = true;
+    setTidying(true);
+    try {
+      let positioned = nodes;
+      if (mode !== 'labels') {
+        const original = toModel(nodes, edges);
+        const candidate = tidyGraph(nodes, edges, 'exact');
+        const positions = toModel(candidate.nodes, candidate.edges).elements.map((element) => ({
+          id: element.id, x: element.x, y: element.y, width: element.width!, height: element.height!,
+        }));
+        const geometry = await engine.layout(original, positions);
+        if (version !== layoutRequestRef.current) return;
+        if (layoutStateRef.current.workspaceJson !== baseline) {
+          toast('The model changed while tidying. The cleanup was not applied.', 'info');
+          return;
+        }
+        positioned = applyLayoutGeometry(layoutStateRef.current.nodes, geometry);
+      }
+      const tidied = tidyLabels(positioned, layoutStateRef.current.edges);
+      if (tidied.nodes.every((node, index) => node === layoutStateRef.current.nodes[index])
+        && tidied.edges.every((edge, index) => edge === layoutStateRef.current.edges[index])) return;
+      takeSnapshot();
+      setNodes(tidied.nodes);
+      setEdges(tidied.edges);
+      window.setTimeout(() => fitView({ padding: 0.25, maxZoom: 1.15, duration: 300 }), 0);
+    } catch (err) {
+      if (version === layoutRequestRef.current) {
+        toast(err instanceof Error ? err.message : 'Could not tidy this page. Nothing was changed.', 'error');
+      }
+    } finally {
+      if (version === layoutRequestRef.current) {
+        layoutPendingRef.current = false;
+        setTidying(false);
+      }
+    }
+  }, [engine, nodes, edges, setNodes, setEdges, takeSnapshot, fitView]);
 
   const actions = useMemo<DfdActions>(
     () => ({ beginEdit: takeSnapshot, renameNode, renameEdge, setEdgeLabelOffset }),
@@ -1727,6 +1816,7 @@ export function Editor() {
         onClear={clearAll}
         onFit={() => fitView({ padding: 0.25, maxZoom: 1.15, duration: 300 })}
         onTidy={tidyActivePage}
+        tidying={tidying}
         onUndo={undo}
         onRedo={redo}
         canUndo={canUndo}
@@ -1946,6 +2036,7 @@ export function Editor() {
         }}
       />
     ) : null}
+    {preflightReview && <PreflightDialog title={preflightReview.title} result={preflightReview.result} onDecision={finishPreflight} />}
     <Toaster />
     </DfdActionsContext.Provider>
   );

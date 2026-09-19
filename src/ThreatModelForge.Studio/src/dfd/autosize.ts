@@ -1,4 +1,5 @@
 import { DEFAULT_NODE_SIZE } from './mapping';
+import type { LayoutElement } from './engineClient';
 import type { DfdEdge, DfdKind, DfdNode } from './types';
 
 /**
@@ -235,6 +236,33 @@ export function fitNodeSize(kind: DfdKind, label: string, hasCaption = false): N
     width: clamp(width, min.width, MAX_WIDTH),
     height: clamp(height, min.height, MAX_HEIGHT),
   };
+}
+
+/** Merge validated rectangles onto current nodes, retaining selection, properties, and view state. */
+export function applyLayoutGeometry(nodes: DfdNode[], elements: LayoutElement[]): DfdNode[] {
+  const byId = new Map(elements.map((element) => [element.id, element]));
+  if (elements.length !== nodes.length || byId.size !== elements.length || nodes.some((node) => !byId.has(node.id))) {
+    throw new Error('The layout response does not match the page. Nothing was changed.');
+  }
+  return nodes.map((node) => {
+    const element = byId.get(node.id)!;
+    const current = rectOf(node);
+    if (current.x === element.x && current.y === element.y && current.w === element.width && current.h === element.height) {
+      return node;
+    }
+    return {
+      ...node,
+      position: { x: element.x, y: element.y },
+      width: element.width,
+      height: element.height,
+      style: { ...node.style, width: element.width, height: element.height },
+    };
+  });
+}
+
+/** Presentation-only cleanup, safe on import and offline: no shape or boundary geometry changes. */
+export function tidyLabels(nodes: DfdNode[], edges: DfdEdge[]): { nodes: DfdNode[]; edges: DfdEdge[] } {
+  return { nodes, edges: deconflictEdgeLabels(nodes, routeEdges(nodes, edges)) };
 }
 
 export type FitMode = 'grow' | 'exact';
@@ -828,6 +856,18 @@ export function separateNodes(nodes: DfdNode[]): DfdNode[] {
     parentOf.set(boundary.id, parent?.id ?? null);
   }
 
+  for (const boundary of boundaries) {
+    const visited = new Set<string>();
+    let current: string | null = boundary.id;
+    while (current !== null) {
+      if (visited.has(current)) {
+        throw new Error('Tidy cannot resolve cyclic boundary membership. No changes were made.');
+      }
+      visited.add(current);
+      current = parentOf.get(current) ?? null;
+    }
+  }
+
   const childrenOf = new Map<string | null, string[]>();
   for (const boundary of boundaries) {
     const parent = parentOf.get(boundary.id) ?? null;
@@ -994,6 +1034,11 @@ export function tidyGraph(
   edges: DfdEdge[],
   mode: FitMode = 'exact',
 ): { nodes: DfdNode[]; edges: DfdEdge[] } {
+  if (nodes.length > 512 || edges.length > 1024
+    || nodes.some((node) => node.data.label.length > 4096)
+    || edges.some((edge) => typeof edge.label === 'string' && edge.label.length > 4096)) {
+    throw new Error('Tidy supports up to 512 shapes, 1024 flows and labels of at most 4096 characters. No changes were made.');
+  }
   const separated = separateNodes(resizeNodesToFit(nodes, mode));
   const routed = routeEdges(separated, edges);
   return { nodes: separated, edges: deconflictEdgeLabels(separated, routed) };
