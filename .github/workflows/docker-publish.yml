@@ -28,7 +28,7 @@ jobs:
           - { image: tmforge, dockerfile: build/Dockerfile.api }
           - { image: tmforge-cli, dockerfile: build/Dockerfile }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Set up QEMU (arm64 emulation)
         uses: docker/setup-qemu-action@v4
