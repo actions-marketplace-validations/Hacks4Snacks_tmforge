@@ -162,6 +162,27 @@ namespace ThreatModelForge.Api.Tests
             Assert.AreEqual(JsonValueKind.Object, body.RootElement.ValueKind);
         }
 
+        /// <summary>The comparison endpoint returns the same read-only review as the shared engine.</summary>
+        /// <returns>A task.</returns>
+        [TestMethod]
+        public async Task Compare_MatchesSharedEngineAndRejectsMissingSnapshots()
+        {
+            string request = "{\"baseline\":" + Model + ",\"proposed\":" + Model.Replace("Alpha", "Renamed Alpha") + "}";
+            JsonSerializerOptions options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+            ModelCompareRequestDto input = JsonSerializer.Deserialize<ModelCompareRequestDto>(request, options) ?? new ModelCompareRequestDto();
+            string expected = JsonSerializer.Serialize(EngineService.Compare(input, null), options);
+
+            using HttpResponseMessage response = await PostJson("/v1/model/compare", request);
+
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+            Assert.IsTrue(JsonNode.DeepEquals(JsonNode.Parse(expected), JsonNode.Parse(await response.Content.ReadAsStringAsync())));
+            using HttpResponseMessage invalid = await PostJson("/v1/model/compare", "{}");
+            Assert.AreEqual(HttpStatusCode.OK, invalid.StatusCode);
+            using JsonDocument result = JsonDocument.Parse(await invalid.Content.ReadAsStringAsync());
+            Assert.IsFalse(result.RootElement.GetProperty("success").GetBoolean());
+            Assert.AreEqual(0, result.RootElement.GetProperty("changes").GetArrayLength());
+        }
+
         /// <summary>The HTTP layout route returns exactly the shared facade's author-id geometry.</summary>
         /// <returns>A task.</returns>
         [TestMethod]

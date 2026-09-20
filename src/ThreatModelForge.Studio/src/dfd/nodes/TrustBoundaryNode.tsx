@@ -1,15 +1,19 @@
 import { useContext, useState } from 'react';
 import { NodeResizer, type NodeProps } from '@xyflow/react';
-import { DfdActionsContext } from '../editorContext';
+import { DfdActionsContext, DfdReadOnlyContext } from '../editorContext';
 import type { DfdNode } from '../types';
 
 /** A resizable dashed region that sits behind the other nodes (zIndex 0). Double-click the label to rename. */
 export function TrustBoundaryNode({ id, data, selected }: NodeProps<DfdNode>) {
   const actions = useContext(DfdActionsContext);
+  const readOnly = useContext(DfdReadOnlyContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(data.label);
 
   const startEdit = () => {
+    if (readOnly) {
+      return;
+    }
     actions.beginEdit();
     setDraft(data.label);
     setEditing(true);
@@ -23,7 +27,7 @@ export function TrustBoundaryNode({ id, data, selected }: NodeProps<DfdNode>) {
   return (
     <div className="dfd-boundary">
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && !readOnly}
         minWidth={140}
         minHeight={90}
         lineClassName="dfd-resize-line"

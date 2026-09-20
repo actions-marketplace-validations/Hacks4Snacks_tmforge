@@ -172,6 +172,48 @@ Two cases deliberately offer delete but no property editing:
   for part of the selection. Narrow the selection to one kind.
 - **Elements and flows together.** They have no properties in common at all.
 
+## Comparing model revisions
+
+Choose **Compare** in the toolbar to open **Model Review**, a separate read-only workspace.
+Select a **baseline** file, then compare it with the snapshot of your current canvas or choose a
+**proposed** file. Both sides accept the same model formats and explicitly versioned authoring
+manifests as Open File. Preflight blocks invalid input and requires confirmation for known import
+losses; acknowledged diagnostics stay visible beside the comparison.
+
+The change list has three categories:
+
+| Category | What is compared |
+| --- | --- |
+| Structure | Added/removed objects and pages; names, kinds, properties, flow endpoints, page names, and objects moving between pages. Added/removed objects include their attribute values. |
+| Boundary crossings | Flows whose geometry-derived set of crossed trust boundaries changed, including added/removed crossing flows. Pure layout changes are otherwise quiet. |
+| Findings | Introduced, resolved, and reclassified findings using stable finding ids; reclassification means severity or disposition changed. Unchanged findings are counted separately. |
+
+Select a change to highlight and frame its objects on both diagrams, with independent page selectors
+and pan/zoom controls. Flow changes include their endpoints; crossing changes also highlight the
+affected boundaries. A deleted object remains navigable on the baseline side. Filter the list by
+category or text, or step through it with the previous/next controls. Large lists show 100 rows at a
+time. On narrow screens the diagrams stack vertically.
+
+Both models are analyzed **now**, once each, with the same active engine and custom rule bundle,
+honoring each model's own disabled-rule settings. This is not a replay of historical analysis.
+Different effective rule selections produce a warning. Missing packs, failed analysis, or different
+source-id representations make the findings comparison explicitly **unavailable**, never an empty
+delta or a list of apparent resolutions. Objects match by stable identity, not name; unrelated
+identities and conversion losses are disclosed.
+
+Review does not compare the complete threat register, manual-threat content, priority, justification,
+model metadata, or visual-only edits. Metadata and author-owned threat-record differences produce
+scope warnings. Accepting or mitigating a currently detected threat is a finding reclassification,
+not a resolved condition. Keep the original files for content outside the canonical model.
+
+Review never merges, saves, changes triage, or consumes editor undo history. Its file selections do
+not replace the working canvas or bind writable handles. Closing it returns to the existing editor;
+late results from an abandoned comparison are discarded. Compare requires a ready API or WASM engine.
+
+Each input is limited to 8 MiB, 32 pages, 1,024 elements, 2,048 flows, and 1,000,000 flow/boundary
+pairs. Comparisons exceeding 10,000 changes are refused rather than silently truncated. See the
+[comparison API](api-reference.md#model-comparison) for the shared result contract.
+
 ## Validating against the engine
 
 Click **Analyze** to send the whole model (every page) to the live `/v1` engine. Findings come back

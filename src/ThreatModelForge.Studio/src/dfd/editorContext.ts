@@ -1,5 +1,7 @@
 import { createContext } from 'react';
 
+export const DfdReadOnlyContext = createContext(false);
+
 /**
  * Editor actions shared with the custom node/edge components so they can rename in place.
  * `beginEdit` takes one undo snapshot at the start of an edit; `rename*` commit the new label.

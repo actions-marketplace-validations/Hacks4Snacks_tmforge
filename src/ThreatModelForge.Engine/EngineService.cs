@@ -618,6 +618,13 @@ namespace ThreatModelForge.Engine
             }
         }
 
+        /// <summary>Compares immutable baseline and proposed snapshots without merging either model.</summary>
+        /// <param name="request">The two model snapshots.</param>
+        /// <param name="rules">The rule bundle used by the host, or null for the built-ins.</param>
+        /// <returns>The read-only review changes and comparability diagnostics.</returns>
+        public static ModelCompareResultDto Compare(ModelCompareRequestDto request, EngineRuleOptions? rules)
+            => ModelComparison.Compare(request, rules);
+
         /// <summary>
         /// Merges two edited models, keyed by element identity. When <paramref name="baseModel"/> is
         /// supplied it is a three-way merge against that common ancestor, so non-overlapping edits

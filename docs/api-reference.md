@@ -42,6 +42,7 @@ and `/openapi` are matched first.
 | `POST /v1/model/read` | Model | Parse uploaded bytes (base64) into the canonical model. |
 | `POST /v1/model/preflight?to=<format>` | Model | Check source bytes and optionally preview conversion losses without writing or analyzing. |
 | `POST /v1/model/manifest` | Model | Materialize a declarative authoring manifest into a model (the `tmforge apply` build). |
+| `POST /v1/model/compare` | Model | Read-only structural, boundary-crossing, and findings comparison of two canonical model snapshots. |
 | `POST /v1/model/layout` | Model | Return geometry-only updates after preserving every boundary membership and actual flow crossing; unsafe candidates are refused atomically. |
 | `POST /v1/model/convert?to=<format>` | Model | Convert a model to another format. |
 | `POST /v1/model/export/tm7` | Model | Export a model as a `.tm7` file. |
@@ -117,6 +118,59 @@ curl -s -X POST http://localhost:8080/v1/model/analysis \
 `POST /v1/model/analyze` and `POST /v1/model/threats` remain available and return exactly what the
 combined action returns for their half; they exist for callers that genuinely need only one
 projection, and they do not materialize the other.
+
+## Model comparison
+
+`POST /v1/model/compare` accepts `{ "baseline": <tmforge-json>, "proposed": <tmforge-json> }`.
+Both snapshots are required. It returns `ModelCompareResultDto`:
+
+```json
+{
+  "success": true,
+  "findingsAvailable": true,
+  "unchangedFindings": 12,
+  "changes": [],
+  "warnings": [],
+  "diagnostics": []
+}
+```
+
+`success` describes the **structural comparison**, not analysis availability. Invalid topology,
+ambiguous ids, or exceeded comparison limits return HTTP **200** with `success: false`, diagnostics,
+and no partial changes. Malformed request JSON still receives a **400** problem response.
+
+Each change has a stable `id`, a `section` (`structure`, `crossings`, or `findings`), a `kind`,
+`title`, and `properties: [{key,from,to}]`. Structural/crossing kinds are `added`, `removed`, or
+`modified`; finding kinds are `introduced`, `resolved`, or `reclassified`. Optional `elementKind`,
+`ruleId`, and `severity` describe the target. `baselineElementIds`/`proposedElementIds` and the
+side-specific page ids/names preserve the caller's ids for navigation; an absent side has no target.
+Flow highlights include endpoints, and crossing highlights include changed boundaries.
+
+Structural differences reuse the identity-keyed model diff; names never substitute for identity.
+Page moves/names are included, while visual-only geometry is excluded. Crossing changes reuse the
+analyzer's geometric boundary calculation. Both inputs are analyzed once using the host's same
+trusted rule bundle and each input's disabled-rule selections. Finding identity and classification
+reuse the versioned analysis-document diff, so renaming does not churn findings and accepting a
+threat reclassifies it rather than resolving it.
+
+A missing expected pack, load diagnostic, or analysis failure sets `findingsAvailable: false` and
+returns **no findings changes**, while structural changes can remain available. Different source-id
+representations of a shared object/page, such as aliases versus exported GUIDs, also disable findings
+comparison instead of manufacturing resolutions. Different effective rule selections warn because
+the resulting delta can reflect rule configuration rather than a changed security condition.
+
+This is not a complete document/register diff. Metadata and author-owned threat-record differences
+produce warnings; manual threat content, priority, justification, and orphaned triage are not reviewed
+field by field. Preflight foreign source bytes with `to=tmforge-json` before reading them, and retain
+those import-loss diagnostics with the review. The endpoint receives canonical snapshots, so it cannot
+recover or diagnose information already omitted by an earlier conversion.
+
+Limits per snapshot: 8 MiB of serialized canonical JSON, 32 pages, 1,024 elements, 2,048 flows, and
+1,000,000 flow/boundary pairs. The total change limit is 10,000, with refusal rather than truncation.
+No input model, file, rule selection, or stored triage is modified.
+
+The WASM `Compare(requestJson)` export uses the same contract and the module's active rule bundle.
+There is no browser-side comparison algorithm and no separate threat detection pass.
 
 ## Shared arrangement
 

@@ -227,6 +227,32 @@ export interface PreflightResult {
   diagnostics: DocumentDiagnostic[];
 }
 
+export interface ModelReviewChange {
+  id: string;
+  section: 'structure' | 'crossings' | 'findings';
+  kind: 'added' | 'removed' | 'modified' | 'introduced' | 'resolved' | 'reclassified';
+  title: string;
+  elementKind?: string;
+  baselineElementIds: string[];
+  proposedElementIds: string[];
+  baselinePageId?: string;
+  proposedPageId?: string;
+  baselinePageName?: string;
+  proposedPageName?: string;
+  properties: { key: string; from?: string; to?: string }[];
+  ruleId?: string;
+  severity?: string;
+}
+
+export interface ModelCompareResult {
+  success: boolean;
+  findingsAvailable: boolean;
+  unchangedFindings: number;
+  changes: ModelReviewChange[];
+  warnings: string[];
+  diagnostics: DocumentDiagnostic[];
+}
+
 export interface IEngineClient {
   readonly label: string;
   write(model: TmForgeModel): Promise<string>;
@@ -288,6 +314,7 @@ export interface IEngineClient {
    * is unavailable for a two-way merge, where any overlapping difference is reported as a conflict.
    */
   merge(base: TmForgeModel | null, ours: TmForgeModel, theirs: TmForgeModel): Promise<MergeResult>;
+  compare(baseline: TmForgeModel, proposed: TmForgeModel): Promise<ModelCompareResult>;
   /** Validates proposed Tidy geometry without rearranging it or changing trust claims. */
   layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]>;
 }
@@ -357,6 +384,56 @@ function toPreflight(dto: components['schemas']['PreflightResultDto'] | undefine
     success: dto.success && !diagnostics.some((item) => item.severity === 'error'),
     format: dto.format ?? undefined,
     targetFormat: dto.targetFormat ?? undefined,
+    diagnostics,
+  };
+}
+
+function toComparison(dto: components['schemas']['ModelCompareResultDto'] | undefined): ModelCompareResult {
+  if (typeof dto?.success !== 'boolean' || typeof dto.findingsAvailable !== 'boolean'
+    || !Number.isInteger(dto.unchangedFindings) || Number(dto.unchangedFindings) < 0
+    || !Array.isArray(dto.changes) || !Array.isArray(dto.warnings) || !dto.warnings.every((warning) => typeof warning === 'string')
+    || !Array.isArray(dto.diagnostics)) {
+    throw new Error('The engine did not return a complete comparison. Update the engine and retry.');
+  }
+  const diagnostics = toPreflight({ success: true, diagnostics: dto.diagnostics }).diagnostics;
+  const seen = new Set<string>();
+  const changes = dto.changes.map((change): ModelReviewChange => {
+    if (!change.id || seen.has(change.id) || typeof change.title !== 'string'
+      || !['structure', 'crossings', 'findings'].includes(change.section ?? '')
+      || !['added', 'removed', 'modified', 'introduced', 'resolved', 'reclassified'].includes(change.kind ?? '')
+      || !Array.isArray(change.baselineElementIds) || !change.baselineElementIds.every((id) => typeof id === 'string' && id.length > 0)
+      || !Array.isArray(change.proposedElementIds) || !change.proposedElementIds.every((id) => typeof id === 'string' && id.length > 0)
+      || !Array.isArray(change.properties) || !change.properties.every((property) => typeof property.key === 'string'
+        && (property.from == null || typeof property.from === 'string') && (property.to == null || typeof property.to === 'string'))) {
+      throw new Error('The engine returned an incomplete comparison change.');
+    }
+    seen.add(change.id);
+    return {
+      id: change.id,
+      section: change.section as ModelReviewChange['section'],
+      kind: change.kind as ModelReviewChange['kind'],
+      title: change.title,
+      elementKind: change.elementKind ? normalizeKind(change.elementKind) : undefined,
+      baselineElementIds: change.baselineElementIds,
+      proposedElementIds: change.proposedElementIds,
+      baselinePageId: change.baselinePageId ?? undefined,
+      proposedPageId: change.proposedPageId ?? undefined,
+      baselinePageName: change.baselinePageName ?? undefined,
+      proposedPageName: change.proposedPageName ?? undefined,
+      ruleId: change.ruleId ?? undefined,
+      severity: change.severity ?? undefined,
+      properties: change.properties.map((property) => ({ key: property.key ?? '', from: property.from ?? undefined, to: property.to ?? undefined })),
+    };
+  });
+  if ((!dto.success && (changes.length > 0 || dto.findingsAvailable)) || (!dto.findingsAvailable && (dto.unchangedFindings !== 0 || changes.some((change) => change.section === 'findings')))) {
+    throw new Error('The engine returned changes for an unavailable comparison.');
+  }
+  return {
+    success: dto.success,
+    findingsAvailable: dto.findingsAvailable,
+    unchangedFindings: Number(dto.unchangedFindings),
+    changes,
+    warnings: dto.warnings,
     diagnostics,
   };
 }
@@ -795,6 +872,10 @@ class OfflineEngineClient implements IEngineClient {
     );
   }
 
+  public compare(): Promise<ModelCompareResult> {
+    return Promise.reject(new Error('Model comparison requires the .NET engine. Wait for WASM to load or connect to the API.'));
+  }
+
   public layout(): Promise<LayoutElement[]> {
     return Promise.reject(new Error('Tidy requires the .NET engine. Use Labels only until the engine is available.'));
   }
@@ -1011,6 +1092,14 @@ class HttpEngineClient implements IEngineClient {
     return toMergeResult(data);
   }
 
+  public async compare(baseline: TmForgeModel, proposed: TmForgeModel): Promise<ModelCompareResult> {
+    const { data, response } = await this.client.POST('/v1/model/compare', { body: { baseline, proposed } });
+    if (!response.ok) {
+      throw new Error(`Engine comparison failed (${response.status}).`);
+    }
+    return toComparison(data);
+  }
+
   public async layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]> {
     const { data, response } = await this.client.POST('/v1/model/layout', {
       body: { model, positions },
@@ -1041,6 +1130,7 @@ interface WasmEngineExports {
   ConvertModel(tmforgeJson: string, toFormatId: string): string;
   Report(tmforgeJson: string, format: string): string;
   Merge(baseJson: string, oursJson: string, theirsJson: string): string;
+  Compare(requestJson: string): string;
   SetRules(sourcesJson: string): string;
   RuleBundle(): string;
   Analysis(tmforgeJson: string): string;
@@ -1164,6 +1254,10 @@ export class WasmEngineClient implements IEngineClient {
       this.wasm.Merge(base ? JSON.stringify(base) : '', JSON.stringify(ours), JSON.stringify(theirs)),
     ) as components['schemas']['MergeResultDto'];
     return toMergeResult(dto);
+  }
+
+  public async compare(baseline: TmForgeModel, proposed: TmForgeModel): Promise<ModelCompareResult> {
+    return toComparison(JSON.parse(this.wasm.Compare(JSON.stringify({ baseline, proposed }))));
   }
 
   public async layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]> {

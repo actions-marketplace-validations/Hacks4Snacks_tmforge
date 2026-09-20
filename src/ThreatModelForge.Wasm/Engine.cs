@@ -151,6 +151,13 @@ namespace ThreatModelForge.Wasm
                 Deserialize(oursJson),
                 Deserialize(theirsJson)));
 
+        /// <summary>Compares baseline and proposed snapshots without merging or editing either model.</summary>
+        /// <param name="requestJson">The ModelCompareRequestDto JSON.</param>
+        /// <returns>Structural, crossing and findings changes with original navigation ids.</returns>
+        [JSExport]
+        public static string Compare(string requestJson)
+            => Serialize(EngineService.Compare(JsonSerializer.Deserialize<ModelCompareRequestDto>(requestJson, JsonOptions) ?? new ModelCompareRequestDto(), ruleOptions));
+
         /// <summary>Detects the format of a document, or returns an empty string when none matches.</summary>
         /// <param name="contentBase64">The raw document bytes, base64-encoded.</param>
         /// <returns>The detected format as JSON, or an empty string when unrecognized.</returns>

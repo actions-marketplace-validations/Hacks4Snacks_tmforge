@@ -144,11 +144,9 @@ namespace ThreatModelForge.Engine
             bool differs = introduced.Count > 0 || resolved.Count > 0 || reclassified.Count > 0;
             if (sameModel && sameAnalyzer && differs)
             {
-                // Both fingerprints cover every input except the suppression list, and the documents
-                // carry no timestamp, so this combination has exactly one ordinary explanation.
                 warnings.Add(
                     "The model and analyzer fingerprints are identical yet the findings differ. " +
-                    "Suppressions are the only other input to an analysis; check whether they changed.");
+                    "Suppressions or author-owned triage may have changed; check both before treating a reclassification as a resolved condition.");
             }
 
             return warnings;

@@ -109,6 +109,11 @@ namespace ThreatModelForge.Api
                 .WithName("MergeModels")
                 .WithTags("Model");
             app.MapPost(
+                "/v1/model/compare",
+                (ModelCompareRequestDto request) => TypedResults.Ok(EngineService.Compare(request, rules)))
+                .WithName("CompareModels")
+                .WithTags("Model");
+            app.MapPost(
                 "/v1/model/layout",
                 (LayoutRequestDto request) => TypedResults.Ok(EngineService.Layout(request)))
                 .WithName("LayoutModel")

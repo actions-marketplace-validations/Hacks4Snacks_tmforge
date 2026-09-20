@@ -228,6 +228,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/model/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["CompareModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/model/layout": {
         parameters: {
             query?: never;
@@ -592,6 +608,35 @@ export interface components {
             /** @description Gets or sets the threat model name. */
             threatModelName?: null | string;
         };
+        ModelCompareRequestDto: {
+            baseline?: null | components["schemas"]["TmForgeModelDto"];
+            proposed?: null | components["schemas"]["TmForgeModelDto"];
+        };
+        ModelCompareResultDto: {
+            success?: boolean;
+            changes?: components["schemas"]["ModelReviewChangeDto"][];
+            findingsAvailable?: boolean;
+            /** Format: int32 */
+            unchangedFindings?: number | string;
+            warnings?: string[];
+            diagnostics?: components["schemas"]["DocumentDiagnostic"][];
+        };
+        ModelReviewChangeDto: {
+            id?: string;
+            section?: string;
+            kind?: string;
+            title?: string;
+            elementKind?: null | string;
+            baselineElementIds?: string[];
+            proposedElementIds?: string[];
+            baselinePageId?: null | string;
+            proposedPageId?: null | string;
+            baselinePageName?: null | string;
+            proposedPageName?: null | string;
+            properties?: components["schemas"]["PropertyChange"][];
+            ruleId?: null | string;
+            severity?: null | string;
+        };
         /**
          * @description Describes a stencil pack: a named, togglable group of related stencils (for example, the
          *     Azure pack). The palette uses packs so the user can show or hide whole families at once.
@@ -612,6 +657,20 @@ export interface components {
             format?: null | string;
             targetFormat?: null | string;
             diagnostics?: components["schemas"]["DocumentDiagnostic"][];
+        };
+        /**
+         * @description A single attribute-level change to an element between two models: the attribute key and its
+         *     value on each side. string? PropertyChange.From is `null` when the attribute was absent
+         *     on the base model; string? PropertyChange.To is `null` when it was absent on the revised
+         *     model.
+         */
+        PropertyChange: {
+            /** @description Gets the attribute key (for example, `name`, `Protocol`, or `target`). */
+            key?: string;
+            /** @description Gets the value on the base model, or `null` when the attribute was absent. */
+            from?: null | string;
+            /** @description Gets the value on the revised model, or `null` when the attribute was absent. */
+            to?: null | string;
         };
         /**
          * @description Typed definition of a single element custom property (for example, a data store's
@@ -1100,6 +1159,30 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MergeResultDto"];
+                };
+            };
+        };
+    };
+    CompareModels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelCompareRequestDto"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCompareResultDto"];
                 };
             };
         };

@@ -199,6 +199,61 @@ describe('engine model normalization', () => {
   });
 });
 
+describe('comparison transports', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const result = { success: true, findingsAvailable: true, unchangedFindings: 3, changes: [], warnings: [], diagnostics: [] };
+
+  it('uses the same request and result over HTTP and WASM', async () => {
+    const baseline = emptyModel();
+    const proposed = emptyModel();
+    const compare = vi.fn(() => JSON.stringify(result));
+    vi.stubGlobal('fetch', vi.fn(async (request: Request) => {
+      expect(request.url).toBe('http://localhost/v1/model/compare');
+      expect(await request.json()).toEqual({ baseline, proposed });
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    }));
+    const wasm = new WasmEngineClient({ Compare: compare } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
+
+    expect(await createHttpEngine('http://localhost').compare(baseline, proposed)).toEqual(result);
+    expect(await wasm.compare(baseline, proposed)).toEqual(result);
+    expect(compare).toHaveBeenCalledWith(JSON.stringify({ baseline, proposed }));
+  });
+
+  it('does not treat missing or failed analysis as an empty successful review', async () => {
+    await expect(offlineEngine.compare(emptyModel(), emptyModel())).rejects.toThrow(/requires the .NET engine/);
+    const wasm = new WasmEngineClient({ Compare: () => '{}' } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
+    await expect(wasm.compare(emptyModel(), emptyModel())).rejects.toThrow(/complete comparison/);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 500 })));
+    await expect(createHttpEngine('http://localhost').compare(emptyModel(), emptyModel())).rejects.toThrow(/500/);
+  });
+
+  it('keeps successful structural review separate from unavailable findings', async () => {
+    const partial = { ...result, findingsAvailable: false, unchangedFindings: 0, diagnostics: [
+      { code: 'compare.analysis-unavailable', severity: 'error', path: '$.baseline.analysis', message: 'Unavailable rule pack.' },
+    ] };
+    const wasm = new WasmEngineClient({ Compare: () => JSON.stringify(partial) } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
+    expect(await wasm.compare(emptyModel(), emptyModel())).toEqual(partial);
+  });
+
+  it('rejects partial, contradictory, or duplicate changes instead of dropping them', async () => {
+    const change = { id: 'change', section: 'structure', kind: 'added', title: 'Store', elementKind: 'store', baselineElementIds: [], proposedElementIds: ['store'], properties: [] };
+    const payloads = [
+      { ...result, changes: [change, change] },
+      { ...result, changes: [{ ...change, proposedElementIds: [null] }] },
+      { ...result, changes: [{ ...change, properties: [{ to: 'value' }] }] },
+      { ...result, findingsAvailable: false, unchangedFindings: 0, changes: [{ ...change, section: 'findings', kind: 'resolved' }] },
+      { ...result, success: false, changes: [change] },
+    ];
+    for (const payload of payloads) {
+      const wasm = new WasmEngineClient({ Compare: () => JSON.stringify(payload) } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
+      await expect(wasm.compare(emptyModel(), emptyModel())).rejects.toThrow(/comparison/);
+    }
+    const wasm = new WasmEngineClient({ Compare: () => JSON.stringify({ ...result, changes: [change] }) } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
+    expect((await wasm.compare(emptyModel(), emptyModel())).changes[0].elementKind).toBe('datastore');
+  });
+});
+
 describe('preflight transports', () => {
   afterEach(() => vi.unstubAllGlobals());
 

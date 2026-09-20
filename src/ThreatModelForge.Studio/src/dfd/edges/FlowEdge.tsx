@@ -1,7 +1,7 @@
-import { useContext, useRef, useState } from 'react';
+import { useContext, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, useReactFlow, type EdgeProps } from '@xyflow/react';
-import { DfdActionsContext } from '../editorContext';
+import { DfdActionsContext, DfdReadOnlyContext } from '../editorContext';
 import type { DfdEdge } from '../types';
 
 /**
@@ -31,6 +31,8 @@ export function FlowEdge({
     targetPosition,
   });
   const actions = useContext(DfdActionsContext);
+  const readOnly = useContext(DfdReadOnlyContext);
+  const reviewPathId = useId();
   const { getZoom } = useReactFlow();
   const text = typeof label === 'string' ? label : '';
   const [editing, setEditing] = useState(false);
@@ -99,7 +101,7 @@ export function FlowEdge({
 
   return (
     <>
-      <BaseEdge id={id} path={edgePath} markerEnd={markerEnd} style={style} />
+      <BaseEdge id={readOnly ? reviewPathId : id} path={edgePath} markerEnd={markerEnd} style={style} />
       {moved && (
         <path className="edge-leader" d={`M${labelX},${labelY} L${labelX + offsetX},${labelY + offsetY}`} />
       )}
@@ -108,7 +110,9 @@ export function FlowEdge({
           className="edge-label-wrap nodrag nopan"
           style={{ transform: `translate(-50%, -50%) translate(${labelX + offsetX}px, ${labelY + offsetY}px)` }}
         >
-          {editing ? (
+          {readOnly ? (
+            <span className="edge-label">{text || 'data flow'}</span>
+          ) : editing ? (
             <input
               className="edge-label-input"
               autoFocus

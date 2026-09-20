@@ -130,6 +130,7 @@ interface ToolbarProps {
   onSave: () => void;
   /** Opens the three-way merge / conflict-resolution dialog. */
   onMerge: () => void;
+  onCompare: () => void;
   /** True when the model has changes not yet written to a file. */
   dirty: boolean;
   /** Name of the file the model is bound to (what Save overwrites), or null when unsaved. */
@@ -183,6 +184,10 @@ export function Toolbar(props: ToolbarProps) {
           Save
         </button>
         <ExportMenu formats={props.exportFormats} onExport={props.onExport} />
+        <button className="btn" onClick={props.onCompare} disabled={!props.engineOnline}
+          title={props.engineOnline ? 'Review model changes without editing the canvas' : 'Comparison requires the engine'}>
+          Compare
+        </button>
         <button
           className="btn"
           onClick={props.onMerge}

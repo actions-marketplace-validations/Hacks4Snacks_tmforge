@@ -369,6 +369,36 @@
         }
       }
     },
+    "/v1/model/compare": {
+      "post": {
+        "tags": [
+          "Model"
+        ],
+        "operationId": "CompareModels",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelCompareRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCompareResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/model/layout": {
       "post": {
         "tags": [
@@ -1360,6 +1390,145 @@
         },
         "description": "Free-text metadata describing the modeled system (owner, reviewer, assumptions, and so on)."
       },
+      "ModelCompareRequestDto": {
+        "type": "object",
+        "properties": {
+          "baseline": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TmForgeModelDto"
+              }
+            ]
+          },
+          "proposed": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TmForgeModelDto"
+              }
+            ]
+          }
+        }
+      },
+      "ModelCompareResultDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelReviewChangeDto"
+            }
+          },
+          "findingsAvailable": {
+            "type": "boolean"
+          },
+          "unchangedFindings": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocumentDiagnostic"
+            }
+          }
+        }
+      },
+      "ModelReviewChangeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "section": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "elementKind": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "baselineElementIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "proposedElementIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "baselinePageId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "proposedPageId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "baselinePageName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "proposedPageName": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PropertyChange"
+            }
+          },
+          "ruleId": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "severity": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
       "PackDto": {
         "type": "object",
         "properties": {
@@ -1408,6 +1577,30 @@
             }
           }
         }
+      },
+      "PropertyChange": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Gets the attribute key (for example, `name`, `Protocol`, or `target`)."
+          },
+          "from": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets the value on the base model, or `null` when the attribute was absent."
+          },
+          "to": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets the value on the revised model, or `null` when the attribute was absent."
+          }
+        },
+        "description": "A single attribute-level change to an element between two models: the attribute key and its\nvalue on each side. string? PropertyChange.From is `null` when the attribute was absent\non the base model; string? PropertyChange.To is `null` when it was absent on the revised\nmodel."
       },
       "PropertyDescriptor": {
         "type": "object",

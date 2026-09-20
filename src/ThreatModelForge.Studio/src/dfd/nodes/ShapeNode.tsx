@@ -1,7 +1,7 @@
 import { useContext, useState } from 'react';
 import { Handle, NodeResizer, Position, type NodeProps } from '@xyflow/react';
 import { StencilIcon } from '../icons';
-import { DfdActionsContext } from '../editorContext';
+import { DfdActionsContext, DfdReadOnlyContext } from '../editorContext';
 import type { DfdKind, DfdNode } from '../types';
 
 /** Four ports; ConnectionMode.Loose lets any port be a source or a target. */
@@ -24,10 +24,14 @@ function stencilCaption(id: string | undefined): string | null {
 export function ShapeNode({ id, type, data, selected }: NodeProps<DfdNode>) {
   const caption = stencilCaption(data.stencilType);
   const actions = useContext(DfdActionsContext);
+  const readOnly = useContext(DfdReadOnlyContext);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(data.label);
 
   const startEdit = () => {
+    if (readOnly) {
+      return;
+    }
     actions.beginEdit();
     setDraft(data.label);
     setEditing(true);
@@ -48,7 +52,7 @@ export function ShapeNode({ id, type, data, selected }: NodeProps<DfdNode>) {
       }}
     >
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && !readOnly}
         minWidth={72}
         minHeight={48}
         lineClassName="dfd-resize-line"

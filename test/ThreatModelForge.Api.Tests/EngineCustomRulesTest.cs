@@ -32,6 +32,32 @@ namespace ThreatModelForge.Api.Tests
 
         private const string EffectiveRuleId = "corporate/CORP-1";
 
+        /// <summary>Review uses the same custom bundle on both sides and never resolves load failures.</summary>
+        [TestMethod]
+        public void CompareUsesTheEffectiveCustomRuleBundle()
+        {
+            TmForgeModelDto baseline = UnencryptedStoreModel();
+            TmForgeElementDto store = baseline.Elements!.Single();
+            TmForgeModelDto proposed = new TmForgeModelDto
+            {
+                Elements = new[]
+                {
+                    new TmForgeElementDto { Id = store.Id, Kind = store.Kind, Name = store.Name, X = store.X, Y = store.Y, Properties = new Dictionary<string, string> { ["Encrypted"] = "At-rest" } },
+                },
+            };
+            ModelCompareRequestDto request = new ModelCompareRequestDto { Baseline = baseline, Proposed = proposed };
+
+            ModelCompareResultDto result = EngineService.Compare(request, Rules());
+
+            Assert.IsTrue(result.FindingsAvailable);
+            Assert.AreEqual("resolved", result.Changes.Single(change => change.RuleId == EffectiveRuleId).Kind);
+            EngineRuleOptions broken = new EngineRuleOptions { Sources = new[] { new RuleSourceDto { Name = "broken", Json = "invalid" } } };
+            ModelCompareResultDto unavailable = EngineService.Compare(request, broken);
+            Assert.IsTrue(unavailable.Success);
+            Assert.IsFalse(unavailable.FindingsAvailable);
+            Assert.IsFalse(unavailable.Changes.Any(change => change.Section == "findings"));
+        }
+
         /// <summary>The custom pack contributes to the rule catalog every surface reads.</summary>
         [TestMethod]
         public void CustomPackAppearsInTheRuleCatalog()
