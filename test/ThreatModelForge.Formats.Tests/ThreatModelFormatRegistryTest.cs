@@ -20,19 +20,21 @@ namespace ThreatModelForge.Formats.Tests
 
         /// <summary>
         /// Verifies that the default registry contains the built-in <c>.tm7</c>,
-        /// <c>tmforge-json</c>, <c>.drawio</c>, <c>.vsdx</c>, and Threat Dragon providers.
+        /// <c>tmforge-json</c>, <c>.drawio</c>, <c>.vsdx</c>, Threat Dragon, Mermaid and DOT providers.
         /// </summary>
         [TestMethod]
         public void CreateDefaultContainsBuiltinFormats()
         {
             ThreatModelFormatRegistry registry = ThreatModelFormatRegistry.CreateDefault();
 
-            Assert.AreEqual(5, registry.Formats.Count);
+            Assert.AreEqual(7, registry.Formats.Count);
             Assert.IsTrue(registry.Formats.Any(f => f is Tm7Format));
             Assert.IsTrue(registry.Formats.Any(f => f is TmForgeJsonFormat));
             Assert.IsTrue(registry.Formats.Any(f => f is DrawIoFormat));
             Assert.IsTrue(registry.Formats.Any(f => f is VisioFormat));
             Assert.IsTrue(registry.Formats.Any(f => f is ThreatDragonFormat));
+            Assert.IsTrue(registry.Formats.Any(f => f is MermaidFormat));
+            Assert.IsTrue(registry.Formats.Any(f => f is GraphvizDotFormat));
         }
 
         /// <summary>
@@ -163,6 +165,33 @@ namespace ThreatModelForge.Formats.Tests
             ThreatModelFormatRegistry registry = ThreatModelFormatRegistry.CreateDefault();
 
             Assert.Throws<NotSupportedException>(() => registry.ResolveForWrite("model.unknown"));
+        }
+
+        /// <summary>
+        /// Text diagrams use the shared import pipeline and retain their trust boundaries.
+        /// </summary>
+        /// <param name="formatId">The import provider.</param>
+        /// <param name="extension">A source file extension.</param>
+        /// <param name="source">A diagram with two components inside a boundary.</param>
+        [TestMethod]
+        [DataRow("mermaid", ".mmd", "flowchart LR\nsubgraph zone[Service]\napi[API] --> db[(Database)]\nend")]
+        [DataRow("dot", ".dot", "digraph G { subgraph cluster_zone { label=\"Service\"; api[label=\"API\"]; db[label=\"Database\",shape=cylinder]; api -> db; } }")]
+        public void RegistryImportsTextDiagrams(string formatId, string extension, string source)
+        {
+            ThreatModelFormatRegistry registry = ThreatModelFormatRegistry.CreateDefault();
+            IThreatModelFormat? provider = registry.FindById(formatId);
+            Assert.IsNotNull(provider);
+            Assert.AreSame(provider, registry.FindByExtension(extension));
+            Assert.IsTrue(provider.Capabilities.CanRead);
+            Assert.IsFalse(provider.Capabilities.CanWrite);
+            using MemoryStream input = new MemoryStream(Encoding.UTF8.GetBytes(source));
+            Assert.AreSame(provider, registry.Sniff(input));
+            Assert.AreEqual(0L, input.Position);
+            ThreatModel model = registry.Load(input);
+            Assert.HasCount(1, model.DrawingSurfaceList);
+            Assert.HasCount(3, model.DrawingSurfaceList[0].Borders);
+            Assert.HasCount(1, model.DrawingSurfaceList[0].Lines);
+            Assert.Throws<NotSupportedException>(() => registry.ResolveForWrite("model" + extension));
         }
 
         private static MemoryStream WriteEmptyModel()

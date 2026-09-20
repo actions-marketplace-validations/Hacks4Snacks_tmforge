@@ -39,7 +39,7 @@ namespace ThreatModelForge.Formats
         /// <returns>A registry with the default providers registered.</returns>
         public static ThreatModelFormatRegistry CreateDefault()
         {
-            return new ThreatModelFormatRegistry(new IThreatModelFormat[] { new Tm7Format(), new TmForgeJsonFormat(), new DrawIoFormat(), new VisioFormat(), new ThreatDragonFormat() });
+            return new ThreatModelFormatRegistry(new IThreatModelFormat[] { new Tm7Format(), new TmForgeJsonFormat(), new DrawIoFormat(), new VisioFormat(), new ThreatDragonFormat(), new MermaidFormat(), new GraphvizDotFormat() });
         }
 
         /// <summary>

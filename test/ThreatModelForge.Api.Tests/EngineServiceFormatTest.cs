@@ -410,6 +410,63 @@ namespace ThreatModelForge.Api.Tests
             Assert.IsTrue(diagnostics.Any(item => item.Code == "model.unresolved-endpoint"));
         }
 
+        /// <summary>Text diagrams use shared preflight, analysis and native export without inventing controls.</summary>
+        /// <param name="format">The source provider.</param>
+        /// <param name="source">A small boundary-crossing service diagram.</param>
+        [TestMethod]
+        [DataRow("mermaid", "flowchart LR\ncaller[Caller]:::external\nsubgraph zone[Service]\napi[API] --> db[(Database)]\nend\ncaller -->|HTTPS| api")]
+        [DataRow("dot", "digraph G { caller[label=\"Caller\",kind=external]; subgraph cluster_zone { label=\"Service\"; api[label=\"API\"]; db[label=\"Database\",shape=cylinder]; api -> db; } caller -> api[label=\"HTTPS\"]; }")]
+        public void TextDiagramImportsRemainAnalyzableAndStable(string format, string source)
+        {
+            byte[] bytes = Encoding.UTF8.GetBytes(source);
+            Assert.AreEqual(format, EngineService.Detect(bytes)?.Id);
+            PreflightResultDto preflight = DocumentPreflight.Inspect(bytes, targetFormat: "tmforge-json");
+            Assert.IsTrue(preflight.Success);
+            Assert.AreEqual(format, preflight.Format);
+            Assert.IsTrue(preflight.Diagnostics.Any(item => item.Code == "import.structural-mapping" && item.Severity == "warning"));
+            StringAssert.Contains(preflight.Diagnostics.Single(item => item.Code == "import.structural-mapping").Message, "Unknown");
+            TmForgeModelDto model = EngineService.ReadModel(bytes, null);
+            Assert.HasCount(4, model.Elements!);
+            Assert.HasCount(2, model.Flows!);
+            Assert.AreEqual("Unknown", model.Flows!.Single(flow => flow.Name == "HTTPS").Properties["Protocol"]);
+            AnalysisResultDto result = EngineService.RunAnalysis(model, null);
+            Assert.IsFalse(result.Findings.Any(finding => finding.RuleId == "engine-error"));
+            Assert.IsTrue(result.Findings.Any(finding => finding.Message.Contains("is not evidenced", StringComparison.Ordinal)));
+            Assert.IsTrue(result.Threats.Any(threat => !threat.Manual));
+            string first = JsonSerializer.Serialize(EngineService.DescribeAnalysis(model));
+            string repeated = JsonSerializer.Serialize(EngineService.DescribeAnalysis(EngineService.ReadModel(bytes, null)));
+            Assert.AreEqual(first, repeated);
+            foreach (string destination in new[] { "tmforge-json", "tm7" })
+            {
+                TmForgeModelDto restored = EngineService.ReadModel(EngineService.Convert(model, destination), destination);
+                CollectionAssert.AreEquivalent(model.Elements!.Select(element => element.Id).ToArray(), restored.Elements!.Select(element => element.Id).ToArray());
+                CollectionAssert.AreEquivalent(model.Flows!.Select(flow => flow.Id).ToArray(), restored.Flows!.Select(flow => flow.Id).ToArray());
+                Assert.AreEqual("Unknown", restored.Elements!.Single(element => element.Name == "API").Properties["AuthenticationScheme"]);
+            }
+
+            Assert.Throws<NotSupportedException>(() => EngineService.Convert(model, format));
+            CollectionAssert.AreEqual(Encoding.UTF8.GetBytes(source), bytes);
+        }
+
+        /// <summary>Preflight returns actionable source locations for unsupported text syntax.</summary>
+        /// <param name="format">The detected format.</param>
+        /// <param name="source">The rejected graph.</param>
+        /// <param name="reason">The named unsupported construct.</param>
+        [TestMethod]
+        [DataRow("mermaid", "flowchart LR\na --> b\nclick a callback", "click")]
+        [DataRow("dot", "digraph G { a -> b [dir=both]; }", "direction")]
+        public void TextDiagramPreflightRefusesPartialImports(string format, string source, string reason)
+        {
+            PreflightResultDto result = DocumentPreflight.Inspect(Encoding.UTF8.GetBytes(source));
+            Assert.IsFalse(result.Success);
+            Assert.AreEqual(format, result.Format);
+            DocumentDiagnostic error = result.Diagnostics.Single(item => item.Severity == "error");
+            Assert.AreEqual("input.unreadable", error.Code);
+            StringAssert.Contains(error.Message, reason);
+            StringAssert.Contains(error.Message, "line ");
+            StringAssert.Contains(error.Message, "column ");
+        }
+
         private static TmForgeModelDto SingleProcessModel()
         {
             return new TmForgeModelDto

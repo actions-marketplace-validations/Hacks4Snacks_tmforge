@@ -286,6 +286,50 @@ namespace ThreatModelForge.Cli.Tests
             Assert.AreEqual("original destination", File.ReadAllText(output));
         }
 
+        /// <summary>Both text formats convert deterministically and preflight protects existing destinations.</summary>
+        /// <param name="format">The source provider.</param>
+        /// <param name="extension">The registered file extension.</param>
+        /// <param name="source">The diagram source.</param>
+        [TestMethod]
+        [DataRow("mermaid", ".mmd", "flowchart LR\nsubgraph zone[Service]\napi[API] --> db[(Database)]\nend")]
+        [DataRow("dot", ".dot", "digraph G { subgraph cluster_zone { api -> db; db[shape=cylinder]; } }")]
+        public void TextDiagramConversionIsDeterministicAndProtectsSource(string format, string extension, string source)
+        {
+            string input = Path.Join(this.WorkingDirectory, "source" + extension);
+            File.WriteAllText(input, source);
+            string output = Path.Join(this.WorkingDirectory, "imported.tm7");
+            File.WriteAllText(output, "existing destination");
+            Assert.AreEqual(2, PreflightCommand.Run(new[] { input, "--to", format }));
+            Assert.AreEqual(2, ConvertCommand.Run(new[] { input, "--to", "tm7", "--out", output, "--fail-on-loss" }));
+            Assert.AreEqual("existing destination", File.ReadAllText(output));
+            Assert.AreEqual(0, ConvertCommand.Run(new[] { input, "--to", "tm7", "--out", output }));
+            byte[] first = File.ReadAllBytes(output);
+            Assert.AreEqual(0, ConvertCommand.Run(new[] { input, "--to", "tm7", "--out", output }));
+            CollectionAssert.AreEqual(first, File.ReadAllBytes(output));
+            ThreatModel model = ThreatModel.Load(output);
+            Assert.HasCount(3, model.DrawingSurfaceList.Single().Borders);
+            Assert.HasCount(1, model.DrawingSurfaceList.Single().Lines);
+            Assert.AreEqual(1, ConvertCommand.Run(new[] { output, "--to", format, "--out", input }));
+            Assert.AreEqual(source, File.ReadAllText(input));
+        }
+
+        /// <summary>Unsupported source syntax cannot replace an existing model with a partial import.</summary>
+        /// <param name="extension">The source file extension.</param>
+        /// <param name="source">A graph with a valid prefix followed by unsupported syntax.</param>
+        [TestMethod]
+        [DataRow(".mermaid", "flowchart LR\na --> b\nclick a callback")]
+        [DataRow(".gv", "digraph G { a -> b; a -> b [dir=both]; }")]
+        public void TextDiagramFailuresLeaveDestinationUnchanged(string extension, string source)
+        {
+            string input = Path.Join(this.WorkingDirectory, "source" + extension);
+            File.WriteAllText(input, source);
+            string output = Path.Join(this.WorkingDirectory, "existing.tmforge.json");
+            File.WriteAllText(output, SampleJson);
+            Assert.AreEqual(1, Program.Main(new[] { "convert", input, "--to", "tmforge-json", "--out", output }));
+            Assert.AreEqual(SampleJson, File.ReadAllText(output));
+            Assert.AreEqual(source, File.ReadAllText(input));
+        }
+
         private string WriteInput()
         {
             string input = Path.Join(this.WorkingDirectory, "model.tmforge.json");

@@ -896,7 +896,11 @@ describe('Editor — the outline highlights what it picks', () => {
 });
 
 describe('Editor import-only formats', () => {
-  it('saves to a new canonical file without binding or overwriting the source', async () => {
+  it.each([
+    ['threat-dragon', 'foreign.json', 'foreign.tmforge.json'],
+    ['mermaid', 'foreign.mmd', 'foreign.mmd.tmforge.json'],
+    ['dot', 'foreign.dot', 'foreign.dot.tmforge.json'],
+  ])('saves %s to a new canonical file without binding or overwriting the source', async (formatId, sourceName, savedName) => {
     const { offlineEngine } = await import('./engineClient');
     const imported: TmForgeModel = await offlineEngine.read(JSON.stringify(chain()));
     imported.metadata = { owner: 'Imported owner' };
@@ -906,12 +910,12 @@ describe('Editor import-only formats', () => {
     const targetWrite = vi.fn(async () => undefined);
     const writeModel = vi.fn(async (model: TmForgeModel) => JSON.stringify(model));
     const readFile = vi.fn(async () => imported);
-    const open = vi.fn(async () => [{ name: 'foreign.json', getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }), createWritable: sourceWrite }]);
-    const save = vi.fn(async () => ({ name: 'foreign.tmforge.json', createWritable: async () => ({ write: targetWrite, close: async () => undefined }) }));
-    const format = { id: 'threat-dragon', displayName: 'Threat Dragon', canRead: true, canWrite: false, roundTrips: false, extensions: [], fidelityNote: 'Import only' };
+    const open = vi.fn(async () => [{ name: sourceName, getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }), createWritable: sourceWrite }]);
+    const save = vi.fn(async () => ({ name: savedName, createWritable: async () => ({ write: targetWrite, close: async () => undefined }) }));
+    const format = { id: formatId, displayName: formatId, canRead: true, canWrite: false, roundTrips: false, extensions: [], fidelityNote: 'Import only' };
     engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
       label: 'import test engine', detect: async () => format, readFile, write: writeModel,
-      preflight: async () => ({ success: true, format: 'threat-dragon', diagnostics: [] }),
+      preflight: async () => ({ success: true, format: formatId, diagnostics: [] }),
     });
     Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, value: open });
     Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: save });
@@ -919,14 +923,14 @@ describe('Editor import-only formats', () => {
       await mountEditor(chain());
       await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('import test engine'));
       fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
-      await waitFor(() => expect(screen.getByText('foreign.tmforge.json')).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(savedName)).toBeInTheDocument());
 
       fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
       await waitFor(() => expect(targetWrite).toHaveBeenCalledOnce());
       expect(sourceWrite).not.toHaveBeenCalled();
-      expect(save).toHaveBeenCalledWith({ suggestedName: 'foreign.tmforge.json' });
-      expect(readFile).toHaveBeenCalledWith(expect.any(Uint8Array), 'threat-dragon');
+      expect(save).toHaveBeenCalledWith({ suggestedName: savedName });
+      expect(readFile).toHaveBeenCalledWith(expect.any(Uint8Array), formatId);
       const saved = writeModel.mock.calls.at(-1)?.[0];
       expect(saved?.metadata).toEqual(imported.metadata);
       expect(saved?.threats).toEqual(imported.threats);

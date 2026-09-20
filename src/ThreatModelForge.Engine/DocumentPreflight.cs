@@ -114,7 +114,8 @@ namespace ThreatModelForge.Engine
                         VisioFormat visio => visio.Read(stream, diagnostics),
                         _ => format.Read(stream),
                     };
-                    if (source == ThreatDragonFormat.FormatId || source == DrawIoFormat.FormatId || source == VisioFormat.FormatId)
+                    if (source == ThreatDragonFormat.FormatId || source == DrawIoFormat.FormatId || source == VisioFormat.FormatId
+                        || source == MermaidFormat.FormatId || source == GraphvizDotFormat.FormatId)
                     {
                         JsonDocumentPreflight.Add(diagnostics, "import.structural-mapping", "$", format.Capabilities.FidelityNote, "warning");
                     }

@@ -939,8 +939,20 @@ Use `tmforge convert dragon.json --to tmforge-json --out imported.tmforge.json` 
 The initial [supported subset and refusal rules](formats.md#threat-dragon-owasp-threat-dragon-v2-import)
 are deliberate: unsupported trust-boundary geometry and threat treatments are not silently changed.
 
+Mermaid flowcharts (`.mmd`, `.mermaid`) and directed Graphviz DOT (`.dot`, `.gv`) are also input-only.
+Use the existing `convert` command; there is no separate import verb:
+
+```bash
+tmforge convert architecture.mmd --to tmforge-json --out architecture.tmforge.json
+tmforge convert architecture.dot --to tm7 --out architecture.tm7
+```
+
+Both preserve nested subgraphs as boundaries, derive stable identities, and start control evidence
+at `Unknown`. Unsupported syntax refuses the whole import with a source line and column. See the
+[bounded grammar and identity limits](formats.md#mermaid-and-dot-starter-model-import).
+
 ```text
-tmforge convert [--to <format>] [--out <path>] [--knowledge-base <file.tb7>] [--json] <input>
+tmforge convert [--to <format>] [--out <path>] [--knowledge-base <file.tb7>] [--fail-on-loss] [--json] <input>
 ```
 
 | Format id | Extension | Notes |

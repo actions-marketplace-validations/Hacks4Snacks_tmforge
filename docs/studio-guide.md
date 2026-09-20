@@ -305,9 +305,9 @@ Studio round-trips through the canonical **`tmforge-json`** wire model:
 This is the bridge between visual authoring and the [CLI](cli-reference.md): export from Studio,
 then `tmforge analyze` / `tmforge report` / `tmforge convert` in a pipeline, or vice versa.
 
-> **Format parsing lives in the engine, not the browser.** The canvas never parses `.tm7`, `.vsdx`,
-> or `.drawio` itself. Use the API's `convert` / `read` endpoints or the CLI for those. Studio
-> speaks `tmforge-json`; the engine handles every other format behind `/v1`.
+> **Format parsing lives in the engine, not the canvas.** Studio's active HTTP or in-browser WASM
+> engine reads foreign formats through **Open File** and returns the canonical `tmforge-json`
+> representation. The browser canvas does not maintain a second set of format parsers.
 
 ### Preflight review
 
@@ -354,6 +354,19 @@ bidirectional flows, fractional rectangles and unsupported treatment states are 
 partial replacement of the current workspace. Out-of-scope flags remain source information and do
 not disable tmforge rules. See the [full import contract](formats.md#threat-dragon-owasp-threat-dragon-v2-import)
 before migrating a model.
+
+### Opening Mermaid or DOT
+
+**Open File** accepts Mermaid `.mmd`/`.mermaid` flowcharts and Graphviz `.dot`/`.gv` diagrams.
+Preflight explains the starter-model mapping before **Continue** loads the diagram. Nodes and
+directed edges become components and flows; nested subgraphs become trust boundaries. Review those
+boundaries and the inferred kinds, then use **Analyze** to inspect missing control evidence.
+Controls begin at `Unknown`, even when an edge label names a protocol.
+
+Import regenerates layout and does not reproduce source styling. Unsupported syntax is named with
+a line and column and blocks the entire import; cancellation or rejection leaves the workspace
+unchanged. **Save** offers a new `.tmforge.json` file and never binds the source for overwriting.
+Mermaid and DOT are not export targets. See the [supported subset](formats.md#mermaid-and-dot-starter-model-import).
 
 ## Merging edits from two branches
 

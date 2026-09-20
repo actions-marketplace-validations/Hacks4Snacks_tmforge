@@ -13,6 +13,8 @@ consume them, and each provider declares how faithfully it round-trips.
 | `drawio` | `.drawio` | draw.io / diagrams.net | Yes | Yes | Structural |
 | `vsdx` | `.vsdx` | Microsoft Visio | Yes | Yes | Structural |
 | `threat-dragon` | `.json` (content-detected) | OWASP Threat Dragon v2 | Yes, bounded subset | No | Import only |
+| `mermaid` | `.mmd`, `.mermaid` | Mermaid flowchart | Yes, bounded subset | No | Import only |
+| `dot` | `.dot`, `.gv` | Graphviz DOT | Yes, bounded subset | No | Import only |
 
 List these at runtime with `tmforge` (via conversion targets) or the API's `GET /v1/formats`, which
 returns each provider's capabilities and fidelity note.
@@ -134,6 +136,104 @@ output is refused without overwriting the destination. Schema/sample grounding u
 [Threat Dragon v2.6.2](https://github.com/OWASP/threat-dragon/tree/v2.6.2/ThreatDragonModels); tests use
 a synthetic fixture covering the supported subset, not a claim that every v2 model is importable.
 
+### `mermaid` and `dot` (starter-model import)
+
+Import an existing architecture diagram through the same readers used by Studio, HTTP, WASM and
+MCP. No Mermaid runtime, Graphviz executable, network access or additional package is required.
+These formats are **input-only**; save the resulting model as `tmforge-json` or `tm7`.
+
+```bash
+tmforge preflight architecture.mmd --to tmforge-json
+tmforge convert architecture.mmd --to tmforge-json --out architecture.tmforge.json
+tmforge convert architecture.dot --to tm7 --out architecture.tm7
+tmforge analyze architecture.tm7
+```
+
+**Mapping and evidence:** source nodes become processes by default. Mermaid cylinders (`id[(Label)]`)
+and DOT `shape=cylinder` become data stores. A Mermaid inline class `:::process`, `:::store`,
+`:::datastore` or `:::external`, or a DOT `kind` attribute with one of those values, explicitly
+selects the DFD kind. Kind annotations take precedence over shape hints. Names such as "User",
+"Database" or "HTTPS" do not establish a kind or a security control.
+
+Directed edges become flows. Named Mermaid subgraphs and DOT `subgraph cluster_*` groups become
+rectangular trust boundaries, including nesting. This is a **modeling assumption, not proof of
+enforced isolation**: review the imported boundaries. A node cannot belong to unrelated sibling
+groups, and edges to subgraphs rather than component nodes are refused.
+
+Control-like properties whose schema permits `Unknown` are initialized to `Unknown`; free-text
+properties remain unset. In particular, an edge labeled "HTTPS" still has `Protocol=Unknown`.
+The model is analyzable immediately, but remains a skeleton requiring evidence and human review.
+Preflight always reports `import.structural-mapping` so Studio asks for confirmation and CLI
+`--fail-on-loss` refuses it before writing.
+
+**Supported Mermaid subset:** one `flowchart` or `graph` with `LR`, `RL`, `TB`, `TD` or `BT`;
+newline/semicolon-separated statements; `%%` comments; bare nodes and plain/quoted labels;
+rectangle, rounded, stadium, subroutine, circle, diamond, hexagon and cylinder syntax;
+directed `-->`, `-.->` and `==>` edges, chains, `-->|label|`, `-- label -->`, `-. label .->`
+and `== label ==>`; `subgraph id [Label]` or `subgraph id`, closed by `end`; and subgraph
+`direction`. A single fenced `mermaid` block is accepted, without surrounding Markdown.
+
+```mermaid
+flowchart LR
+  caller[Caller]:::external
+  subgraph service[Service]
+    api[API] -->|query| db[(Database)]
+  end
+  caller -->|request| api
+```
+
+**Supported DOT subset:** a non-strict `digraph`, optionally named; case-insensitive keywords;
+plain/numeric or double-quoted identifiers; `//` and `/* ... */` comments; directed `->` edges
+and chains; repeated node declarations; nested, uniquely named `cluster_*` subgraphs; bracketed
+attributes and graph assignments. Node/edge defaults are scoped and apply when an object is first
+created; graph labels are inherited when a subgraph is created. Labels support escaped quotes,
+backslashes and `\n`/`\l`/`\r` line breaks. Quoted identifiers accept escaped quotes, but other
+identifier escapes are refused rather than reinterpreted.
+
+```dot
+digraph Service {
+  caller [label="Caller", kind=external];
+  subgraph cluster_service {
+    label="Service";
+    api [label="API"];
+    db [label="Database", shape=cylinder];
+    api -> db [label="query", id=query];
+  }
+  caller -> api [label="request", id=request];
+}
+```
+
+DOT maps `label`, node `kind`/`shape`, and optional explicit edge `id`. `dir` must be `forward`.
+The accepted basic shapes are `box`, `rect`, `rectangle`, `ellipse`, `circle`, `doublecircle`,
+`diamond`, `hexagon`, `oval`, `plaintext`, `plain`, `none`, and `cylinder`.
+Accepted presentation-only attributes are `color`, `fontname`, `fontsize`, `fontcolor`, `penwidth`,
+`style`; graph `rankdir`, `ranksep`, `nodesep`, `bgcolor`, `labelloc`, `labeljust`; node `fillcolor`,
+`width`, `height`, `fixedsize`, `margin`; and edge `arrowhead`, `arrowsize`, `constraint`, `weight`,
+`minlen`. These are deliberately not retained, and `style=invis` is refused.
+
+**Refused:** other Mermaid diagram grammars, front matter, initialization/styling/click directives,
+unlisted classes or shape syntax, Markdown/HTML/entity labels, edge IDs/metadata, grouped endpoints,
+invisible/undirected/bidirectional or extended-length links; DOT strict/undirected graphs,
+anonymous/non-cluster/reopened subgraphs, endpoint sets, ports/compass points, HTML/record shapes,
+string concatenation, dynamic label escapes such as `\N`, preprocessor lines and unlisted attributes
+(including URLs and images). Unsupported syntax refuses the whole import with a line, column and
+specific reason. Nothing executes embedded callbacks or resolves external resources.
+
+**Identity and geometry:** page, node and boundary IDs use `DeterministicGuid` with distinct source
+namespaces, so relabeling does not renumber objects. Nodes retain `Source.Format` and `Source.Id`.
+DOT edge `id` is preferred when present, must be unique, and cannot label an entire chain.
+Otherwise flow identity uses the ordered source/target IDs plus the occurrence within that pair.
+Unrelated edges do not renumber existing flows; reordering parallel same-endpoint edges can, so use
+explicit DOT edge IDs when those flows need independent stable identity. Reimport is not a merge
+with an edited model: retain the canonical model and use diff/compare to review source changes.
+
+The existing deterministic layout engine regenerates geometry while preserving nested membership.
+Source direction, dimensions, colors, line styles and routing are not reproduced. Two imports of
+identical input produce byte-identical native output. Limits are 8 MiB of strict UTF-8 (optional
+BOM), 256 nodes plus boundaries, 512 edges, 16 nested subgraphs, 2,048 characters per identifier or
+label, 10,000 statements and 128 assignments per attribute-list sequence. Content detection examines
+the first 4 KiB; use an explicit preflight format for a source with a longer comment preamble.
+
 ## Preflight and import diagnostics
 
 Run `tmforge preflight <file> [--to <format>]` before migrating a model. It inspects raw input before
@@ -214,7 +314,7 @@ See the [API reference](api-reference.md).
 ### Studio
 
 Studio round-trips through `tmforge-json`. **Open File** uses the active API or in-browser WASM
-engine to read `.tm7`, `.drawio`, `.vsdx`, and supported Threat Dragon JSON. Read-only inputs save
+engine to read `.tm7`, `.drawio`, `.vsdx`, supported Threat Dragon JSON, Mermaid and DOT. Read-only inputs save
 as new tmforge files, not back to their original format. The browser canvas itself does not parse
 foreign file formats. See the [Studio guide](studio-guide.md#importing-and-exporting).
 
