@@ -8,6 +8,7 @@ function renderToolbar(onReport: (id: string) => void, onTidy = vi.fn(), engineO
     <Toolbar
       onImport={vi.fn()}
       onSave={vi.fn()}
+      onShare={vi.fn()}
       onExport={vi.fn()}
       onMerge={vi.fn()}
       onCompare={vi.fn()}

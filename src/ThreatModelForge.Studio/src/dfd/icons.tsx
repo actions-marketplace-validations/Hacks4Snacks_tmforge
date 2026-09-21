@@ -290,3 +290,14 @@ export function RedoIcon({ size = 18 }: { size?: number }) {
     </LineIcon>
   );
 }
+
+export function ShareIcon({ size = 18 }: { size?: number }) {
+  return (
+    <LineIcon size={size}>
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="m8.6 10.5 6.8-4m-6.8 7 6.8 4" />
+    </LineIcon>
+  );
+}

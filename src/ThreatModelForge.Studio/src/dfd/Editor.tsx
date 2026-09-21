@@ -44,6 +44,8 @@ import { PageTabs } from './PageTabs';
 import { MergeResolveModal } from './MergeResolveModal';
 import { CompareReview } from './CompareReview';
 import { PreflightDialog } from './PreflightDialog';
+import { ShareDialog, type ShareRequest } from './ShareDialog';
+import { SHARE_PREFIX } from './shareLink';
 import { DfdActionsContext, type DfdActions } from './editorContext';
 import { Toaster, toast } from './toast';
 import type { DfdEdge, DfdKind, DfdNode, ThreatTriage, TmForgeModel, TmForgeAnalysis, TmForgeExpectedRulePack } from './types';
@@ -452,9 +454,12 @@ export function Editor() {
   const [showRules, setShowRules] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [compareSnapshot, setCompareSnapshot] = useState<{ model: TmForgeModel; name: string | null } | null>(null);
+  const [shareRequest, setShareRequest] = useState<ShareRequest | null>(null);
+  const [pendingShare, setPendingShare] = useState<string | null>(null);
+  const shareBaselineRef = useRef('');
   const reviewActiveRef = useRef(false);
   const reviewVersionRef = useRef(0);
-  reviewActiveRef.current = compareSnapshot !== null;
+  reviewActiveRef.current = compareSnapshot !== null || shareRequest !== null;
   const [preflightReview, setPreflightReview] = useState<{ title: string; result: PreflightResult } | null>(null);
   const preflightDecision = useRef<((proceed: boolean) => void) | undefined>(undefined);
   const preflightVersion = useRef(0);
@@ -1596,10 +1601,11 @@ export function Editor() {
   );
 
   const loadModel = useCallback(
-    (model: TmForgeModel) => {
+    (model: TmForgeModel, preserveView = false) => {
       // Import never changes trust claims. Routing and label offsets are presentation-only; shape
       // sizing and arrangement require an explicit Tidy action and the engine's preservation guard.
       const nextPages = pagesFromModel(model).map((p) => {
+        if (preserveView) return p;
         const tidied = tidyLabels(p.nodes, p.edges);
         return { ...p, nodes: tidied.nodes, edges: tidied.edges };
       });
@@ -1630,6 +1636,38 @@ export function Editor() {
     },
     [setNodes, setEdges, fitView, reset],
   );
+
+  const beginShare = useCallback((request: ShareRequest) => {
+    reviewVersionRef.current += 1;
+    preflightVersion.current += 1;
+    finishPreflight(false);
+    layoutRequestRef.current += 1;
+    layoutPendingRef.current = false;
+    setTidying(false);
+    shareBaselineRef.current = layoutStateRef.current.workspaceJson;
+    setShareRequest(request);
+  }, [finishPreflight]);
+
+  useEffect(() => {
+    const capture = () => {
+      const fragment = window.location.hash;
+      if (!fragment.startsWith(SHARE_PREFIX)) return;
+      setShareRequest(null);
+      setPendingShare(fragment);
+      window.history.replaceState(window.history.state, '', window.location.pathname + window.location.search);
+    };
+    capture();
+    window.addEventListener('hashchange', capture);
+    return () => window.removeEventListener('hashchange', capture);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingShare || compareSnapshot || showMerge || preflightReview || shareRequest) return;
+    beginShare({ mode: 'open', fragment: pendingShare, hasWorkspace: dirty || allPages.length > 1
+      || allPages.some(page => page.nodes.length > 0 || page.edges.length > 0)
+      || threatTriage.length > 0 || metadata !== undefined || currentModel.analysis !== undefined });
+    setPendingShare(null);
+  }, [pendingShare, compareSnapshot, showMerge, preflightReview, shareRequest, beginShare, dirty, allPages, threatTriage, metadata, currentModel.analysis]);
 
   const readModelFromBytes = useCallback(
     async (bytes: Uint8Array, formatId: string): Promise<TmForgeModel> => {
@@ -1818,7 +1856,7 @@ export function Editor() {
 
   return (
     <DfdActionsContext.Provider value={actions}>
-    <div className="app" inert={compareSnapshot !== null}>
+    <div className="app" inert={compareSnapshot !== null || shareRequest !== null}>
       <Toolbar
         engineLabel={engine.label}
         engineOnline={engineOnline}
@@ -1827,6 +1865,7 @@ export function Editor() {
         onExport={exportAs}
         onImport={openFile}
         onSave={saveModel}
+        onShare={() => beginShare({ mode: 'create', json: currentJson, pageUrl: window.location.href })}
         onMerge={() => setShowMerge(true)}
         onCompare={() => {
           reviewVersionRef.current += 1;
@@ -1879,7 +1918,7 @@ export function Editor() {
             edgeTypes={edgeTypes}
             defaultEdgeOptions={defaultEdgeOptions}
             connectionMode={ConnectionMode.Loose}
-            deleteKeyCode={compareSnapshot ? null : 'Backspace'}
+            deleteKeyCode={compareSnapshot || shareRequest ? null : 'Backspace'}
             elevateNodesOnSelect={false}
             snapToGrid
             snapGrid={[GRID_SIZE, GRID_SIZE]}
@@ -2069,6 +2108,22 @@ export function Editor() {
       />
     ) : null}
     {preflightReview && <PreflightDialog title={preflightReview.title} result={preflightReview.result} onDecision={finishPreflight} />}
+    {shareRequest && <ShareDialog request={shareRequest}
+      onClose={() => setShareRequest(null)}
+      onDownload={(json) => downloadBlob(new Blob([json], { type: 'application/json' }), 'shared-model.tmforge.json')}
+      onOpen={(model) => {
+        if (shareBaselineRef.current !== layoutStateRef.current.workspaceJson) {
+          setShareRequest(null);
+          toast('The workspace changed while the shared model was checked. Reopen the link to try again.', 'error');
+          return;
+        }
+        loadModel(model, true);
+        fileHandleRef.current = null;
+        fileFormatRef.current = 'tmforge-json';
+        setFileName('shared-model.tmforge.json');
+        setSavedJson('');
+        setShareRequest(null);
+      }} />}
     <Toaster />
     </DfdActionsContext.Provider>
   );

@@ -2169,6 +2169,20 @@ a.threat-ref:hover {
 .preflight-diagnostics p { margin: 6px 0 0; line-height: 1.5; }
 .preflight-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; }
 
+.share-link-field { display: grid; gap: 8px; min-width: 0; }
+.share-link-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 8px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: inherit;
+}
+.share-actions { flex-wrap: wrap; }
+
 .review-workspace {
   position: fixed;
   inset: 0;

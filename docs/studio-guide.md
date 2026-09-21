@@ -368,6 +368,47 @@ a line and column and blocks the entire import; cancellation or rejection leaves
 unchanged. **Save** offers a new `.tmforge.json` file and never binds the source for overwriting.
 Mermaid and DOT are not export targets. See the [supported subset](formats.md#mermaid-and-dot-starter-model-import).
 
+## Sharing a model as a URL
+
+Choose **Share model** in the toolbar, then **Copy link**. The link contains a frozen snapshot of
+the current canonical `tmforge-json` model: every page, element, flow, property, saved geometry,
+metadata, manual threat and triage edit, plus analysis selections and expected rule-pack fingerprints.
+Copying or downloading the snapshot does not mark the workspace saved or consume an undo step.
+Custom rule-pack code, generated analysis results, file handles, and undo history are not embedded.
+Recipients must load any required custom packs separately; the expected fingerprints remain visible.
+
+The fragment envelope is `#tmforge=1.<base64url-gzip>`. Version 1 uses UTF-8 JSON, native
+`CompressionStream('gzip')`, and unpadded base64url. The origin and application path are retained;
+query parameters, URL credentials and any previous fragment are excluded. Links target the Studio
+instance that created them, so a localhost or private-host link is not automatically public.
+
+**Limits:** the complete copied URL is at most **16,384 characters (16 KiB)**, and uncompressed
+model content is at most **1 MiB of UTF-8**. Decompression is also stopped at that decoded limit.
+Oversized models are never truncated: the dialog explains the limit and offers **Download model**
+for the complete snapshot. Clipboard denial leaves the link selected for manual copying. Browsers
+without native compression can still download the model; some chat clients may impose a smaller
+URL limit, in which case share the file instead.
+
+Opening a link always presents **Open shared model** before replacing anything, even in an empty
+workspace. Validation uses the existing **in-browser WASM engine only**, never the configured HTTP
+engine; without that local engine, opening is refused rather than uploading the payload. Structural
+errors, invalid encoding, unsupported link versions and incomplete compressed data block import.
+Warnings remain visible before the explicit **Open model** decision.
+
+**Cancel** keeps the existing model, unsaved edits, undo history and file binding. **Open model**
+loads the snapshot without tidying or rearranging it, detaches any previous writable file handle,
+and marks the result unsaved with a new `shared-model.tmforge.json` name. The active tab starts on
+the first page. A workspace change or a newer link invalidates a pending opening operation.
+
+**Privacy:** creating and opening links make no network request carrying model content. URL
+fragments are not sent in HTTP requests, and Studio removes the captured fragment from the current
+history entry without navigation. This is not encryption or access control: anyone holding the
+link can decode the entire model. It may remain in browser history/sync, clipboard managers, chat
+logs, extensions, screenshots, or systems into which it is pasted. Share it only with appropriate
+recipients. After opening, explicit **Analyze**, **Save**, **Export**, or **Report** actions retain
+the selected engine's normal behavior; a hosted HTTP engine may receive model content for those
+operations. The static demo's WASM operations remain local.
+
 ## Merging edits from two branches
 
 When two people edit the same model on different branches, click **Merge** in the toolbar to

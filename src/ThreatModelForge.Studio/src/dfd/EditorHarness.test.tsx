@@ -1,19 +1,22 @@
 import '@testing-library/jest-dom/vitest';
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { ReactFlowProvider, useReactFlow, type ReactFlowInstance } from '@xyflow/react';
 import { STORAGE_KEY } from './Editor';
 import type { IEngineClient, LayoutElement, ModelCompareResult } from './engineClient';
 import type { TmForgeModel } from './types';
 import { ReviewDiagram, reviewPageId } from './ReviewDiagram';
-import { pagesFromModel } from './mapping';
+import { modelFromPages, pagesFromModel } from './mapping';
+import { createShareUrl, MAX_SHARE_MODEL_BYTES, readShareFragment } from './shareLink';
+import { ShareDialog } from './ShareDialog';
 
-const engineState = vi.hoisted(() => ({ current: undefined as IEngineClient | undefined }));
+const engineState = vi.hoisted(() => ({ current: undefined as IEngineClient | undefined, hosted: undefined as IEngineClient | undefined }));
 vi.mock('./engineClient', async (importOriginal) => {
   const original = await importOriginal<typeof import('./engineClient')>();
   return {
     ...original,
-    probeEngine: async () => false,
+    probeEngine: async () => engineState.hosted !== undefined,
+    createHttpEngine: () => engineState.hosted ?? original.createHttpEngine(),
     loadWasmEngine: async () => engineState.current ?? null,
   };
 });
@@ -110,7 +113,7 @@ function FlowHandle(): null {
 }
 
 /** Mounts the editor over a seeded workspace and waits for the canvas to populate. */
-async function mountEditor(model: ReturnType<typeof seedModel>): Promise<void> {
+async function mountEditor(model: ReturnType<typeof seedModel> | TmForgeModel): Promise<void> {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ model }));
   vi.resetModules();
   const { Editor } = await import('./Editor');
@@ -197,6 +200,7 @@ function addCustomProperty(key: string, value: string): void {
 beforeEach(() => {
   window.localStorage.clear();
   engineState.current = undefined;
+  engineState.hosted = undefined;
 });
 
 describe('Read-only review diagrams', () => {
@@ -892,6 +896,271 @@ describe('Editor — the outline highlights what it picks', () => {
     await waitFor(() => expect(nodeEl('c')).toHaveClass('flagged'));
     expect(nodeEl('b')).toHaveClass('flagged');
     expect(nodeEl('a')).not.toHaveClass('flagged');
+  });
+});
+
+describe('Editor URL sharing', () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard);
+    else Reflect.deleteProperty(navigator, 'clipboard');
+    Reflect.deleteProperty(window, 'showOpenFilePicker');
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  });
+
+  function sharedModel(): TmForgeModel {
+    const model = chain() as TmForgeModel;
+    model.elements[0].name = 'Shared Alpha';
+    model.elements[0].properties = { AuthenticationScheme: 'Unknown', StencilType: 'generic-process' };
+    model.flows[0].sourceHandle = 'r';
+    model.flows[0].targetHandle = 'l';
+    model.flows[0].labelOffset = { x: 47, y: -28 };
+    model.diagrams = [
+      { id: 'shared-page', name: 'Shared service', elements: model.elements, flows: model.flows },
+      { id: 'empty-page', name: 'Notes', elements: [], flows: [] },
+    ];
+    model.metadata = { owner: 'Model owner', threatModelName: 'Shared service' };
+    model.analysis = { disabledPacks: ['availability'], expectedPacks: [{ id: 'policy', fingerprint: 'sha256:pin' }] };
+    model.threats = [{ id: 'manual:source', manual: true, state: 'Accepted', title: 'Reviewed threat', justification: 'Decision', source: { format: 'threat-dragon' } }];
+    return modelFromPages(pagesFromModel(model), model.analysis, model.threats, model.metadata);
+  }
+
+  async function localEngine(preflight?: IEngineClient['preflight']) {
+    const { offlineEngine } = await import('./engineClient');
+    const inspect = vi.fn<IEngineClient['preflight']>(preflight ?? (async () => ({ success: true, format: 'tmforge-json', diagnostics: [] })));
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, { label: 'local share engine', preflight: inspect });
+    return inspect;
+  }
+
+  async function navigateToShare(json: string) {
+    const url = await createShareUrl(json, window.location.href);
+    act(() => {
+      window.history.replaceState(null, '', new URL(url).hash);
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+    return screen.findByRole('dialog', { name: 'Open shared model' });
+  }
+
+  it('copies the complete snapshot without changing geometry, dirty state or undo history', async () => {
+    const inspect = await localEngine();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    await mountEditor(sharedModel());
+    selectNodes('a');
+    addCustomProperty('PendingEdit', 'Yes');
+    await waitFor(() => expect(window.localStorage.getItem(STORAGE_KEY)).toContain('PendingEdit'), { timeout: 3000 });
+    const before = window.localStorage.getItem(STORAGE_KEY);
+    const json = JSON.stringify(JSON.parse(before!).model);
+    fireEvent.click(screen.getByRole('button', { name: 'Share model' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Share model' });
+    const input = await within(dialog).findByRole('textbox', { name: 'Share link' });
+    expect(await readShareFragment(new URL((input as HTMLInputElement).value).hash)).toBe(json);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy link' }));
+    await within(dialog).findByText('Link copied.');
+    expect(writeText).toHaveBeenCalledWith((input as HTMLInputElement).value);
+    expect(inspect).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.querySelector('.react-flow')!, { key: 'Backspace' });
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(before);
+    expect(document.querySelector('.save-status')).toHaveClass('dirty');
+    expect(await undoToExhaustion()).toBe(1);
+  });
+
+  it('asks before replacing a persisted workspace when the page opens with a link', async () => {
+    await localEngine();
+    const url = await createShareUrl(JSON.stringify(sharedModel()), window.location.href);
+    window.history.replaceState(null, '', new URL(url).hash);
+    await mountEditor(chain());
+    const dialog = await screen.findByRole('dialog', { name: 'Open shared model' });
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeEnabled());
+    expect(within(dialog).getByText(/replaces the current workspace/)).toBeInTheDocument();
+    expect(window.location.hash).toBe('');
+    expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+    expect(screen.queryByText('Shared Alpha')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(undoButton()).toBeDisabled();
+    expect(document.querySelector('.save-status')).toHaveClass('clean');
+  });
+
+  it('opens all shared pages byte-identically after local validation without calling the HTTP engine', async () => {
+    const inspect = await localEngine();
+    const { offlineEngine } = await import('./engineClient');
+    const remotePreflight = vi.fn<IEngineClient['preflight']>(async () => { throw new Error('Unexpected upload'); });
+    const remoteRead = vi.fn<IEngineClient['read']>(async () => { throw new Error('Unexpected upload'); });
+    engineState.hosted = Object.assign(Object.create(offlineEngine) as IEngineClient, { label: 'hosted engine', preflight: remotePreflight, read: remoteRead });
+    await mountEditor(chain());
+    const model = sharedModel();
+    const json = JSON.stringify(model);
+    const dialog = await navigateToShare(json);
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeEnabled());
+    expect(inspect).toHaveBeenCalledWith(new TextEncoder().encode(json), 'tmforge-json');
+    expect(remotePreflight).not.toHaveBeenCalled();
+    expect(remoteRead).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open model' }));
+    await screen.findByText('Shared Alpha');
+    await waitFor(() => expect(JSON.stringify(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).model)).toBe(json), { timeout: 3000 });
+    expect(screen.getByRole('tab', { name: /^Notes/ })).toBeInTheDocument();
+    expect(screen.getByText('shared-model.tmforge.json')).toBeInTheDocument();
+    expect(document.querySelector('.save-status')).toHaveClass('dirty');
+    expect(undoButton()).toBeDisabled();
+  });
+
+  it('keeps dirty edits, metadata and undo when a received link is cancelled', async () => {
+    await localEngine();
+    await mountEditor(sharedModel());
+    selectNodes('a');
+    addCustomProperty('Unsaved', 'Yes');
+    await waitFor(() => expect(window.localStorage.getItem(STORAGE_KEY)).toContain('Unsaved'), { timeout: 3000 });
+    const before = window.localStorage.getItem(STORAGE_KEY);
+    const dialog = await navigateToShare(JSON.stringify(chain()));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(before);
+    expect(document.querySelector('.save-status')).toHaveClass('dirty');
+    expect(await undoToExhaustion()).toBe(1);
+  });
+
+  it('does not fall back to HTTP when the in-browser validation engine is unavailable', async () => {
+    const { offlineEngine } = await import('./engineClient');
+    const remotePreflight = vi.fn();
+    engineState.hosted = Object.assign(Object.create(offlineEngine) as IEngineClient, { label: 'hosted engine', preflight: remotePreflight });
+    await mountEditor(chain());
+    const dialog = await navigateToShare(JSON.stringify(sharedModel()));
+    await within(dialog).findByText(/requires the in-browser engine/);
+    expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeDisabled();
+    expect(remotePreflight).not.toHaveBeenCalled();
+    expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('shows local structural errors and never replaces the workspace with a partial model', async () => {
+    await localEngine(async () => ({ success: false, diagnostics: [{ code: 'model.unresolved-endpoint', severity: 'error', path: '$.flows[0].target', message: 'Target missing.' }] }));
+    await mountEditor(chain());
+    const dialog = await navigateToShare(JSON.stringify(sharedModel()));
+    await within(dialog).findByText('Target missing.');
+    expect(within(dialog).getByText('$.flows[0].target')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeDisabled();
+    expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('discards a late validation result when a newer link replaces it', async () => {
+    let resolveFirst!: (result: Awaited<ReturnType<IEngineClient['preflight']>>) => void;
+    const inspect = await localEngine();
+    inspect.mockImplementationOnce(() => new Promise(resolve => { resolveFirst = resolve; }));
+    await mountEditor(chain());
+    await navigateToShare(JSON.stringify(sharedModel()));
+    await waitFor(() => expect(inspect).toHaveBeenCalledOnce());
+    const newer = sharedModel();
+    newer.elements[0].name = 'Newer shared model';
+    const dialog = await navigateToShare(JSON.stringify(newer));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeEnabled());
+    await act(async () => resolveFirst({ success: true, diagnostics: [] }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open model' }));
+    await screen.findByText('Newer shared model');
+    expect(screen.queryByText('Shared Alpha')).not.toBeInTheDocument();
+  });
+
+  it('preserves the original file binding after Cancel and detaches it after Open', async () => {
+    await localEngine();
+    const sourceWrite = vi.fn(async () => undefined);
+    const targetWrite = vi.fn(async () => undefined);
+    const bytes = new TextEncoder().encode(JSON.stringify(chain()));
+    Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, value: async () => [{ name: 'working.tmforge.json', getFile: async () => ({ arrayBuffer: async () => bytes.buffer }), createWritable: async () => ({ write: sourceWrite, close: async () => undefined }) }] });
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: async () => ({ name: 'shared-model.tmforge.json', createWritable: async () => ({ write: targetWrite, close: async () => undefined }) }) });
+    await mountEditor(chain());
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('local share engine'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+    await screen.findByText('working.tmforge.json');
+    let dialog = await navigateToShare(JSON.stringify(sharedModel()));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(sourceWrite).toHaveBeenCalledOnce());
+    dialog = await navigateToShare(JSON.stringify(sharedModel()));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeEnabled());
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open model' }));
+    await screen.findByText('shared-model.tmforge.json');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(targetWrite).toHaveBeenCalledOnce());
+    expect(sourceWrite).toHaveBeenCalledOnce();
+  });
+
+  it('offers a selectable link when clipboard access fails', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Denied'); } } });
+    render(<ShareDialog request={{ mode: 'create', json: JSON.stringify(sharedModel()), pageUrl: 'https://example.test/studio/' }} onOpen={vi.fn()} onClose={vi.fn()} onDownload={vi.fn()} />);
+    const input = await screen.findByRole('textbox', { name: 'Share link' });
+    fireEvent.click(screen.getByRole('button', { name: 'Copy link' }));
+    await screen.findByText(/Clipboard access is unavailable/);
+    expect(input).toHaveFocus();
+    expect((input as HTMLInputElement).selectionStart).toBe(0);
+    expect((input as HTMLInputElement).selectionEnd).toBe((input as HTMLInputElement).value.length);
+  });
+
+  it('cancels an in-flight Tidy even after the Share dialog closes', async () => {
+    await localEngine();
+    let finish!: (positions: LayoutElement[]) => void;
+    const layout = vi.fn<IEngineClient['layout']>(() => new Promise(resolve => { finish = resolve; }));
+    engineState.current!.layout = layout;
+    await mountEditor(chain());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Tidy' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy' }));
+    await waitFor(() => expect(layout).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Share model' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Share model' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await act(async () => finish(chain().elements.map(element => ({ id: element.id, x: element.x + 800, y: element.y, width: element.width, height: element.height }))));
+    expect(flow!.getNodes().find(node => node.id === 'a')?.position.x).toBe(0);
+    expect(undoButton()).toBeDisabled();
+    expect(document.querySelector('.save-status')).toHaveClass('clean');
+  });
+
+  it('cancels an in-flight file import even after the Share dialog closes', async () => {
+    await localEngine();
+    let finish!: (model: TmForgeModel) => void;
+    const read = vi.fn<IEngineClient['read']>(() => new Promise(resolve => { finish = resolve; }));
+    engineState.current!.read = read;
+    const incoming = sharedModel();
+    const bytes = new TextEncoder().encode(JSON.stringify(incoming));
+    Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, value: async () => [{ name: 'incoming.tmforge.json', getFile: async () => ({ arrayBuffer: async () => bytes.buffer }) }] });
+    await mountEditor(chain());
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('local share engine'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+    await waitFor(() => expect(read).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Share model' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Share model' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await act(async () => finish(incoming));
+    expect(screen.queryByText('Shared Alpha')).not.toBeInTheDocument();
+    expect(screen.queryByText('incoming.tmforge.json')).not.toBeInTheDocument();
+    expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+    expect(document.querySelector('.save-status')).toHaveClass('clean');
+  });
+
+  it('refuses to replace a workspace that changed after the share dialog opened', async () => {
+    await localEngine();
+    await mountEditor(chain());
+    const dialog = await navigateToShare(JSON.stringify(sharedModel()));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Open model' })).toBeEnabled());
+    act(() => flow!.setNodes(nodes => nodes.map(node => node.id === 'a' ? { ...node, data: { ...node.data, label: 'Late workspace change' } } : node)));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Open model' }));
+    await screen.findByText(/workspace changed while the shared model was checked/);
+    expect(screen.getByText('Late workspace change')).toBeInTheDocument();
+    expect(screen.queryByText('Shared Alpha')).not.toBeInTheDocument();
+  });
+
+  it('offers the complete model as a download when it exceeds the share cap', async () => {
+    const model = sharedModel();
+    model.metadata = { highLevelSystemDescription: 'x'.repeat(MAX_SHARE_MODEL_BYTES) };
+    const json = JSON.stringify(model);
+    const download = vi.fn();
+    render(<ShareDialog request={{ mode: 'create', json, pageUrl: 'https://example.test/studio/' }} onOpen={vi.fn()} onClose={vi.fn()} onDownload={download} />);
+    await screen.findByText(/1 MiB share limit/);
+    expect(screen.getByRole('button', { name: 'Copy link' })).toBeDisabled();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Download model' }));
+    expect(download).toHaveBeenCalledWith(json);
   });
 });
 
