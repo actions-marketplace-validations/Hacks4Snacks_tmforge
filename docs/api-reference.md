@@ -4,6 +4,11 @@ The Threat Model Forge **engine API** exposes a small, versioned `/v1` HTTP surf
 .NET engine, and serves the [Studio](studio-guide.md) single-page app from its root, so the API and
 UI ship as one hosted artifact.
 
+**The API has no built-in authentication or authorization and does not store submitted models.**
+Use a local listener or provide your own authenticated ingress for shared deployments. Read the
+[security posture](deployment.md#security-posture) for data-handling, input-limit, CORS, TLS, and
+resource-isolation responsibilities before exposing the service.
+
 The API contract is the single source of truth: the OpenAPI document at `/openapi/v1.json` is what
 Studio's typed client is generated from. A checked-in copy lives at
 [`src/ThreatModelForge.Api/openapi/v1.json`](../src/ThreatModelForge.Api/openapi/v1.json).
@@ -12,10 +17,10 @@ Studio's typed client is generated from. A checked-in copy lives at
 
 ```bash
 # From source: serves the built Studio SPA at the root.
-dotnet run --project src/ThreatModelForge.Api        # http://localhost:5205/
+dotnet run --project src/ThreatModelForge.Api -- --urls http://localhost:5205
 
 # Container: the published engine API + Studio image (pulls on first run).
-docker run --rm -p 8080:8080 ghcr.io/hacks4snacks/tmforge   # http://localhost:8080/
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/hacks4snacks/tmforge  # http://localhost:8080/
 ```
 
 Any non-API path falls back to Studio's `index.html` (so client-side routes resolve), while `/v1`
@@ -39,30 +44,42 @@ and `/openapi` are matched first.
 | `POST /v1/model/analysis-document` | Model | Record the analysis as a versioned, reconcilable `tmforge-analysis` document. |
 | `POST /v1/model/threats` | Model | Generate the STRIDE threat register (rule threats plus the model's author overlay). |
 | `POST /v1/model/threat-register` | Model | Split the register by origin and standing: manual, current-generated, stale-generated, and entries whose rule was not part of the run. |
+| `POST /v1/model/merge` | Model | Merge base/ours/theirs canonical models and return the merged model plus conflicts. |
 | `POST /v1/model/read` | Model | Parse uploaded bytes (base64) into the canonical model. |
 | `POST /v1/model/preflight?to=<format>` | Model | Check source bytes and optionally preview conversion losses without writing or analyzing. |
+| `POST /v1/model/recover/tm7` | Model | Explicitly create a canonical recovery copy without unresolved flows and their scoped threats. |
 | `POST /v1/model/manifest` | Model | Materialize a declarative authoring manifest into a model (the `tmforge apply` build). |
 | `POST /v1/model/compare` | Model | Read-only structural, boundary-crossing, and findings comparison of two canonical model snapshots. |
 | `POST /v1/model/layout` | Model | Return geometry-only updates after preserving every boundary membership and actual flow crossing; unsafe candidates are refused atomically. |
 | `POST /v1/model/convert?to=<format>` | Model | Convert a model to another format. |
 | `POST /v1/model/export/tm7` | Model | Export a model as a `.tm7` file. |
+| `POST /v1/model/save/tm7` | Model | Apply canvas edits to original TM7 bytes without reconstructing the native document. |
 | `POST /v1/model/report?format=<html\|svg>` | Report | Render a model to an HTML or SVG report. |
 | `POST /v1/model/analysis-report?format=<sarif\|html\|json>` | Report | Render the analysis findings as SARIF, HTML, or JSON. |
 | `GET /openapi/v1.json` | n/a | The OpenAPI document. |
 
-`<format>` is one of `tm7`, `tmforge-json`, `drawio`, or `vsdx`. See
+Writable format ids are `tm7`, `tmforge-json`, `drawio`, `vsdx`, and the bounded `threat-dragon` subset.
+Threat Dragon conversion returns `application/json` with a `.threatdragon.json` filename and rejects
+unsupported fields with a problem response. Read/preflight additionally accept the import-only
+`mermaid` and `dot` formats. Query `/v1/formats` for each format's
+read/write capabilities rather than assuming every registered reader is an export target. See
 [Formats & interoperability](formats.md).
 
 ## Errors
 
-Failures are answered as [RFC 9457 problem documents](https://www.rfc-editor.org/rfc/rfc9457)
-(`application/problem+json`), and the status separates what you can fix from what you cannot:
+Handled input exceptions and API fallback errors use
+[RFC 9457 problem documents](https://www.rfc-editor.org/rfc/rfc9457) (`application/problem+json`).
+The common application statuses are:
 
 | Status | Meaning | Examples |
 | --- | --- | --- |
 | `400` | The request was unusable as sent. Retrying it unchanged cannot help. | Body that is not JSON; a missing `?to=`; an unregistered format id; content that is not valid base64; uploaded bytes that are not the format they claim to be. |
 | `404` | The path is not part of the `/v1` API, or the content was not recognized. | A mistyped endpoint; `POST /v1/detect` on bytes matching no known format. |
 | `500` | The server failed. This one is worth reporting. | Anything unexpected — the classification above is deliberately narrow, so a real fault is never disguised as your mistake. |
+
+Framework, web-server, and proxy rejections can use other statuses, such as `413` for a body limit
+or `415` for an unsupported content type. The input handler preserves a `BadHttpRequestException`'s
+status rather than converting every rejection to `400`; response shape can differ outside that handler.
 
 The `detail` of a `400` names what was unusable, so the request can be corrected without guesswork:
 
@@ -77,7 +94,8 @@ The `detail` of a `400` names what was unusable, so the request can be corrected
 
 An unmatched path under `/v1` answers `404` as the API rather than falling through to the Studio's
 HTML shell, so a mistyped endpoint fails as a client error instead of returning a page a JSON client
-cannot parse. Paths outside `/v1` still reach the SPA, which is what makes client-side routing work.
+cannot parse. Non-file browser routes outside `/v1` fall back to the SPA; missing static asset paths
+are not guaranteed to return the HTML shell.
 
 ## Document preflight
 
@@ -86,7 +104,7 @@ endpoint to `POST /v1/model/preflight`. `formatId` is optional; it can also be `
 explicitly selected legacy manifests. The optional `to` query parameter selects a writable conversion
 target. No rule evaluation, file write, or remote content resolution occurs.
 
-The response is `{success,format,targetFormat,diagnostics}`. Each diagnostic contains a stable
+The response is `{success,canRecover,format,targetFormat,diagnostics}`. Each diagnostic contains a stable
 `code`, `severity` (`error`, `warning`, `info`), source `path`, and actionable `message`. JSON
 diagnostics use JSONPath locations; foreign-reader failures may include a provider-specific location
 in their message. An assessment that finds input errors still returns HTTP **200** with
@@ -101,6 +119,68 @@ diagnostic budget is exhausted, so a truncated result cannot look successful.
 The WASM `Preflight(contentBase64, formatId, targetFormat)` export returns the same result; empty
 strings omit the two format selections. MCP exposes `preflight(path, format?, to?)` with the existing
 workspace sandbox and archive limits. Neither operation accepts rule content or changes models.
+
+### Explicit TM7 recovery
+
+`canRecover: true` means the source is TM7, all blocking errors are unresolved flow endpoints, and
+the target is omitted or `tmforge-json`. `success` remains **false**: normal import or conversion
+is still blocked. Clients must present the diagnostics and obtain explicit recovery consent.
+
+After consent, send `{ "contentBase64": "..." }` to `POST /v1/model/recover/tm7`, or call WASM
+`RecoverTm7(contentBase64)`. Both return a validated `TmForgeModelDto` for a **separate canonical
+copy**. Broken flows and threats scoped to them are omitted, never reconnected heuristically.
+Unrelated pages, objects, identities and supported authored threat edits are retained. Native-only
+data remains in the original source and is subject to the canonical conversion warnings.
+
+The operation rechecks the original bytes and refuses other failures, including malformed XML,
+identity collisions, input limits and truncated diagnostics, with HTTP **400**. It writes no files
+and does not change validation policy. Clients must not bind the returned copy to the source's
+save destination or describe analysis of the reduced copy as analysis of the complete source.
+
+## Native TM7 saving
+
+`POST /v1/model/save/tm7` accepts `{ "contentBase64": "...", "model": { ... } }`: the original
+native bytes and the edited `tmforge-json` projection returned by `/v1/model/read`. The response is
+`application/xml` with a `model.tm7` download name. No server-side file or session is created.
+Clients that keep the opening bytes as an undo baseline may also send `previousContentBase64`, the
+latest successful save. This retains newly materialized decisions and definitions across successive
+saves. Undo must retain the pre-deletion native snapshot as well as the canvas and decisions; use
+that snapshot as `contentBase64` when restoring deleted data. Clients that instead advance their
+source to the last saved document can omit `previousContentBase64`.
+
+The engine applies changes by stable identities and retains unedited native XML, including custom
+knowledge-base definitions and threat decisions. An unchanged valid model with a template returns
+the exact source bytes. Edited XML is semantically preserving, not necessarily byte-identical in
+formatting. Missing templates and definitions are supplied additively. Graph edits, page moves and
+kind changes preserve the remaining native data. Removing objects or flows deletes register entries
+whose native scope depends on them, including their triage and justifications. Page deletion removes
+page-scoped entries while retaining model-wide decisions. Unrelated threats remain unchanged.
+The saved canvas overlay is filtered to match; no deleted-ID list or retired register is persisted.
+Renames, page moves, property changes and unavailable or disabled rules do not trigger this cascade.
+
+Model-wide notes use the canonical `notes` array with native `id`, `message`, `date`, and `addedBy`
+fields. A supplied array replaces the notes collection; `notes: []` explicitly clears it. Omitting
+`notes` or supplying `null` leaves native notes unchanged for compatibility with older clients.
+Note edits preserve unrelated XML and retain unrecognized fields on surviving notes by native ID.
+Recorded dates and authors are caller-owned; changing text does not refresh them automatically.
+
+Changed generated-threat decisions are materialized with the host's active rule bundle. Missing or
+mismatched expected packs block new generated threats, not unrelated preserving edits. Existing
+native/manual threats are never wholesale replaced by analysis. Studio view fields (`labelOffset`,
+`sourceHandle`, `targetHandle`) and analysis selections are retained in a versioned
+`urn:tmforge:studio:v1` XML extension. Whole-page normalization prepares native coordinates for MTMT;
+the extension restores the author's original canvas positions. A fingerprint and projection check
+invalidate stale state after external edits. Other editors may discard the extension.
+
+Malformed sources and edits that cannot be preserved safely return **400** with a reason, not a
+lossy fallback. The native source and output are limited to 8 MiB; XML DTDs are prohibited and XML
+depth is limited to 128. Existing JSON limits also apply to the edited projection. The caller must
+check for external file changes before replacing its local file.
+
+The WASM `SaveTm7(contentBase64, tmforgeJson)` export calls the same engine method and returns
+base64 bytes. `SaveTm7WithPrevious(contentBase64, tmforgeJson, previousBase64)` supports the retained
+undo-baseline workflow. `/v1/model/convert` and `/v1/model/export/tm7` create new native documents with the active
+template and Studio presentation state; they cannot recover foreign data absent from their input.
 
 ## One analysis action
 
@@ -159,7 +239,7 @@ representations of a shared object/page, such as aliases versus exported GUIDs, 
 comparison instead of manufacturing resolutions. Different effective rule selections warn because
 the resulting delta can reflect rule configuration rather than a changed security condition.
 
-This is not a complete document/register diff. Metadata and author-owned threat-record differences
+This is not a complete document/register diff. Metadata, model notes, and author-owned threat-record differences
 produce warnings; manual threat content, priority, justification, and orphaned triage are not reviewed
 field by field. Preflight foreign source bytes with `to=tmforge-json` before reading them, and retain
 those import-loss diagnostics with the review. The endpoint receives canonical snapshots, so it cannot
@@ -213,14 +293,16 @@ the shared validation step.
 
 ## Custom rule packs
 
-Custom rules are deployment configuration, not request input: this host never loads rules from a
-request body, so a caller cannot inject detection logic. Name the packs (files or directories) with
+Custom rule packs are deployment configuration, not request input: this host never loads new rule
+packs from a request body. Requests can still carry model properties and analysis selections that
+affect which configured rules run. Name the packs (files or directories) with
 the `TmForge:Rules` setting and they are read once at startup, then applied to every rule-reading
 endpoint — catalogs, analysis, threats, reports, and `.tm7` export — as one effective bundle:
 
 ```bash
-# a single pack, or a ';'-separated list
-TmForge__Rules='/etc/tmforge/corporate.tmrules.json' dotnet ThreatModelForge.Api.dll
+# a single pack, or a ';'-separated list; set the listener explicitly
+TmForge__Rules='/etc/tmforge/corporate.tmrules.json' \
+  dotnet ThreatModelForge.Api.dll --urls http://localhost:8080
 ```
 
 Confirm what actually loaded before trusting a clean run:
@@ -260,7 +342,8 @@ curl http://localhost:8080/v1/stencils         # authoring stencils
 ### Analyze a model
 
 `POST /v1/model/analyze` returns findings for a supplied model, the same rule engine `tmforge analyze`
-uses. This is how Studio's **Analyze** button overlays findings on the canvas.
+uses. Studio uses the combined `/v1/model/analysis` operation for findings, threats, and recorded
+analysis from one evaluation; its WASM transport exposes the same engine operation locally.
 
 Each finding's `id` is stable: `{ruleId}:{diagram}:{target}:{occurrence}`, where the diagram and
 target segments are the element ids from the request model (they read `model` when the finding is
@@ -387,8 +470,8 @@ curl -s -X POST 'http://localhost:8080/v1/model/analysis-report?format=sarif' \
   -H 'Content-Type: application/json' --data @model.tmforge.json -o findings.sarif
 ```
 
-Both report endpoints run the host's configured rule packs and honor the model's own disabled
-selection, so a report always matches the analysis it claims to describe.
+Threat-model HTML and analysis reports use the host's configured rule packs and honor the model's
+disabled selection. SVG is diagram-only and does not evaluate rules.
 
 ## OpenAPI & client generation
 
@@ -399,10 +482,12 @@ sync (Studio's `npm run gen:api` reads that file). See the
 
 ## Notes for hosting
 
-- The container listens on port **8080**; from source it listens on **5205**.
-- In development the API permits CORS from the Studio dev server at `http://localhost:5199`.
-- The API is stateless: it operates on the model bytes you send it, so it scales horizontally.
-  See [Deployment](deployment.md).
+- The container listens on port **8080**. The source command above explicitly selects **5205**;
+  an unconfigured source run uses ASP.NET Core's default, not a project launch profile.
+- The API permits CORS from `http://localhost:5199` in every environment; CORS is not access control.
+- Model processing is request-scoped, while configured rule packs are loaded at startup. Replicas
+  must use the same rule configuration if callers expect consistent results. There is no built-in
+  authentication, model store, or tenant isolation. See [Security posture](deployment.md#security-posture).
 
 ## See also
 

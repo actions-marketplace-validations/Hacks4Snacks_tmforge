@@ -1,9 +1,10 @@
 # Studio guide
 
 **Studio** is the Threat Model Forge browser front end: a React single-page app whose data-flow-diagram
-(DFD) canvas is built on [React Flow](https://reactflow.dev). It talks to the real .NET engine over
-the versioned [`/v1` API](api-reference.md), and the API serves Studio from its root, so the UI and
-engine ship as one artifact.
+(DFD) canvas is built on [React Flow](https://reactflow.dev). It uses the shared .NET engine over
+the versioned [`/v1` API](api-reference.md) or locally through WebAssembly. The API can serve Studio
+from its root; the static demo runs without an API. The [VS Code extension](../src/ThreatModelForge.Vscode/README.md)
+embeds the same editor with a local WASM engine and VS Code-owned file operations.
 
 ## Launch Studio
 
@@ -14,16 +15,16 @@ your browser via WebAssembly.
 To run it locally, the engine API hosts Studio. The quickest way is the container image:
 
 ```bash
-docker run --rm -p 8080:8080 tmforge      # then open http://localhost:8080/
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/hacks4snacks/tmforge  # http://localhost:8080/
 ```
 
 Or run the API from source, which serves the built SPA at its root:
 
 ```bash
-dotnet run --project src/ThreatModelForge.Api    # http://localhost:5205/
+dotnet run --project src/ThreatModelForge.Api -- --urls http://localhost:5205
 ```
 
-See [Deployment](deployment.md) for hosting options.
+See [Deployment](deployment.md#security-posture) before exposing the unauthenticated API to other users.
 
 ## The canvas
 
@@ -31,7 +32,8 @@ Studio gives you a DFD canvas with a stencil palette, an inspector, and engine-b
 
 ### Stencils
 
-Drag any of the four DFD stencils from the palette onto the canvas:
+Drag a stencil from the searchable, multi-pack palette onto the canvas. Stencils specialize these
+four DFD primitives:
 
 | Stencil | Represents |
 | --- | --- |
@@ -52,12 +54,12 @@ connection, not the geometry.
 | --- | --- |
 | Rename a node or flow | Double-click it and type. |
 | Select several objects | Hold `Cmd` (`Ctrl` on Windows/Linux) and click, or drag a selection box with `Shift`. |
-| Delete the selection | `Delete` key. Deleting an element takes its flows with it, and the whole deletion is a single undo step. |
+| Delete the selection | `Delete` key. Deleting an element takes its incident flows and scoped threats/decisions with it, as one undo step. |
 | Resize a trust boundary | Drag its handles (it's a resizable region). |
 | Tidy the diagram | Click **Tidy** to clean up the existing arrangement: fit text, separate overlaps, route flows and deconflict labels. The adjacent **Tidy options** menu offers offline **Labels only** with fixed rectangles. |
 | Pan / zoom | Drag the canvas / scroll; use the minimap and **fit** control to navigate. |
 | Step through the flows | `Alt+↓` / `Alt+↑` selects the next / previous flow in the outline's order. |
-| Undo / redo | `Cmd+Z` / `Shift+Cmd+Z` (covers every edit). |
+| Undo / redo | `Cmd+Z` / `Shift+Cmd+Z` for recorded edits; see the history limits below. |
 
 Arrangement applies to the **active page**, as one undo step. A failed or unsafe candidate changes
 nothing and consumes no undo step. If an edit or page switch occurs while the engine is working,
@@ -96,9 +98,14 @@ A model can hold several diagrams. The **page tab strip** below the canvas lets 
 | Reorder pages | Drag a tab. |
 | Delete a page | Click the tab's **×** (the last page can't be deleted). |
 
-Each page is an independent canvas with its own undo history; the active page and every page's
-contents persist across reloads. Opening a multi-page `.tm7`, `.drawio`, or Visio model (imported via
-the CLI or API into `tmforge-json`) shows each source diagram on its own page.
+Each page is an independent canvas. In the browser, undo records up to 50 edit snapshots for the
+current session; switching or adding pages or loading a model resets that history. Deletion snapshots
+include removed objects and their decisions, including page deletion. Recovery storage retains the
+workspace and active page when available, not the undo stack. Save to a file for durable storage.
+The VS Code extension uses VS Code's document undo/redo instead of this browser stack.
+
+Open File reads multi-page `.tm7`, `.drawio`, and Visio models through the active engine and shows
+each diagram on its own page; no prior CLI conversion is required.
 
 ### Reviewing a large model
 
@@ -151,6 +158,19 @@ and the control is not there. `Unknown` does **not** clear a finding: the rule s
 the property is not evidenced rather than that the control is absent. See
 [`Unknown` and the three states of a control](analysis-rules.md#unknown-and-the-three-states-of-a-control).
 
+#### Model notes
+
+Choose **Notes** in the toolbar, or clear the canvas selection, to open **Model notes** in the
+inspector. **Add note** creates a model-wide note with multiline text and an optional author.
+Existing author names and recorded dates are retained; editing text does not reset the date.
+Use the delete button to remove a note. Notes support undo/redo and workspace recovery, including
+the VS Code editor's document history.
+
+Notes are saved in both `.tm7` and `.tmforge.json`, appear in the threat-model HTML report, and
+travel with shared model URLs. They do not alter analysis findings or risk-acceptance decisions.
+Diagram exports warn when notes cannot be retained; Threat Dragon export refuses notes it cannot
+represent. For per-object annotations, continue using custom properties.
+
 #### Editing several objects at once
 
 Select any number of elements of the same kind, or any number of data flows, and the inspector edits
@@ -202,7 +222,7 @@ delta or a list of apparent resolutions. Objects match by stable identity, not n
 identities and conversion losses are disclosed.
 
 Review does not compare the complete threat register, manual-threat content, priority, justification,
-model metadata, or visual-only edits. Metadata and author-owned threat-record differences produce
+model metadata, notes, or visual-only edits. Metadata, notes, and author-owned threat-record differences produce
 scope warnings. Accepting or mitigating a currently detected threat is a finding reclassification,
 not a resolved condition. Keep the original files for content outside the canonical model.
 
@@ -216,15 +236,17 @@ pairs. Comparisons exceeding 10,000 changes are refused rather than silently tru
 
 ## Validating against the engine
 
-Click **Analyze** to send the whole model (every page) to the live `/v1` engine. Findings come back
+Click **Analyze** to analyze the whole model (every page) with the selected engine. HTTP mode sends
+the model to the configured API; WASM mode processes it locally. Findings come back
 and are **overlaid on the offending nodes and edges**, so you can see exactly what to fix. In a
 multi-page model, tabs that carry findings are badged. Click a threat or finding to narrow the overlay
 to only the objects it impacts and jump to their page. Open the inspector, set the missing property
 (e.g. a flow's protocol), and re-analyze.
 
-If the engine is offline, Studio falls back to an offline stub so the canvas keeps working; connect
-it to a running API to get the real rule set. See [Analysis rules & CI](analysis-rules.md) for
-what the rules check.
+On startup Studio first probes HTTP, then tries a staged in-browser WASM engine. A static demo build
+skips the HTTP probe. If neither is available, offline authoring remains usable, but the offline
+fallback is not a full security analysis. Supply a working API or WASM engine to analyze. See
+[Analysis rules & CI](analysis-rules.md) for what the rules check.
 
 ### Custom rule packs
 
@@ -235,7 +257,8 @@ count, and content fingerprint, plus any diagnostic the loader raised. A pack th
 says so instead of quietly leaving you on the built-in rules.
 
 Loading a pack also **pins it in the model**: the saved `.tmforge.json` records the pack id and
-fingerprint. If the model is later analyzed without that pack, or the pack's content changed,
+fingerprint, and native Studio saves retain that selection in the Studio XML extension. If Studio
+or a canonical-model analysis later runs without that pack, or the pack's content changed,
 analysis reports an error finding rather than looking clean. **Use built-in rules** clears both the
 loaded pack and the pin.
 
@@ -274,8 +297,9 @@ stored on the wire.
 
 > **Editing a rule threat relies on stable element ids.** A rule threat's edit is keyed by the id of the
 > element it targets. Studio nodes keep stable ids, so edits persist across re-analysis; if you delete
-> and recreate the underlying element (giving it a new id), its rule threat is a fresh threat and the
-> earlier edit no longer applies. Manual threats are keyed independently and are unaffected.
+> and recreate the underlying element (giving it a new id), its rule threat is a fresh threat.
+> Explicit deletion also removes manual threats scoped to the deleted objects; model-wide and
+> unrelated manual threats remain. Undo restores the deleted decisions within the available history.
 
 ## Downloading reports
 
@@ -296,10 +320,58 @@ in-browser engine they are generated locally — the model never leaves the page
 
 ## Importing and exporting
 
-Studio round-trips through the canonical **`tmforge-json`** wire model:
+In browser Studio, **Open File** retains the opened file's writable handle and format: `.tm7` saves
+as `.tm7`, canonical JSON saves as canonical JSON, and Threat Dragon JSON saves as Threat Dragon JSON
+to the same file. **Export** writes a separate conversion and does not change the Save binding.
+Browsers without the File System Access API download a copy instead of silently overwriting a file.
+After workspace recovery, the original filename and format are retained, but Save asks you to select
+a destination again because the writable handle is not persisted. Read-only formats such as Mermaid
+and DOT still save as new canonical JSON files.
+
+Studio edits a canonical **`tmforge-json`** canvas projection. When the browser opens a `.tm7`, it
+also retains the original native document separately:
+
+- **Save / Save As / Export TM7** apply supported edits to the original document, retaining its
+  embedded template, unaffected threat decisions, native connector geometry and unedited XML extensions.
+  Saving without edits returns the original bytes. Edited XML may have different formatting; its
+  unedited data is preserved. A missing template is supplied automatically; missing stencil and
+  threat definitions and newly authored property values are added without replacing customizations.
+- `.tm7` is an authoring format, not a read-only interchange format. Add, delete, move, resize,
+  reconnect and edit objects, change kinds, and create, rename, reorder or remove pages without
+  leaving tmforge. Existing native objects and their extension data move together.
+- New analysis threats can be triaged and saved using the active rule bundle. Existing manual
+  threats and decisions are retained; saving unrelated diagram edits does not regenerate the entire
+  register. A missing custom pack does not prevent a preserving diagram save, but must be loaded
+  before materializing a new threat from that pack.
+- Deleting an object also deletes its incident flows and threats scoped to any of those objects,
+  including recorded triage and justifications. Deleting a flow leaves its endpoints and their
+  unrelated threats intact. Deleting a page removes its scoped threats; model-wide and unrelated
+  decisions remain. These are intentional deletions, not loss during conversion.
+- Undo restores the deleted objects, flows and decisions together, including after a save during
+  the same editing session. Save and reopen keep the deletion; there is no Retired view or permanent
+  deleted-ID list. Use version history for recovery after closing the editing session.
+- Renaming, moving, changing properties or disabling rules does not delete recorded decisions.
+  Missing rule packs are not evidence that a threat should be removed.
+- Manual label offsets, routing, rule selection and pre-normalization canvas positions are stored
+  in a versioned Studio extension inside the `.tm7`, including on the first export. Native geometry
+  is translated by whole pages for MTMT compatibility without resizing or changing relative layout.
+  Studio restores its layout only while it matches the native document; external edits invalidate
+  stale state. Other tools may discard that extension on save. A diagram larger than MTMT's fixed
+  canvas remains editable in Studio, but MTMT may still adjust it when opened there.
+- The native source and edits survive local workspace recovery when browser storage is available.
+  A storage-quota warning means you must save before reloading. Save refuses to overwrite a bound
+  file that another editor changed on disk.
+- Invalid references, ambiguous native identities and unrecognized extension versions are refused
+  before writing rather than silently losing information. Generated categories and scope remain
+  rule-owned. If a threat has no recorded default, enter an explicit title or priority when editing it.
+- Native line boundaries are retained but are not displayed or analyzed by the canvas projection.
+  Studio analysis still uses tmforge's active rules; retaining a template does not automatically
+  execute its rules. Imports warn about hidden boundaries; deleting their page removes them too.
 
 - **Export tmforge-json**: save the diagram as `.tmforge.json`, which the CLI and API speak
-  natively.
+  natively. This is an explicit conversion: the native backing document is not included. The
+  conversion review identifies the omitted data. Share links likewise contain the canvas snapshot,
+  not the retained native source.
 - **Import JSON**: load a `.tmforge.json` document back onto the canvas.
 
 This is the bridge between visual authoring and the [CLI](cli-reference.md): export from Studio,
@@ -312,11 +384,23 @@ then `tmforge analyze` / `tmforge report` / `tmforge convert` in a pipeline, or 
 ### Preflight review
 
 Before replacing the canvas, **Open File** runs preflight through the active engine. Structural
-errors appear with their source paths and must be corrected in the input. Known import losses appear
-in a review dialog with **Continue** and **Cancel**. Closing or cancelling leaves the current model
+errors appear with their source paths under **Technical details** and block ordinary import.
+Import limitations appear in a review dialog with **Continue import** and **Cancel**. Ordinary native
+TM7 files open without a conversion acknowledgement. A file containing objects the canvas cannot
+display still receives a warning; explicit conversions still warn about template and register loss.
+Closing or cancelling leaves the current model
 and undo history unchanged; a delayed import is discarded if the workspace changes while it runs.
 
-**Save** and **Export** also review known conversion losses before writing. Native JSON saves do not
+When a TM7's only errors are unattached or cross-page flow endpoints, **Review recovery import**
+offers **Import recovery copy**. Accepting omits the listed broken flows and their scoped threats,
+then opens a validated, unsaved `*.recovered.tmforge.json` copy. The original file remains untouched
+and Save uses a separate destination. Recovery does not invent connections or retain native-only
+content such as the embedded template and full generated register; review all conversion warnings.
+Other structural and parsing errors remain blocking. Analysis covers the reduced copy, not the
+complete source model.
+
+**Save** and **Export** review known conversion losses before writing a converted model. Native TM7
+saves validate the preserving edit before opening a writable stream. Native JSON saves do not
 perform the engine's structural conversion, so they retain the existing wire state. Importing a new
 file requires the API or WASM engine to be ready; offline authoring and saving the current JSON
 workspace remain available. These diagnostics are separate from **Analyze** and do not accept or
@@ -343,16 +427,20 @@ it. To change the model, edit the manifest and re-apply, or save the model as it
 **Open File** recognizes supported OWASP Threat Dragon v2 JSON through the active engine. Imported
 threats appear as manual entries alongside tmforge-generated threats after **Analyze**, retaining
 their original category, text, treatment and scope. Model metadata and threat provenance survive
-saving, reopening and exporting to `.tm7`.
+saving and reopening canonical JSON. Diagram provenance also survives, including empty pages.
 
-This is import-only: Studio does not bind the original file for overwriting. **Save** offers a new
-`.tmforge.json` filename, and Threat Dragon is not offered as an export target. Keep the original
-for Threat Dragon-specific content such as styling and routing.
+**Save** writes the supported Threat Dragon subset back to the opened file when writable file access
+is available. **Export** and **OWASP Threat Dragon v2** produce a separate copy. Both retain imported
+identities, supported controls and authored threats, and refuse unsupported fields before writing.
+Analysis rule settings, generated threats, custom properties and authored connector routing are
+examples of content that blocks a save/export rather than disappearing. Saving is a bounded conversion,
+not a byte-preserving edit: keep the original when Threat Dragon-specific styling, routing or thumbnails
+matter. The import warning explains these limitations before the model is loaded.
 
 The first delivery supports rectangular boundaries and directed flows. Curved boundaries,
 bidirectional flows, fractional rectangles and unsupported treatment states are refused, with no
 partial replacement of the current workspace. Out-of-scope flags remain source information and do
-not disable tmforge rules. See the [full import contract](formats.md#threat-dragon-owasp-threat-dragon-v2-import)
+not disable tmforge rules. See the [full import/export contract](formats.md#threat-dragon-owasp-threat-dragon-v2)
 before migrating a model.
 
 ### Opening Mermaid or DOT
@@ -369,6 +457,8 @@ unchanged. **Save** offers a new `.tmforge.json` file and never binds the source
 Mermaid and DOT are not export targets. See the [supported subset](formats.md#mermaid-and-dot-starter-model-import).
 
 ## Sharing a model as a URL
+
+Sharing is a browser Studio feature; it is not offered by the VS Code editor.
 
 Choose **Share model** in the toolbar, then **Copy link**. The link contains a frozen snapshot of
 the current canonical `tmforge-json` model: every page, element, flow, property, saved geometry,
@@ -437,19 +527,24 @@ and are flagged for you to fix after loading.
 
 ## Local development
 
-To hack on Studio itself with hot reload, run the Vite dev server against a locally running API:
+To work on Studio with hot reload, use Node.js 22.12+ and the pinned .NET SDK, then run the Vite
+dev server against a locally running API:
 
 ```bash
 # Terminal 1: the engine API (Studio calls it on :5205)
-dotnet run --project src/ThreatModelForge.Api
+dotnet run --project src/ThreatModelForge.Api -- --urls http://localhost:5205
 
 # Terminal 2: the Studio dev server with hot reload
 cd src/ThreatModelForge.Studio
-npm install
+npm ci
 npm run dev        # http://localhost:5199
 ```
 
-During development the API allows CORS from the Vite dev server at `http://localhost:5199`.
+The API allows CORS from `http://localhost:5199` in every environment. This is a development-origin
+allowlist, not authentication or a deployment access boundary.
+
+For local engine work without HTTP, install the WASM workloads and run `npm run stage:wasm` in the
+Studio directory before `VITE_DEMO=true npm run dev`. See the [static deployment instructions](deployment.md#studio-static-demo-in-browser-engine-no-backend).
 
 ### Regenerating the API client
 
@@ -462,7 +557,7 @@ npm run gen:api    # openapi-typescript ../ThreatModelForge.Api/openapi/v1.json 
 
 ### Stack
 
-Vite + React 18 + TypeScript + `@xyflow/react` v12 (React Flow, MIT). No UI kit; plain CSS.
+Vite 8 + React 19 + TypeScript + `@xyflow/react` v12 (React Flow, MIT). No UI kit; plain CSS.
 
 ## See also
 

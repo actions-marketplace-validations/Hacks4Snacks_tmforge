@@ -58,6 +58,40 @@ namespace ThreatModelForge.Api.Tests
             Assert.IsFalse(unavailable.Changes.Any(change => change.Section == "findings"));
         }
 
+        /// <summary>Native saves materialize new custom threats with the active bundle and extend its template.</summary>
+        [TestMethod]
+        public void NativeSaveUsesActiveCustomRulesAndPins()
+        {
+            byte[] original = EngineService.Convert(UnencryptedStoreModel(), "tm7");
+            TmForgeModelDto baseline = EngineService.ReadModel(original, "tm7");
+            EngineRuleOptions rules = Rules();
+            using MemoryStream fresh = new MemoryStream(EngineService.Convert(UnencryptedStoreModel(), "tm7", rules));
+            Assert.IsTrue(ThreatModelForge.Model.ThreatModel.Load(fresh).KnowledgeBase!.ThreatTypes.Any(type => type.Id == EffectiveRuleId));
+            ThreatDto generated = EngineService.GenerateThreats(baseline, rules).Single(threat => threat.RuleId == EffectiveRuleId);
+            RulePackInfoDto pack = EngineService.DescribeRules(rules).RulePacks.Single();
+            TmForgeModelDto edited = new TmForgeModelDto
+            {
+                Schema = baseline.Schema, Version = baseline.Version, Metadata = baseline.Metadata,
+                Elements = baseline.Elements, Flows = baseline.Flows, Diagrams = baseline.Diagrams,
+                Analysis = new TmForgeAnalysisDto { ExpectedPacks = new[] { new ExpectedRulePackDto { Id = pack.Id, Fingerprint = pack.Fingerprint } } },
+                Threats = new[] { new ThreatStateDto { Id = generated.Id, State = "Accepted", Justification = "Reviewed custom finding" } },
+            };
+
+            Assert.Throws<InvalidDataException>(() => EngineService.SaveTm7(original, edited));
+            byte[] saved = EngineService.SaveTm7(original, edited, rules);
+            using MemoryStream output = new MemoryStream(saved);
+            ThreatModelForge.Model.ThreatModel native = ThreatModelForge.Model.ThreatModel.Load(output);
+            Assert.AreEqual(ThreatModelForge.KnowledgeBase.ThreatState.NotApplicable, native.AllThreatsDictionary[generated.Id].State);
+            Assert.IsTrue(native.KnowledgeBase!.ThreatTypes.Any(type => type.Id == EffectiveRuleId));
+            TmForgeModelDto reopened = EngineService.ReadModel(saved, "tm7");
+            Assert.AreEqual(pack.Fingerprint, reopened.Analysis!.ExpectedPacks![0].Fingerprint);
+            CollectionAssert.AreEqual(saved, EngineService.SaveTm7(saved, reopened, rules));
+            CollectionAssert.AreEqual(saved, EngineService.SaveTm7(saved, reopened));
+            TmForgeModelDto renamed = AuthoringService.Rename(reopened, new RenameRequest { Id = "Ledger", Name = "Renamed without reanalysis" }).Model!;
+            byte[] geometryOnly = EngineService.SaveTm7(saved, renamed);
+            Assert.AreEqual("Renamed without reanalysis", EngineService.ReadModel(geometryOnly, "tm7").Elements![0].Name);
+        }
+
         /// <summary>The custom pack contributes to the rule catalog every surface reads.</summary>
         [TestMethod]
         public void CustomPackAppearsInTheRuleCatalog()

@@ -12,7 +12,7 @@ namespace ThreatModelForge.Formats.Tests
     using ThreatModelForge.Model;
     using ThreatModelForge.Model.Abstracts;
 
-    /// <summary>Tests the read-only Threat Dragon v2 provider.</summary>
+    /// <summary>Tests the bounded Threat Dragon v2 provider.</summary>
     [TestClass]
     public class ThreatDragonFormatTest
     {
@@ -22,15 +22,15 @@ namespace ThreatModelForge.Formats.Tests
   ""detail"": { ""diagrams"": [] }
 }";
 
-        /// <summary>The registry exposes import without advertising native export.</summary>
+        /// <summary>The registry exposes bounded export without claiming lossless native round trips.</summary>
         [TestMethod]
-        public void RegistersReadOnlyProvider()
+        public void RegistersBoundedProvider()
         {
             IThreatModelFormat? format = ThreatModelFormatRegistry.CreateDefault().FindById("threat-dragon");
 
             Assert.IsNotNull(format);
             Assert.IsTrue(format.Capabilities.CanRead);
-            Assert.IsFalse(format.Capabilities.CanWrite);
+            Assert.IsTrue(format.Capabilities.CanWrite);
             Assert.IsFalse(format.Capabilities.RoundTrips);
         }
 
@@ -94,6 +94,7 @@ namespace ThreatModelForge.Formats.Tests
         [TestMethod]
         [DataRow("tmforge-json")]
         [DataRow("tm7")]
+        [DataRow("threat-dragon")]
         public void RoundTripPreservesImportEvidence(string formatId)
         {
             ThreatModel original = Read(Fixture().ToJsonString());
@@ -113,6 +114,244 @@ namespace ThreatModelForge.Formats.Tests
             Assert.AreEqual("LINDDUN", privacy.Properties?["Source.modelType"]);
             Assert.AreEqual("Approved for the documented retention window.", privacy.StateInformation);
             Assert.AreEqual("Use short-lived identifiers.", privacy.Properties?["Mitigation"]);
+        }
+
+        /// <summary>Exporting the imported subset preserves identities and display numbers deterministically.</summary>
+        /// <param name="canonical">Whether to store the imported model as canonical JSON first.</param>
+        [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void ExportsImportedFixtureWithStableIdentities(bool canonical)
+        {
+            JsonNode fixture = Fixture();
+            At(fixture, "detail", "diagrams", 0, "cells", 2, "data", "threats", 0)["number"] = 42;
+            ThreatModel original = Read(fixture.ToJsonString());
+            if (canonical)
+            {
+                using MemoryStream storage = new MemoryStream();
+                TmForgeJsonFormat json = new TmForgeJsonFormat();
+                json.Write(original, storage);
+                storage.Position = 0;
+                original = json.Read(storage);
+            }
+
+            ThreatDragonFormat format = new ThreatDragonFormat();
+            using MemoryStream first = new MemoryStream();
+            using MemoryStream second = new MemoryStream();
+            format.Write(original, first);
+            format.Write(original, second);
+
+            CollectionAssert.AreEqual(first.ToArray(), second.ToArray());
+            Assert.IsTrue(first.CanWrite);
+            using JsonDocument document = JsonDocument.Parse(first.ToArray());
+            JsonElement detail = document.RootElement.GetProperty("detail");
+            Assert.AreEqual(0, detail.GetProperty("diagrams")[0].GetProperty("id").GetInt32());
+            Assert.AreEqual(1, detail.GetProperty("diagrams")[1].GetProperty("id").GetInt32());
+            Assert.IsTrue(detail.GetProperty("diagrams")[0].TryGetProperty("thumbnail", out _));
+            Assert.AreEqual(2, detail.GetProperty("diagramTop").GetInt32());
+            JsonElement[] threats = detail.GetProperty("diagrams").EnumerateArray()
+                .SelectMany(page => page.GetProperty("cells").EnumerateArray())
+                .SelectMany(cell => cell.GetProperty("data").GetProperty("threats").EnumerateArray()).ToArray();
+            Assert.AreEqual(3, threats.Select(threat => threat.GetProperty("number").GetInt64()).Distinct().Count());
+            Assert.AreEqual(42L, threats.Single(threat => threat.GetProperty("id").GetString() == "credential-disclosure").GetProperty("number").GetInt64());
+            Assert.AreEqual(42L, detail.GetProperty("threatTop").GetInt64());
+            first.Position = 0;
+            ThreatModel restored = format.Read(first);
+            CollectionAssert.AreEqual(original.DrawingSurfaceList.Select(page => page.Guid).ToArray(), restored.DrawingSurfaceList.Select(page => page.Guid).ToArray());
+            CollectionAssert.AreEquivalent(original.DrawingSurfaceList.SelectMany(page => page.Borders.Keys.Concat(page.Lines.Keys)).ToArray(), restored.DrawingSurfaceList.SelectMany(page => page.Borders.Keys.Concat(page.Lines.Keys)).ToArray());
+            CollectionAssert.AreEquivalent(original.AllThreatsDictionary.Keys.ToArray(), restored.AllThreatsDictionary.Keys.ToArray());
+            foreach (string key in original.AllThreatsDictionary.Keys)
+            {
+                Assert.AreEqual(original.AllThreatsDictionary[key].State, restored.AllThreatsDictionary[key].State);
+                Assert.AreEqual(original.AllThreatsDictionary[key].FlowGuid, restored.AllThreatsDictionary[key].FlowGuid);
+                Assert.AreEqual(original.AllThreatsDictionary[key].UserThreatCategory, restored.AllThreatsDictionary[key].UserThreatCategory);
+            }
+
+            Assert.AreEqual("42", restored.AllThreatsDictionary["manual:threat-dragon.credential-disclosure"].Properties?["Source.number"]);
+        }
+
+        /// <summary>Empty imported pages retain their source identity through canonical storage.</summary>
+        /// <param name="canonical">Whether to pass through canonical JSON before exporting.</param>
+        [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void ExportsEmptyImportedPage(bool canonical)
+        {
+            JsonNode document = Fixture();
+            At(document, "detail", "diagrams").AsArray().RemoveAt(0);
+            At(document, "detail", "diagrams", 0, "cells").AsArray().Clear();
+            ThreatModel original = Read(document.ToJsonString());
+            ThreatModel model = original;
+            if (canonical)
+            {
+                using MemoryStream intermediate = new MemoryStream();
+                TmForgeJsonFormat json = new TmForgeJsonFormat();
+                json.Write(model, intermediate);
+                intermediate.Position = 0;
+                model = json.Read(intermediate);
+            }
+
+            using MemoryStream output = new MemoryStream();
+            new ThreatDragonFormat().Write(model, output);
+            string exported = Encoding.UTF8.GetString(output.ToArray());
+            ThreatModel restored = Read(exported);
+
+            Assert.AreEqual(original.DrawingSurfaceList[0].Guid, restored.DrawingSurfaceList[0].Guid);
+            using JsonDocument result = JsonDocument.Parse(exported);
+            Assert.AreEqual("LINDDUN", result.RootElement.GetProperty("detail").GetProperty("diagrams")[0].GetProperty("diagramType").GetString());
+        }
+
+        /// <summary>Export reads current controls, names and treatment instead of stale source values.</summary>
+        [TestMethod]
+        public void ExportsCurrentEdits()
+        {
+            ThreatModel model = Read(Fixture().ToJsonString());
+            Entity store = model.DrawingSurfaceList[0].Borders.Values.OfType<Entity>().Single(entity => DiagramElementHelper.GetName(entity) == "Credentials");
+            DiagramElementHelper.SetName(store, "Encrypted vault");
+            DiagramElementHelper.SetCustomProperty(store, "Encrypted", "At-rest");
+            Threat threat = model.AllThreatsDictionary["manual:threat-dragon.credential-disclosure"];
+            threat.State = ThreatState.Mitigated;
+            threat.StateInformation = "Encryption deployed.";
+            threat.Properties!["Mitigation"] = "Use managed keys.";
+            using MemoryStream output = new MemoryStream();
+
+            new ThreatDragonFormat().Write(model, output);
+            ThreatModel restored = Read(Encoding.UTF8.GetString(output.ToArray()));
+
+            Entity restoredStore = (Entity)restored.DrawingSurfaceList[0].Borders[store.Guid];
+            Assert.AreEqual("Encrypted vault", DiagramElementHelper.GetName(restoredStore));
+            Assert.AreEqual("At-rest", DiagramElementHelper.GetCustomProperties(restoredStore)["Encrypted"]);
+            Assert.AreEqual(ThreatState.Mitigated, restored.AllThreatsDictionary[threat.InteractionKey!].State);
+            Assert.AreEqual("Encryption deployed.", restored.AllThreatsDictionary[threat.InteractionKey!].StateInformation);
+            Assert.AreEqual("Use managed keys.", restored.AllThreatsDictionary[threat.InteractionKey!].Properties?["Mitigation"]);
+            Assert.AreEqual("false", DiagramElementHelper.GetCustomProperties(store)["ThreatDragon.data.isEncrypted"]);
+        }
+
+        /// <summary>Native compatibility fields do not make an otherwise supported authored finding unexportable.</summary>
+        [TestMethod]
+        public void ExportsManualThreatsWithNativeTypeAndMirroredProperties()
+        {
+            ThreatModel model = Read(Fixture().ToJsonString());
+            ThreatDragonFormat format = new ThreatDragonFormat();
+            using MemoryStream before = new MemoryStream();
+            format.Write(model, before);
+            foreach (Threat threat in model.AllThreatsDictionary.Values)
+            {
+                threat.TypeId = ManualThreatId.ToNativeTypeId(threat.InteractionKey!);
+                threat.Properties!["Title"] = threat.Title!;
+                threat.Properties["UserThreatCategory"] = threat.UserThreatCategory!;
+                threat.Properties["UserThreatDescription"] = threat.UserThreatDescription!;
+                threat.Properties["StateInformation"] = threat.StateInformation!;
+                threat.Properties["Priority"] = threat.Priority!;
+            }
+
+            using MemoryStream after = new MemoryStream();
+            format.Write(model, after);
+
+            CollectionAssert.AreEqual(before.ToArray(), after.ToArray());
+        }
+
+        /// <summary>Unsupported semantics refuse the whole export before touching the destination.</summary>
+        /// <param name="variation">The unsupported content to add.</param>
+        /// <param name="message">A diagnostic fragment identifying the loss.</param>
+        [TestMethod]
+        [DataRow("property", "UnsupportedControl")]
+        [DataRow("unknown-control", "Encrypted")]
+        [DataRow("metadata", "Assumptions")]
+        [DataRow("notes", "notes")]
+        [DataRow("generated", "generated threat")]
+        [DataRow("invalid-native-type", "generated threat")]
+        [DataRow("conflicting-native-property", "Title")]
+        [DataRow("state", "NeedsInvestigation")]
+        [DataRow("wide", "model-wide")]
+        [DataRow("multiple-targets", "multiple")]
+        [DataRow("threat-property", "References")]
+        [DataRow("custom-stencil", "custom-process")]
+        [DataRow("line-boundary", "LineBoundary")]
+        [DataRow("unscoped", "scoped")]
+        [DataRow("routing", "routing")]
+        [DataRow("ports", "ports")]
+        [DataRow("empty-id", "identities")]
+        [DataRow("duplicate-id", "identities")]
+        [DataRow("audit", "audit")]
+        [DataRow("small-shape", "at least 10")]
+        [DataRow("threat-number", "source number")]
+        [DataRow("duplicate-number", "source number")]
+        public void RefusesUnsupportedExportsWithoutWriting(string variation, string message)
+        {
+            ThreatModel model = Read(Fixture().ToJsonString());
+            DrawingSurfaceModel page = model.DrawingSurfaceList[0];
+            Entity store = page.Borders.Values.OfType<Entity>().Single(entity => DiagramElementHelper.GetName(entity) == "Credentials");
+            Threat threat = model.AllThreatsDictionary["manual:threat-dragon.credential-disclosure"];
+            switch (variation)
+            {
+                case "property": DiagramElementHelper.SetCustomProperty(store, "UnsupportedControl", "Yes"); break;
+                case "unknown-control": DiagramElementHelper.SetCustomProperty(store, "Encrypted", "Unknown"); break;
+                case "metadata": model.MetaInformation!.Assumptions = "Must not disappear."; break;
+                case "notes": model.Notes.Add(new Note { Message = "Must not disappear." }); break;
+                case "generated": threat.TypeId = "TM1023"; break;
+                case "invalid-native-type": threat.TypeId = "BSnot-a-native-guid"; break;
+                case "conflicting-native-property": threat.Properties!["Title"] = "Different native title"; break;
+                case "state": threat.State = ThreatState.NeedsInvestigation; break;
+                case "wide": threat.Wide = true; break;
+                case "multiple-targets": threat.TargetGuid = page.Borders.Keys.First(id => id != store.Guid); break;
+                case "threat-property": threat.Properties!["References"] = "Important evidence"; break;
+                case "custom-stencil": store.TypeId = "custom-process"; break;
+                case "line-boundary":
+                    LineBoundary boundary = new LineBoundary { Guid = Guid.NewGuid() };
+                    page.Lines.Add(boundary.Guid, boundary);
+                    break;
+                case "unscoped": threat.SourceGuid = Guid.Empty; break;
+                case "routing": page.Lines.Values.OfType<Connector>().First().HandleX += 25; break;
+                case "ports": page.Lines.Values.OfType<Connector>().First().PortSource = "East"; break;
+                case "empty-id": store.Guid = Guid.Empty; break;
+                case "duplicate-id": store.Guid = page.Guid; break;
+                case "audit": threat.ModifiedAt = new DateTime(2026, 9, 23, 0, 0, 0, DateTimeKind.Utc); break;
+                case "small-shape": ((DrawingElement)store).Width = 9; break;
+                case "threat-number": threat.Properties!["Source.number"] = "-1"; break;
+                case "duplicate-number":
+                    foreach (Threat entry in model.AllThreatsDictionary.Values)
+                    {
+                        entry.Properties!["Source.number"] = "1";
+                    }
+
+                    break;
+            }
+
+            using MemoryStream output = new MemoryStream();
+            output.Write(new byte[] { 1, 2, 3 });
+            NotSupportedException error = Assert.Throws<NotSupportedException>(() => new ThreatDragonFormat().Write(model, output));
+
+            StringAssert.Contains(error.Message, message);
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, output.ToArray());
+            Assert.AreEqual(3L, output.Position);
+        }
+
+        /// <summary>The supported v2 data vocabulary remains typed and survives export.</summary>
+        [TestMethod]
+        public void ExportsSupportedSourceProperties()
+        {
+            JsonNode fixture = Fixture();
+            JsonNode data = At(fixture, "detail", "diagrams", 0, "cells", 1, "data");
+            data["isWebApplication"] = true;
+            data["handlesCardPayment"] = false;
+            data["handlesGoodsOrServices"] = true;
+            data["privilegeLevel"] = "User";
+            At(fixture, "detail", "diagrams", 0, "cells", 2, "data")["storesInventory"] = false;
+            ThreatModel model = Read(fixture.ToJsonString());
+            using MemoryStream output = new MemoryStream();
+
+            new ThreatDragonFormat().Write(model, output);
+
+            using JsonDocument document = JsonDocument.Parse(output.ToArray());
+            JsonElement cells = document.RootElement.GetProperty("detail").GetProperty("diagrams")[0].GetProperty("cells");
+            JsonElement process = cells.EnumerateArray().Single(cell => cell.GetProperty("id").GetString() == "api").GetProperty("data");
+            Assert.IsTrue(process.GetProperty("isWebApplication").GetBoolean());
+            Assert.IsFalse(process.GetProperty("handlesCardPayment").GetBoolean());
+            Assert.IsTrue(process.GetProperty("handlesGoodsOrServices").GetBoolean());
+            Assert.AreEqual("User", process.GetProperty("privilegeLevel").GetString());
+            JsonElement store = cells.EnumerateArray().Single(cell => cell.GetProperty("id").GetString() == "store").GetProperty("data");
+            Assert.IsFalse(store.GetProperty("storesInventory").GetBoolean());
         }
 
         /// <summary>A one-page import does not lose its named page identity in the canonical wire format.</summary>
@@ -204,9 +443,9 @@ namespace ThreatModelForge.Formats.Tests
             Assert.AreEqual("Imported model", format.Read(stream).MetaInformation?.ThreatModelName);
             Assert.IsTrue(stream.CanRead);
             using MemoryStream output = new MemoryStream();
-            Assert.Throws<NotSupportedException>(() => format.Write(new ThreatModel(), output));
-            Assert.AreEqual(0L, output.Length);
-            Assert.Throws<NotSupportedException>(() => ThreatModelFormatRegistry.CreateDefault().ResolveForWrite("source.json", "threat-dragon"));
+            format.Write(Read(EmptyV2), output);
+            Assert.IsTrue(output.Length > 0);
+            Assert.AreEqual("threat-dragon", ThreatModelFormatRegistry.CreateDefault().ResolveForWrite("source.json", "threat-dragon").Id);
         }
 
         /// <summary>Null inputs and non-seekable sniffing fail explicitly.</summary>

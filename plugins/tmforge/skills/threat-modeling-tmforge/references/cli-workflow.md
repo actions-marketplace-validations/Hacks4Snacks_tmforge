@@ -46,6 +46,20 @@ When a core validator accepts `--tmforge`, provide the complete command string, 
 function. For example: `--tmforge 'python3 "/absolute/installed-skill/scripts/tmforge.py" --'`. Quote paths containing
 spaces. The wrapper preserves the caller's working directory, output streams, and CLI exit code.
 
+Inside `--manifest-command`, quote the entire nested CLI value for the driver's second argument parse:
+
+```bash
+TMF='dotnet "/absolute/tools path/tmforge.dll"'
+python3 /path/to/rebuild_package.py /path/to/package \
+  --tmforge "$TMF" \
+  --manifest-command "python3 /path/to/layout.py analysis.json --manifest model.tm.json --out model.tm.json --restarts 8 --seed 7 --tmforge '$TMF'"
+```
+
+The inner single quotes must reach the driver: `--tmforge $TMF` inside the command string fragments a multi-word
+invocation even when the outer command string is quoted. This example assumes `TMF` contains no literal apostrophe;
+for generated commands or arbitrary paths, build each argument list with Python `shlex.join`, including the nested
+CLI argument. Do not repair quoting by blindly joining argv tokens, which loses path boundaries.
+
 ## Existing Model Baseline
 
 Before deciding whether an existing artifact is current or modifying it, run the installed equivalents of:
@@ -70,6 +84,17 @@ count, and rendered boundary membership. Compare them to companion artifacts and
 mismatch blocks a verified verdict.
 
 ## Declarative Manifest Workflow
+
+Keep ledger names and diagram names distinct: ledger `{"id":"F7","name":"Read records"}` becomes manifest
+`{"alias":"F7","name":"F7: Read records"}`. Use the same rule for elements and boundaries. Never put the prefix
+inside the ledger's `name`; `models.parity` compares the diagram name with the expected display ID and bare name.
+
+For page-local flow numbering, ledger `{"id":"F68","displayId":"F1","name":"Action results"}` becomes manifest
+`{"alias":"F68","name":"F1: Action results"}`. The native `Alias` remains `F68`; only the visible prefix changes.
+Declare pages and number every flow on an opted-in page from F1 without gaps or duplicates. Repeating F1 on another
+page is intentional. The verifier resolves flow identity through `show --id <GUID> --json` and its `Alias` property,
+then checks the label, page and endpoints. Never infer the stable alias from a local label or native inventory order.
+Without `displayId`, the existing `id + ": " + name` convention is unchanged.
 
 When a manifest is source, edit the alias-keyed manifest and generate a candidate:
 
@@ -126,22 +151,55 @@ the manifest:
 
 Consequences for authoring:
 
-- **The flow name is a label, not a sentence.** Write the stable ID plus a terse phrase, and keep the sentence in the
-  canonical ledger and the data-flow document, where it is keyed by the same ID and is what a reviewer actually
-  reads. The practical ceiling scales with how wide the diagram is: for a five-column diagram it is about 30
-  characters, for four columns about 50, for three about 85. Past that the labels cannot be placed at all.
+- **The flow name is a label, not a sentence.** Write the display ID (the stable ID by default) plus a terse phrase, and keep the sentence in the
+  diagram name only. The canonical ledger holds the bare phrase, and fuller explanations belong in linked evidence
+  claims or threat descriptions. Long labels need more space, but a collision does not imply that names are wrong.
 - **Derive geometry; do not invent it.** The layout generator provided by the loaded `threat-modeling` skill sizes each
-  column gap from the labels that span it and exits non-zero when the result no longer fits the canvas, which is the
-  signal that the names — not the placement — need to change.
-- **Let tmforge place the labels.** Recent versions position every flow label clear of the shapes and of the other
-  labels on each write to `.tm7` — whether it came from `apply`, `convert`, an authoring verb, or Studio's export —
-  by adjusting curve handles only, which nothing in the analysis reads. A label somebody positioned is preserved.
+  column gap from labels, wraps complete columns into rows, and optimizes label-on-shape obstructions before crossings
+  and length. Preview warnings are stderr diagnostics with exit `0`, so subprocess `check=True` is supported.
+  Add `--strict` to return `1` on warnings; malformed input returns `2`. Seeded restarts explore alternate automatic
+  cycle-breaking/layering and within-group order; explicitly supplied columns stay fixed. Equal output across seeds
+  means no better candidate was found, not that the remaining crossings are unavoidable. More restarts may not help.
+- **Let tmforge place new labels, then verify.** CLI authoring and structural `.tm7` exports try to place new flow
+  labels clear of shapes and other labels by adjusting curve handles. This is not a guarantee that every label fits.
+  A straight-line preview collision can disappear in the generated artifact; do not change evidenced names or flows
+  merely to clear a prediction. The native artifact check, not preview `--strict`, is the delivery gate.
+  Preserving native saves retain existing connector geometry unless edited; they do not automatically tidy the model.
   Confirm the result with `tmforge layout --check <model> --json`; it exits non-zero while any label is still
   covered. When the installed version has no `--check`, use
   the layout checker provided by the loaded `threat-modeling` skill instead.
-- **Split the page before shortening past meaning.** A wider canvas is not available, so when the names cannot get
-  shorter without losing what they say, carry less on one page: split on a boundary that no material flow crosses,
-  since a flow cannot cross pages.
+- **Use explicit page-local views when wrapping is insufficient.** Declare ordered `pages` with stable `PG1`, `PG2`
+  IDs and unique names in the ledger, then assign every boundary and element a `pageId`. Flows inherit the shared
+  endpoint page; cross-page connectors are rejected, not dropped. Split only where no material flow crosses the
+  split. Do not merge request/response flows, remove content, or invent external endpoints just to pass a layout gate.
+
+For an existing alias-keyed manifest, refresh geometry without rewriting its controls or stencil selections:
+
+```bash
+python3 <threat-modeling-skill-directory>/scripts/layout.py analysis.json --manifest model.tm.json --out candidate.tm.json
+python3 <threat-modeling-skill-directory>/scripts/layout.py analysis.json --page PG1 --json
+```
+
+The refresh maps ledger page IDs to manifest `pages[].alias` and `page` on boundaries/elements. It updates all pages;
+`--page` is a preview selector by ID, name, or one-based index. Legacy `--json` returns the alias-to-box map; declared
+pages return `{"pages":[{"id":"PG1","name":"Runtime","boxes":{...},...}]}`. Manifest refresh refuses inventory,
+name, or endpoint mismatches and preserves properties. With `--strict`, warnings leave an existing output untouched.
+
+Preview improvements can become worse native diagrams. For `--manifest` with `--restarts`, pass the same selected
+CLI via `--tmforge '<complete command>'`. The generator applies unseeded and restarted candidates in temporary
+directories and uses the native layout checker. Restarted output must pass and improve without worsening crossings,
+label obstructions, width, or height on any page; otherwise the unseeded candidate is emitted. The comparison is
+reported on stderr. This is final-candidate comparison, not native scoring of every internal permutation.
+
+When invoking layout via `rebuild_package.py --manifest-command`, that command runs in candidate staging cwd.
+Keep package input/output paths relative (for example `--manifest model.tm.json --out model.tm.json`); absolute
+owned-package paths bypass staging. Use an absolute script path, and regenerate `analysis.json` before the rebuild.
+The command is argv, not shell syntax; put multi-step generation in a wrapper script. Missing or unchanged staged
+manifest output fails by default; `--allow-unchanged-manifest` explicitly permits an intended byte-identical rebuild.
+Evidence-claim, baseline, scope-reference, or prose-only ledger edits commonly leave the manifest unchanged: add
+that flag after confirming the edit does not affect generated properties. The command and all downstream checks
+still run. There is no universal manifest-relevant ledger projection for custom commands: evidence changes can
+alter encoded controls, and generators can also depend on external files or configuration.
 
 `tmforge layout` rearranges the whole diagram. Newer versions are trust-boundary aware — every component keeps the
 boundary it was inside, each boundary is resized around its members, and columns wrap instead of running off the
@@ -151,9 +209,10 @@ boundary they belong to and is a semantic regression, not a cosmetic one. Do not
 and after whenever you rearrange. On a model with deliberate placement, prefer `tmforge layout --labels`, which
 places the labels and leaves every shape exactly where the manifest put it.
 
-Carry geometry in the manifest, where it is reviewable and reproducible. Only `x`, `y`, `width`, and
-`height` are honored; `left`, `top`, `posX`, `posY`, and nested `position` objects are silently ignored, so verify
-that placement survived instead of assuming it applied. Resolve the layout generator and checker from the
+Carry geometry in the manifest, where it is reviewable and reproducible. Use `x`, `y`, `width`, and
+`height`; current manifest preflight rejects unknown fields such as `left`, `top`, `posX`, `posY`, and nested
+`position` rather than silently ignoring them. Older binaries can differ, so verify serialized placement.
+Resolve the layout generator and checker from the
 loaded `threat-modeling` skill's bundled resources. Use the generator to derive geometry from the ledger and
 the checker to confirm the result: it fails a diagram whose
 canvas runs past the tool's limit or whose flow label is completely hidden behind a shape, and warns for every label
@@ -194,9 +253,12 @@ For each generated instance, either:
 2. retain it as a real weakness and mirror it in the canonical STRIDE ledger; or
 3. accept/suppress it only with a specific justification supported by the local convention.
 
-Persist generated threats only after review and only when the convention requires it. Persistence may retain older
-manual or triaged entries. After removals or substantial topology changes, regenerate from a clean candidate when
-practical; otherwise remove stale entries explicitly and list the register again.
+Persist generated threats only after review and only when the convention requires it. Generation is additive and may
+retain older manual or triaged entries. Review standing with `list threats`; `threats --remove-stale` keeps triaged
+entries unless explicitly forced and refuses when a stored entry's rule was unavailable. Do not rebuild a model merely
+to clear findings: that can discard author-owned decisions. Native Studio deletion intentionally removes threats scoped
+to deleted objects, flows, or pages, including their decisions; unrelated and model-wide entries remain. Inspect the
+register after topology changes and preserve the source/version history for recovery.
 
 ### Suppression Sidecars
 
@@ -238,8 +300,12 @@ Resolve the script from the bundled sibling `threat-modeling` skill, not from `P
 or the analyzed repository's skills directory.
 
 `--verify` re-runs the analyzer with the sidecar applied and fails unless the residual finding count reaches zero, so
-an entry that parsed but never matched is reported instead of assumed effective. Key the justification map by rule and
-element **name**, never by ledger ID; IDs are positional and renumber when an element is inserted.
+an entry that parsed but never matched is reported instead of assumed effective. The generator's justification-map
+contract uses rule and the **bare ledger name**, not ledger ID or the prefixed display name, for example
+`{"TM1014":{"Snapshot volume":"Evidence-backed justification"}}`. Both `DS1: Snapshot volume` and legacy
+`DS1 Snapshot volume` are accepted for extraction; the original analyzer descriptor is retained byte-for-byte.
+Named pages and subtype stencils are supported. Canonical manifests still use `ALIAS: Name` for model parity.
+Preserve ledger IDs across updates; this lookup convention is not permission to renumber them when inserting an element.
 
 ## Candidate Validation
 
@@ -299,6 +365,6 @@ user intends to rely on them.
 - **Rendering is visually compressed**: use semantic inventories and properties as the correctness source; rendering
   is a topology sanity check.
 - **The model is unreadable in the Microsoft Threat Modeling Tool**: run `tmforge layout --check <model> --json` and
-  the layout checker. Overlapping text is nearly always flow names too long for the gaps they span, not misplaced
-  shapes — shorten the names and keep the sentence in the ledger. Shapes stacked in a corner mean the canvas ran past
-  the tool's coordinate limit and the tool clamped them on load.
+  the page-aware layout checker. Use labels-only placement for collisions on correctly placed shapes; regenerate
+  candidate geometry with the collision-aware generator when shape slots need adjustment. It wraps wide columns;
+  declared pages provide independent canvases. Shorten only genuinely verbose labels, never past their meaning.

@@ -2,9 +2,10 @@ import { useCallback, useRef, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { DfdEdge, DfdNode } from './types';
 
-interface Snapshot {
+interface Snapshot<DocumentState> {
   nodes: DfdNode[];
   edges: DfdEdge[];
+  document?: DocumentState;
 }
 
 const MAX_HISTORY = 50;
@@ -15,19 +16,22 @@ const MAX_HISTORY = 50;
  * redo swap whole graph snapshots. Snapshots are read through refs so the callbacks never close
  * over stale state.
  */
-export function useUndoRedo(
+export function useUndoRedo<DocumentState = undefined>(
   nodes: DfdNode[],
   edges: DfdEdge[],
   setNodes: Dispatch<SetStateAction<DfdNode[]>>,
   setEdges: Dispatch<SetStateAction<DfdEdge[]>>,
+  document?: { value: DocumentState; restore: (value: DocumentState) => void },
 ) {
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   nodesRef.current = nodes;
   edgesRef.current = edges;
+  const documentRef = useRef(document);
+  documentRef.current = document;
 
-  const past = useRef<Snapshot[]>([]);
-  const future = useRef<Snapshot[]>([]);
+  const past = useRef<Snapshot<DocumentState>[]>([]);
+  const future = useRef<Snapshot<DocumentState>[]>([]);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
@@ -37,7 +41,7 @@ export function useUndoRedo(
   }, []);
 
   const takeSnapshot = useCallback(() => {
-    past.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    past.current.push({ nodes: nodesRef.current, edges: edgesRef.current, document: documentRef.current?.value });
     if (past.current.length > MAX_HISTORY) {
       past.current.shift();
     }
@@ -50,9 +54,10 @@ export function useUndoRedo(
     if (!previous) {
       return;
     }
-    future.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    future.current.push({ nodes: nodesRef.current, edges: edgesRef.current, document: documentRef.current?.value });
     setNodes(previous.nodes);
     setEdges(previous.edges);
+    if (previous.document !== undefined) documentRef.current?.restore(previous.document);
     refresh();
   }, [setNodes, setEdges, refresh]);
 
@@ -61,9 +66,10 @@ export function useUndoRedo(
     if (!next) {
       return;
     }
-    past.current.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    past.current.push({ nodes: nodesRef.current, edges: edgesRef.current, document: documentRef.current?.value });
     setNodes(next.nodes);
     setEdges(next.edges);
+    if (next.document !== undefined) documentRef.current?.restore(next.document);
     refresh();
   }, [setNodes, setEdges, refresh]);
 

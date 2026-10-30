@@ -8,9 +8,8 @@ namespace ThreatModelForge.Analysis.Rules
     /// <remarks>
     /// <para>
     /// Every built-in rule advertises a <see cref="Rule.HelpUri"/> that flows through to the CLI,
-    /// SARIF output, the engine API, Studio, and the HTML report. The public repository has not been
-    /// chosen yet, so <see cref="RulesReferenceUrl"/> deliberately uses an <c>OWNER/REPO</c>
-    /// placeholder. Swapping it here — in this one place — updates the help link everywhere.
+    /// SARIF output, the engine API, Studio, and the HTML report. Updating
+    /// <see cref="RulesReferenceUrl"/> changes the documentation link on every surface.
     /// </para>
     /// <para>
     /// The authoritative, human-readable explanation of each rule (what it checks and how to fix a
@@ -26,7 +25,7 @@ namespace ThreatModelForge.Analysis.Rules
         /// The canonical, public documentation page for the built-in rule set.
         /// </summary>
         public const string RulesReferenceUrl =
-            "https://github.com/hacks4snacks/tmforge/blob/main/docs/validation-rules.md";
+            "https://github.com/hacks4snacks/tmforge/blob/main/docs/analysis-rules.md";
 
         /// <summary>
         /// Builds the documentation URL for a single rule.

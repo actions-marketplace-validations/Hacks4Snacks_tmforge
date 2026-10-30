@@ -49,6 +49,54 @@ function otherProcess(id: string, properties: Record<string, string> = {}): DfdN
   return { id, type: 'process', position: { x: 0, y: 0 }, data: { label: id, properties } };
 }
 
+describe('Inspector model notes', () => {
+  it('closes the narrow-screen notes panel without changing notes', () => {
+    const onChangeNotes = vi.fn();
+    const onCloseNotes = vi.fn();
+    render(<Inspector nodes={[]} edges={[]} stencils={[]} propertySchema={[]} notesOpen
+      onCloseNotes={onCloseNotes} onChangeNotes={onChangeNotes} {...handlers()} />);
+
+    expect(screen.getByRole('complementary', { name: 'Model notes' })).toHaveClass('model-notes-open');
+    fireEvent.click(screen.getByRole('button', { name: 'Close model notes' }));
+    fireEvent.keyDown(screen.getByRole('complementary', { name: 'Model notes' }), { key: 'Escape' });
+    expect(onCloseNotes).toHaveBeenCalledTimes(2);
+    expect(onChangeNotes).not.toHaveBeenCalled();
+  });
+
+  it('adds a note with an unused native ID and no invented author', () => {
+    const onChangeNotes = vi.fn();
+    const callbacks = handlers();
+    const notes = [1, 3].map(id => ({ id, message: `Existing ${id}`, date: '2026-09-30T12:00:00Z' }));
+    render(<Inspector nodes={[]} edges={[]} stencils={[]} propertySchema={[]} notes={notes} onChangeNotes={onChangeNotes} {...callbacks} />);
+
+    expect(onChangeNotes).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Add note' }));
+
+    expect(callbacks.onBeginNameEdit).toHaveBeenCalledOnce();
+    expect(onChangeNotes).toHaveBeenCalledWith([...notes, { id: 2, message: '', date: expect.any(String) }]);
+    expect(onChangeNotes.mock.calls[0][0][2].addedBy).toBeUndefined();
+  });
+
+  it('edits multiline text and author without replacing the original timestamp, and removes only that note', () => {
+    const onChangeNotes = vi.fn();
+    const callbacks = handlers();
+    const note = { id: 7, message: 'Original', date: '2026-09-30T12:00:00.1234567Z', addedBy: 'Reviewer' };
+    const other = { id: 8, message: 'Keep this', date: '0001-01-01T00:00:00' };
+    render(<Inspector nodes={[]} edges={[]} stencils={[]} propertySchema={[]} notes={[note, other]} onChangeNotes={onChangeNotes} {...callbacks} />);
+
+    fireEvent.focus(screen.getByLabelText('Note 7 text'));
+    fireEvent.change(screen.getByLabelText('Note 7 text'), { target: { value: 'Scope\nEvidence <review>' } });
+    expect(callbacks.onBeginNameEdit).toHaveBeenCalledOnce();
+    expect(onChangeNotes).toHaveBeenLastCalledWith([{ ...note, message: 'Scope\nEvidence <review>' }, other]);
+    fireEvent.change(screen.getByLabelText('Note 7 author'), { target: { value: 'Author' } });
+    expect(onChangeNotes).toHaveBeenLastCalledWith([{ ...note, addedBy: 'Author' }, other]);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete note 7' }));
+    expect(onChangeNotes).toHaveBeenLastCalledWith([other]);
+    expect(note.message).toBe('Original');
+    expect(screen.getByText('Date not recorded')).toBeInTheDocument();
+  });
+});
+
 describe('Inspector — data flow', () => {
   it('renders a typed control for every flow schema property (incl. the previously-missing Port/Algorithm)', () => {
     const h = handlers();

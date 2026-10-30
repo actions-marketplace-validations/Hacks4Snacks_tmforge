@@ -1,0 +1,31 @@
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ask about installation, modeling, rule behavior, formats, or integrations. Search existing discussions and the [documentation](https://github.com/Hacks4Snacks/tmforge/blob/main/docs/README.md) first.
+        For reproducible product defects, use the [bug report form](https://github.com/Hacks4Snacks/tmforge/issues/new?template=bug_report.yml).
+        Report suspected vulnerabilities [privately](https://github.com/Hacks4Snacks/tmforge/security/advisories/new). Keep questions and attachments free of secrets and confidential model content.
+  - type: textarea
+    id: question
+    attributes:
+      label: What are you trying to do?
+      description: Describe your goal and the specific question you need answered.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Interface and environment
+      description: Include the tmforge, extension, or plugin version; OS; browser/editor; and model format as relevant. For browser Studio, say whether it uses WASM or an HTTP API, or say if you are unsure.
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include relevant commands, documentation, and the result you observed. It is fine to say you are not sure where to start.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Minimal example or additional context
+      description: Paste a small synthetic example or attach sanitized logs, a model, or screenshots. Include rule IDs or error messages where useful. If an extension is rejected, use a ZIP or .txt copy and state the original format.

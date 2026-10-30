@@ -26,6 +26,8 @@ CLI_IMAGE    ?= tmforge-cli
 API_IMAGE    ?= tmforge
 PLATFORMS    ?= linux/amd64,linux/arm64
 PORT         ?= 8080
+NUGET_FEED   ?= https://api.nuget.org/v3/index.json
+NPM_REGISTRY ?= https://registry.npmjs.org/
 
 # Self-contained single-file publish targets (the release.yml RID matrix).
 RIDS         := linux-x64 linux-arm64 win-x64 win-arm64 osx-x64 osx-arm64
@@ -159,10 +161,13 @@ run-api: ## Run the /v1 engine API + Studio locally (default port 8080)
 docker: docker-cli docker-api ## Build both container images locally
 
 docker-cli: ## Build the CLI image (tmforge-cli)
-	docker build -f build/Dockerfile -t $(CLI_IMAGE):$(VERSION) -t $(CLI_IMAGE):latest .
+	docker build -f build/Dockerfile --build-arg NUGET_FEED="$(NUGET_FEED)" \
+		-t $(CLI_IMAGE):$(VERSION) -t $(CLI_IMAGE):latest .
 
 docker-api: ## Build the API + Studio image (tmforge)
-	docker build -f build/Dockerfile.api -t $(API_IMAGE):$(VERSION) -t $(API_IMAGE):latest .
+	docker build -f build/Dockerfile.api --build-arg NUGET_FEED="$(NUGET_FEED)" \
+		--build-arg NPM_REGISTRY="$(NPM_REGISTRY)" \
+		-t $(API_IMAGE):$(VERSION) -t $(API_IMAGE):latest .
 
 docker-run: docker-api ## Run the API image (default port 8080)
 	docker run --rm -p $(PORT):8080 $(API_IMAGE):$(VERSION)
@@ -175,11 +180,13 @@ docker-push: docker-push-cli docker-push-api ## Build+push both multi-arch image
 
 docker-push-cli: ## Build+push the multi-arch CLI image to GHCR
 	docker buildx build -f build/Dockerfile --platform $(PLATFORMS) \
+		--build-arg NUGET_FEED="$(NUGET_FEED)" \
 		-t $(REGISTRY)/$(OWNER)/$(CLI_IMAGE):$(VERSION) \
 		-t $(REGISTRY)/$(OWNER)/$(CLI_IMAGE):latest --push .
 
 docker-push-api: ## Build+push the multi-arch API image to GHCR
 	docker buildx build -f build/Dockerfile.api --platform $(PLATFORMS) \
+		--build-arg NUGET_FEED="$(NUGET_FEED)" --build-arg NPM_REGISTRY="$(NPM_REGISTRY)" \
 		-t $(REGISTRY)/$(OWNER)/$(API_IMAGE):$(VERSION) \
 		-t $(REGISTRY)/$(OWNER)/$(API_IMAGE):latest --push .
 

@@ -204,16 +204,55 @@ namespace ThreatModelForge.Cli.Tests
             CollectionAssert.AreEqual(original, File.ReadAllBytes(input));
         }
 
-        /// <summary>An import-only destination is refused without truncating the selected file.</summary>
+        /// <summary>Unsupported export content is refused without truncating the selected file.</summary>
         [TestMethod]
         public void ThreatDragonExportDoesNotOverwriteAnExistingFile()
         {
             string input = this.WriteInput();
+            File.WriteAllText(input, SampleJson.Replace("\"name\":\"Web App\"", "\"name\":\"Web App\",\"properties\":{\"UnsupportedControl\":\"Yes\"}"));
             byte[] original = File.ReadAllBytes(input);
 
             Assert.AreEqual(1, Program.Main(new[] { "convert", input, "--to", "threat-dragon", "--out", input }));
 
             CollectionAssert.AreEqual(original, File.ReadAllBytes(input));
+        }
+
+        /// <summary>A canonical import exports to v2 and reimports with the same identities and threats.</summary>
+        [TestMethod]
+        public void ExportsThreatDragonFromCanonicalImport()
+        {
+            string input = Path.Join(this.WorkingDirectory, "dragon.json");
+            File.Copy(Path.Join(AppContext.BaseDirectory, "Fixtures", "threat-dragon-v2.json"), input);
+            byte[] originalBytes = File.ReadAllBytes(input);
+            string canonical = Path.Join(this.WorkingDirectory, "imported.tmforge.json");
+            string output = Path.Join(this.WorkingDirectory, "exported.threatdragon.json");
+            Assert.AreEqual(0, ConvertCommand.Run(new[] { input, "--to", "tmforge-json", "--out", canonical }));
+            Assert.AreEqual(0, ConvertCommand.Run(new[] { canonical, "--out", output }));
+
+            ThreatModelFormatRegistry registry = ThreatModelFormatRegistry.CreateDefault();
+            ThreatModel original = registry.Load(input);
+            ThreatModel restored = registry.Load(output);
+            CollectionAssert.AreEqual(original.DrawingSurfaceList.Select(page => page.Guid).ToArray(), restored.DrawingSurfaceList.Select(page => page.Guid).ToArray());
+            CollectionAssert.AreEquivalent(original.AllThreatsDictionary.Keys.ToArray(), restored.AllThreatsDictionary.Keys.ToArray());
+            Assert.AreEqual(
+                original.AllThreatsDictionary["manual:threat-dragon.linkability"].StateInformation,
+                restored.AllThreatsDictionary["manual:threat-dragon.linkability"].StateInformation);
+            CollectionAssert.AreEqual(originalBytes, File.ReadAllBytes(input));
+            byte[] first = File.ReadAllBytes(output);
+            Assert.AreEqual(0, ConvertCommand.Run(new[] { canonical, "--out", output }));
+            CollectionAssert.AreEqual(first, File.ReadAllBytes(output));
+        }
+
+        /// <summary>Unsupported rule selections are reported before any destination is created.</summary>
+        [TestMethod]
+        public void ThreatDragonExportRejectsAnalysisSettings()
+        {
+            string input = this.WriteInput();
+            File.WriteAllText(input, SampleJson.Replace("\"version\":\"0.1\"", "\"version\":\"0.1\",\"analysis\":{\"disabledPacks\":[\"identity-access\"]}"));
+            string output = Path.Join(this.WorkingDirectory, "blocked.threatdragon.json");
+
+            Assert.AreEqual(1, ConvertCommand.Run(new[] { input, "--out", output }));
+            Assert.IsFalse(File.Exists(output));
         }
 
         /// <summary>Preflight emits structured diagnostics without creating or changing files.</summary>

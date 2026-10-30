@@ -225,6 +225,9 @@ namespace ThreatModelForge.Analysis
 
             string key = ResolveManualKey(model, id);
             (Guid source, Guid target, Guid flow) = ResolveScope(elementIds);
+            DrawingSurfaceModel? scopedPage = model.DrawingSurfaceList.FirstOrDefault(page =>
+                page.Borders.ContainsKey(source) || page.Lines.ContainsKey(source)
+                || page.Lines.ContainsKey(flow));
             Threat threat = new Threat
             {
                 Id = NextThreatId(model),
@@ -232,7 +235,7 @@ namespace ThreatModelForge.Analysis
                 SourceGuid = source,
                 TargetGuid = target,
                 FlowGuid = flow,
-                DrawingSurfaceGuid = FirstSurfaceGuid(model),
+                DrawingSurfaceGuid = scopedPage?.Guid ?? FirstSurfaceGuid(model),
                 State = state,
                 InteractionKey = key,
                 Title = title,
@@ -341,6 +344,7 @@ namespace ThreatModelForge.Analysis
             if (description != null)
             {
                 threat.UserThreatDescription = description.Length == 0 ? null : description;
+                threat.Properties?.Remove(ThreatMetaDataContract.DescriptionName);
             }
 
             if (mitigation != null)

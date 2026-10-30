@@ -115,6 +115,20 @@ namespace ThreatModelForge.Analysis.Rules.Tests
         }
 
         /// <summary>
+        /// Tests that built-in help links target the published rule guide and retain rule identity.
+        /// </summary>
+        [TestMethod]
+        public void HelpUrisPointToAnalysisGuideTest()
+        {
+            foreach (Rule rule in GetInstancesOfEachRule())
+            {
+                Assert.AreEqual(
+                    new Uri($"https://github.com/hacks4snacks/tmforge/blob/main/docs/analysis-rules.md?rule={rule.ID}"),
+                    rule.HelpUri);
+            }
+        }
+
+        /// <summary>
         /// Tests that each rule has its own ID.
         /// </summary>
         [TestMethod]

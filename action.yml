@@ -93,7 +93,7 @@ inputs:
     default: .tmforge-sarif
   upload-report:
     description: >-
-      Upload the generated findings reports (SARIF, HTML, and JSON) as a workflow artifact. The SARIF
+      Upload the generated findings reports (SARIF, HTML, Markdown, and JSON) as a workflow artifact. The SARIF
       already reaches code scanning; this is for keeping the human-readable report with the run.
     required: false
     default: "false"
@@ -133,6 +133,13 @@ inputs:
       review is informational and never gates the build.
     required: false
     default: "off"
+  review-format:
+    description: >-
+      Review body: 'summary' for the change summary, or 'md' to also include current findings Markdown
+      for changed models. Large reports are omitted from the comment; enable 'upload-report' to retain
+      complete per-model .findings.md artifacts. Requires a CLI image supporting Markdown reports.
+    required: false
+    default: summary
   review-comment:
     description: >-
       Keep a single pull-request comment up to date with the review summary. Requires
@@ -600,6 +607,7 @@ runs:
         REVIEW_RULES: ${{ inputs.rules }}
         REVIEW_RULESET: ${{ inputs.ruleset }}
         REVIEW_SUPPRESSIONS: ${{ inputs.suppression-file }}
+        REVIEW_FORMAT: ${{ inputs.review-format }}
       run: |
         set -uo pipefail
 
@@ -883,6 +891,29 @@ runs:
           fi
         } > "$REVIEW_DIR/review.md"
 
+        if [[ "${REVIEW_FORMAT:-summary}" == "md" ]]; then
+          omitted=0
+          missing=0
+          while IFS= read -r model; do
+            stem=$(basename -- "$model"); stem="${stem%.*}"
+            markdown="$REVIEW_DIR/$stem.findings.md"
+            if [[ ! -f "$markdown" ]]; then
+              missing=$((missing + 1))
+            elif (( $(wc -c < "$REVIEW_DIR/review.md") + $(wc -c < "$markdown") < 55000 )); then
+              printf '\n---\n\n' >> "$REVIEW_DIR/review.md"
+              cat -- "$markdown" >> "$REVIEW_DIR/review.md"
+            else
+              omitted=$((omitted + 1))
+            fi
+          done < <(jq -r 'sort_by(.model)[] | select(.change != "removed") | .model' <<< "$results")
+          if (( omitted > 0 )); then
+            printf '\n%d Markdown report(s) omitted to keep the comment bounded. Complete .findings.md files are in the reports directory; enable upload-report to publish them.\n' "$omitted" >> "$REVIEW_DIR/review.md"
+          fi
+          if (( missing > 0 )); then
+            printf '\n%d Markdown report(s) unavailable. Check analysis output and use a CLI image supporting Markdown reports.\n' "$missing" >> "$REVIEW_DIR/review.md"
+          fi
+        fi
+
         cat "$REVIEW_DIR/review.md" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
         emit reviewed "$changed"
         echo "Reviewed $changed changed threat model(s)."
@@ -941,6 +972,10 @@ runs:
           text="$marker"$'\n'"### Threat model review"$'\n\n'"No threat models changed in this pull request."
         fi
 
+        if (( $(printf '%s' "$text" | wc -c) > 60000 )); then
+          text="$marker"$'\n'"### Threat model review"$'\n\n'"The review exceeds the comment size limit. See the workflow summary and reports; enable upload-report to publish complete artifacts."
+        fi
+
         payload=$(jq -n --arg body "$text" '{body: $body}')
         response=$(mktemp)
 
@@ -976,7 +1011,7 @@ runs:
     - name: Upload SARIF to code scanning
       # Runs even when analysis found issues, so results always reach the Security tab before the gate.
       if: ${{ always() && inputs.upload-sarif == 'true' }}
-      uses: github/codeql-action/upload-sarif@v4.38.0
+      uses: github/codeql-action/upload-sarif@v4.38.3
       with:
         sarif_file: ${{ inputs.sarif-directory }}
         category: ${{ inputs.category }}

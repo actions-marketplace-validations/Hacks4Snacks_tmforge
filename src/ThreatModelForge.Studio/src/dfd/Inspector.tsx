@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { DfdEdge, DfdNode } from './types';
+import type { DfdEdge, DfdNode, TmForgeNote } from './types';
 import type { PropertyDescriptorInfo, StencilInfo } from './engineClient';
 
 const KIND_LABEL: Record<string, string> = {
@@ -65,6 +65,10 @@ interface InspectorProps {
   stencils: StencilInfo[];
   /** The typed property schema, so element properties render as dropdowns/checkboxes with canonical values. */
   propertySchema: PropertyDescriptorInfo[];
+  notes?: TmForgeNote[];
+  notesOpen?: boolean;
+  onCloseNotes?: () => void;
+  onChangeNotes?: (notes: TmForgeNote[]) => void;
   /** Called when a name edit begins, so a single undo step covers the whole edit. */
   onBeginNameEdit: () => void;
   onRenameNode: (id: string, label: string) => void;
@@ -225,6 +229,60 @@ export function Inspector(props: InspectorProps) {
   const nodeIds = nodes.map((n) => n.id);
   const edgeIds = edges.map((e) => e.id);
   const total = nodes.length + edges.length;
+
+  if (total === 0 && props.onChangeNotes) {
+    const notes = props.notes ?? [];
+    const changeNotes = props.onChangeNotes;
+    return (
+      <aside className={`inspector model-notes${props.notesOpen ? ' model-notes-open' : ''}`} aria-label="Model notes"
+        onKeyDown={event => {
+          if (event.key === 'Escape' && props.notesOpen) {
+            event.stopPropagation();
+            props.onCloseNotes?.();
+          }
+        }}>
+        <div className="model-note-heading">
+          <h2 className="inspector-title">Model notes</h2>
+          {props.onCloseNotes && <button className="inspector-prop-del model-notes-close" title="Close model notes"
+            aria-label="Close model notes" onClick={props.onCloseNotes}>&#215;</button>}
+        </div>
+        <button className="btn" onClick={() => {
+          const ids = new Set(notes.map(note => note.id));
+          let id = 1;
+          while (ids.has(id)) id++;
+          props.onBeginNameEdit();
+          changeNotes([...notes, { id, message: '', date: new Date().toISOString() }]);
+        }}>Add note</button>
+        {notes.length === 0 && <p className="inspector-empty">No model notes.</p>}
+        {notes.map((note, index) => (
+          <section className="model-note" key={`${index}:${note.id}`} aria-label={`Note ${note.id}`}>
+            <div className="model-note-heading">
+              <span>Note {note.id}</span>
+              <button className="inspector-prop-del" title={`Delete note ${note.id}`} aria-label={`Delete note ${note.id}`} onClick={() => {
+                props.onBeginNameEdit();
+                changeNotes(notes.filter((_, position) => position !== index));
+              }}>&#215;</button>
+            </div>
+            <time className="model-note-date" dateTime={note.date} title={note.date}>
+              {note.date.startsWith('0001-01-01') ? 'Date not recorded' : new Date(note.date).toLocaleString()}
+            </time>
+            <label className="inspector-field">
+              <span>Note</span>
+              <textarea rows={5} aria-label={`Note ${note.id} text`} value={note.message ?? ''}
+                onFocus={props.onBeginNameEdit}
+                onChange={event => changeNotes(notes.map((entry, position) => position === index ? { ...entry, message: event.target.value } : entry))} />
+            </label>
+            <label className="inspector-field">
+              <span>Author</span>
+              <input aria-label={`Note ${note.id} author`} value={note.addedBy ?? ''}
+                onFocus={props.onBeginNameEdit}
+                onChange={event => changeNotes(notes.map((entry, position) => position === index ? { ...entry, addedBy: event.target.value || undefined } : entry))} />
+            </label>
+          </section>
+        ))}
+      </aside>
+    );
+  }
 
   if (total === 0) {
     return (

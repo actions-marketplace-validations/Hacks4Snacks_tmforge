@@ -10,28 +10,30 @@ code, in your browser, your terminal, and your CI pipeline.**
 
 The Microsoft Threat Modeling Tool (MTMT) is Windows-only, GUI-only, and can't run in a pipeline.
 Threat Model Forge keeps its file format, reading and writing `.tm7` files **byte-for-byte
-losslessly**, and removes everything else: author models in a browser Studio or a headless CLI,
+unchanged for native no-op saves**, while preserving unrelated native content when editing. Author
+models in browser or VS Code Studio or a headless CLI,
 diff and merge them like source code, analyze them against **built-in security and hygiene
 rules**, and gate a build on the result. No Windows, no GUI required.
 
 **Try it now, no install:** the full editor and validation engine run client-side (WebAssembly) at
-**[hacks4snacks.github.io/tmforge](https://hacks4snacks.github.io/tmforge/)**. Your model never
-leaves the page.
+**[hacks4snacks.github.io/tmforge](https://hacks4snacks.github.io/tmforge/)**. Model processing stays
+in your browser; saving, exporting, or sharing a model is an explicit action.
 
 ## Why tmforge
 
-- **Your existing models just work.** Lossless, byte-for-byte `.tm7` compatibility means models
-  move between tmforge and MTMT with zero drift; migration is opening the file.
+- **Keep native models native.** Open and edit `.tm7` without converting it to another format.
+  No-op native saves retain the source bytes; edited saves preserve unrelated native content but
+  may change XML formatting. [Fidelity and limits](docs/formats.md) are documented per format.
 - **Threat modeling as code.** Models live in git like everything else: semantic `diff`, a
   three-way `merge` driver, declarative `apply`/`export` manifests, and `--json` output with a
-  stable, versioned envelope on every command for scripts, pipelines, and AI agents.
+  stable, versioned envelope on supported model commands for scripts, pipelines, and AI agents.
 - **CI-grade validation.** Rule packs for core hygiene, STRIDE completeness, input validation,
   data protection, transport security, and identity & access, with SARIF + HTML reports and a
   distinct exit code for "found issues" you can gate a build on.
-- **Three ways to drive one engine.** A React browser **Studio**, a scriptable **CLI**, and a
-  versioned **HTTP API**, all over the same canonical `.tm7`-shaped model.
+- **One engine across tools.** Browser **Studio**, **VS Code**, a scriptable **CLI** with MCP tools,
+  and a versioned **HTTP API** share the same .NET engine.
 - **Multi-format.** Import/export **draw.io** and **Visio** (`.vsdx`) alongside `.tm7` and a
-  canonical JSON wire format.
+  canonical JSON wire format; import bounded subsets of Threat Dragon, Mermaid, and Graphviz DOT.
 - **Zero-runtime install.** Self-contained, single-file binaries for six platforms, or one
   container for the API + Studio.
 
@@ -44,8 +46,14 @@ leaves the page.
 [build it yourself](#containers)):
 
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/hacks4snacks/tmforge     # then open http://localhost:8080/
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/hacks4snacks/tmforge  # http://localhost:8080/
 ```
+
+The API has no built-in authentication. Read the [security posture](docs/deployment.md#security-posture)
+before exposing it to other users.
+
+**In VS Code:** install **Threat Model Forge** (`hacks4snacks.tmforge`), or install the release VSIX,
+then open a `.tm7` or `.tmforge.json` file. See the [extension guide](src/ThreatModelForge.Vscode/README.md).
 
 **In the terminal:** with `tmforge` on your `PATH` (see [Install](#install)):
 
@@ -54,7 +62,7 @@ tmforge new payments.tm7 --name "Payments"
 tmforge add process payments.tm7 --name "Checkout API"
 tmforge add store payments.tm7 --name "Orders DB"
 tmforge add boundary payments.tm7 --name "Azure VNet"
-tmforge analyze payments.tm7                    # analyze: exits 2 on findings, CI-ready
+tmforge analyze payments.tm7 --max-severity warning  # exits 2 on warning/error findings
 tmforge report payments.tm7 --out payments.html
 ```
 
@@ -68,13 +76,14 @@ open as-is; see [Formats & interoperability](docs/formats.md).
   bend connectors; organize a model across multiple pages.
 - **Author headlessly** from the CLI (`new`, `add`, `connect`, `set`, ...) or the API, so agents
   and pipelines build models with no GUI.
-- **Read & write `.tm7` losslessly**, byte-for-byte compatible with MTMT.
+- **Preserve native `.tm7` data**, including templates and unaffected threat decisions during native editing.
 - **Version like code**: semantic `diff`, three-way `merge`, and `git-setup` to wire both into
   your repo, plus declarative `apply`/`export` manifests for reproducible models.
 - **Convert** between `.tm7`, `tmforge-json`, draw.io, and Visio.
-- **Import OWASP Threat Dragon v2 JSON** with stable identities and authored threats. The initial
-  [bounded subset](docs/formats.md#threat-dragon-owasp-threat-dragon-v2-import) supports rectangular
-  boundaries and directed flows; native Threat Dragon export is not supported.
+- **Import Mermaid flowcharts and Graphviz DOT** as starter models with explicit mapping assumptions.
+- **Import and export OWASP Threat Dragon v2 JSON** with stable imported identities and authored threats.
+  The [bounded subset](docs/formats.md#threat-dragon-owasp-threat-dragon-v2) supports rectangular
+  boundaries and directed flows; unsupported content is refused with a specific reason.
 - **Report** to self-contained HTML (with inline SVG diagrams), or `render` the diagram right
   in your terminal.
 - **Analyze in CI** with the `tmforge` CLI (`tmforge analyze`), gating builds on SARIF-reported
@@ -92,7 +101,7 @@ Full user documentation lives in [`docs/`](docs/README.md):
   [Installation](docs/installation.md)
 - [CLI reference](docs/cli-reference.md) · [Studio guide](docs/studio-guide.md) ·
   [Engine API reference](docs/api-reference.md)
-- [Formats & interoperability](docs/formats.md) · [Validation rules & CI](docs/validation-rules.md) ·
+- [Formats & interoperability](docs/formats.md) · [Analysis rules & CI](docs/analysis-rules.md) ·
   [Deployment](docs/deployment.md)
 
 ## Install
@@ -107,29 +116,29 @@ attached to each GitHub Release for six platforms:
 | Windows | `tmforge-<ver>-win-x64.zip`      | `tmforge-<ver>-win-arm64.zip`      |
 
 ```bash
-# Linux/macOS (adjust OWNER/REPO, version, and RID)
-curl -fsSL -o tmforge.tar.gz \
-  https://github.com/hacks4snacks/tmforge/releases/download/v0.1.0/tmforge-0.1.0-linux-x64.tar.gz
-tar -xzf tmforge.tar.gz
-./tmforge-0.1.0-linux-x64/tmforge --version
+# Linux example; select the version and RID for your platform.
+base=https://github.com/hacks4snacks/tmforge/releases/download/v0.12.0
+curl -fsSLO "$base/tmforge-0.12.0-linux-x64.tar.gz" &&
+curl -fsSLO "$base/checksums.txt" &&
+grep -F '  tmforge-0.12.0-linux-x64.tar.gz' checksums.txt | sha256sum -c - &&
+tar -xzf tmforge-0.12.0-linux-x64.tar.gz &&
+./tmforge-0.12.0-linux-x64/tmforge --version
 ```
 
-Each release also ships `checksums.txt` (SHA-256) and `release-metadata.json`; verify with
-`sha256sum -c checksums.txt`.
+Each release also ships `checksums.txt` (SHA-256) and `release-metadata.json`.
+[Verify the downloaded archive before extracting or executing it](docs/installation.md#verify-the-download).
 
 **Platform notes.** Linux binaries target a **glibc** baseline (not musl/Alpine). macOS binaries
-are **not code-signed or notarized**. Clear the quarantine attribute before first run:
-
-```bash
-xattr -d com.apple.quarantine ./tmforge
-```
+are **not code-signed or notarized**. Follow the [platform notes](docs/installation.md#platform-notes)
+if macOS blocks a verified download; changing Gatekeeper policy is not a prerequisite.
 
 Prefer a runtime-present install? Use the [container image](#containers) or the RID-agnostic
 global tool (`dotnet pack -p:PackTools=true`).
 
 ## Build & test
 
-Requires the .NET SDK pinned in [`global.json`](global.json).
+Requires the .NET SDK pinned in [`global.json`](global.json) and Node.js 22.12+ with npm for Studio.
+Use `-p:BuildStudio=false` for a .NET-only build/test loop; that does not build the browser UI.
 
 ```bash
 dotnet build dirs.proj
@@ -146,13 +155,13 @@ Pull the published multi-arch images from GitHub Container Registry:
 
 ```bash
 # Engine API + Studio SPA (React): the /v1 API serves the SPA at /
-docker run --rm -p 8080:8080 ghcr.io/hacks4snacks/tmforge               # -> http://localhost:8080/
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/hacks4snacks/tmforge  # http://localhost:8080/
 
 # CLI tool
-docker run --rm -v "$PWD:/work" ghcr.io/hacks4snacks/tmforge-cli tmforge analyze model.tm7
+docker run --rm -v "$PWD:/work" ghcr.io/hacks4snacks/tmforge-cli analyze model.tm7
 ```
 
-Published tags include `latest`, the release version (e.g. `0.1.0`), `0.1`, and `edge` (latest
+Published tags include `latest`, the release version (e.g. `0.12.0`), `0.12`, and `edge` (latest
 `main`). Prefer to build locally?
 
 ```bash
@@ -167,12 +176,17 @@ Both Dockerfiles build from the repo root and target the real `src/` layout.
 ```text
 docs/              Project documentation
 build/             Dockerfile (CLI) + Dockerfile.api (engine API + Studio SPA)
-src/               libraries, the `tmforge` CLI, the engine API, and the React Studio SPA
+src/               shared libraries, CLI/MCP, engine API, browser Studio, and VS Code extension
 test/              one *.Tests project per shipping library
 ```
 
 `ThreatModelForge.slnx` lists every project for IDE users; the build is driven by `dirs.proj`
 (`Microsoft.Build.Traversal`), which fans out to `src/dirs.proj` and `test/dirs.proj`.
+
+## Security
+
+Report vulnerabilities privately using the [security policy](SECURITY.md). For shared hosting,
+read the [API security posture](docs/deployment.md#security-posture).
 
 ## License
 

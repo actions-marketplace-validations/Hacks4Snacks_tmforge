@@ -485,6 +485,37 @@
         }
       }
     },
+    "/v1/model/save/tm7": {
+      "post": {
+        "tags": [
+          "Model"
+        ],
+        "summary": "Applies edits while preserving the original native TM7 document.",
+        "operationId": "SaveNativeTm7",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeTm7SaveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/model/read": {
       "post": {
         "tags": [
@@ -547,6 +578,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PreflightResultDto"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/model/recover/tm7": {
+      "post": {
+        "tags": [
+          "Model"
+        ],
+        "summary": "Creates a separate canonical recovery copy of a TM7 with unresolved flow endpoints.",
+        "description": "Requires explicit recovery consent. Omits unresolved flows and their scoped threats; native-only content remains in the source. Other structural errors are not overridable.",
+        "operationId": "RecoverTm7",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileContentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TmForgeModelDto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
                 }
               }
             }
@@ -1529,6 +1602,64 @@
           }
         }
       },
+      "NativeTm7SaveRequest": {
+        "type": "object",
+        "properties": {
+          "contentBase64": {
+            "type": "string"
+          },
+          "previousContentBase64": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "model": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TmForgeModelDto"
+              }
+            ]
+          }
+        }
+      },
+      "Note": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "Gets or sets the note identifier.",
+            "format": "int32"
+          },
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the note text."
+          },
+          "date": {
+            "type": "string",
+            "description": "Gets or sets the time the note was recorded.",
+            "format": "date-time"
+          },
+          "addedBy": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "description": "Gets or sets the author of the note."
+          }
+        },
+        "description": "A free-text note recorded against the threat model."
+      },
       "PackDto": {
         "type": "object",
         "properties": {
@@ -1558,6 +1689,9 @@
           "success": {
             "type": "boolean"
           },
+          "canRecover": {
+            "type": "boolean"
+          },
           "format": {
             "type": [
               "null",
@@ -1575,6 +1709,44 @@
             "items": {
               "$ref": "#/components/schemas/DocumentDiagnostic"
             }
+          }
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "status": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "detail": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "instance": {
+            "type": [
+              "null",
+              "string"
+            ]
           }
         }
       },
@@ -2067,6 +2239,15 @@
           "name": {
             "type": "string"
           },
+          "source": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "elements": {
             "type": [
               "null",
@@ -2162,6 +2343,28 @@
               "string"
             ]
           },
+          "labelOffset": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TmForgePointDto"
+              }
+            ]
+          },
+          "sourceHandle": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "targetHandle": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "properties": {
             "type": "object",
             "additionalProperties": {
@@ -2194,6 +2397,15 @@
                 "$ref": "#/components/schemas/MetaInformation"
               }
             ]
+          },
+          "notes": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Note"
+            }
           },
           "elements": {
             "type": [
@@ -2240,6 +2452,27 @@
             "items": {
               "$ref": "#/components/schemas/ThreatStateDto"
             }
+          }
+        }
+      },
+      "TmForgePointDto": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "y": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
           }
         }
       }

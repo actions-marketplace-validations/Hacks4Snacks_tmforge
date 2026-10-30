@@ -62,7 +62,7 @@ Record the convention and create/update/append/replace decision in the completio
 ## Locate the Tool
 
 Honor an explicitly selected executable or wrapper first and record its version. Otherwise use the managed launcher,
-which pins the CLI to this installed plugin's version rather than choosing an arbitrary binary from `PATH`.
+which selects the immutable CLI release matching this installed plugin's version rather than an arbitrary binary from `PATH`.
 
 1. Run a local-only status check:
 
@@ -83,12 +83,12 @@ which pins the CLI to this installed plugin's version rather than choosing an ar
    python3 "<skill-directory>/scripts/tmforge.py" -- --version
    ```
 
-The launcher verifies the release archive's SHA-256 and size, extracts only the expected executable, and records a
+The launcher requires matching release metadata and verifies its archive SHA-256 and size, extracts only the expected executable, and records a
 binary digest checked on reuse. It supports Linux (glibc), macOS, and Windows on x64 and arm64. Use `--cache-dir` before
 `--` to select a different writable cache outside the plugin; use the same location for every invocation.
 
 Status checks and normal CLI invocations never download. A missing or modified cache entry fails with an installation
-hint; a plugin version change requires approval for that version's first download. No `PATH`, system installation,
+hint; a plugin version change requires approval for that version's first download. Never fall back to an older CLI when the matching release is unavailable. No `PATH`, system installation,
 or .NET runtime changes are made. A user-selected existing CLI remains available for offline or restricted hosts.
 
 Pass the complete chosen invocation to all core validators using `--tmforge`, including the interpreter, quoted

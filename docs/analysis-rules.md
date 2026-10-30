@@ -2,7 +2,11 @@
 
 Threat Model Forge ships a built-in rule set that runs against any model and flags completeness,
 diagram-hygiene, and security-property issues. The same engine backs `tmforge analyze`, Studio's
-**Analyze** button, and the API's `POST /v1/model/analyze`.
+HTTP/WASM **Analyze** action, and the API's `/v1/model/analyze` and combined `/v1/model/analysis` endpoints.
+
+Rules inspect recorded model properties and topology, not deployed controls. A clean gate is not a
+security assessment of the running system. Change properties to match evidence; do not assert a
+control merely to clear its finding.
 
 ## Running analysis
 
@@ -126,9 +130,8 @@ clear it:
 - **CLI / API**: `GET /v1/rules` returns each rule's `description`, `helpText`, and `helpUri`, and
   both the HTML report and SARIF carry the rule's `helpUri` for code-scanning dashboards.
 
-Each rule also advertises a documentation link (`helpUri`) that points back at this page. The public
-docs URL is still being finalized, so that external link goes live once the repository is published.
-The in-app description and fix guidance never depend on it.
+Each rule also advertises a documentation link (`helpUri`). The in-app description and fix guidance
+ship with the engine and do not require the external documentation site to be reachable.
 
 ## Fixing findings
 
@@ -182,7 +185,9 @@ migration, because those values are statements an author made.
 
 When a model is loaded from the native **`tmforge-json`** format, any embedded analysis selection
 (disabled packs or rule ids) is honored automatically, so a model can carry its own policy. Other
-formats (for example `.tm7`) use the full rule set unless you pass an explicit `--ruleset`.
+formats (for example `.tm7`) use the full rule set unless you pass an explicit `--ruleset` in the CLI.
+Studio's native-save extension retains its own selection for Studio recovery, but the CLI's selection
+reader does not consume that extension. Use canonical JSON or an explicit CLI ruleset for that gate.
 
 ### Custom rule set file
 
@@ -445,8 +450,9 @@ array, and each rule may declare its own `pack` value:
 }
 ```
 
-For both versions, a finding is raised for each element of `appliesTo` that matches `when` (the
+For legacy and version 2 **flat** rules, a finding is raised for each element of `appliesTo` that matches `when` (the
 guard) and fails `assert` (the requirement); at least one of `when`/`assert` is required.
+Interaction-dialect rules instead report when their `expression` matches the interaction.
 
 The `{name}` token in `message` is replaced with the element's display text. **Conditions** (`when`
 and `assert`) are facets that must *all* hold; a bare `property` with no value matcher means "must be
@@ -595,8 +601,8 @@ Filter known/accepted findings with a suppression document:
 tmforge analyze model.tm7 --suppressionFile ./suppressions.json
 ```
 
-Suppressions are matched per model path and applied before evaluation, so suppressed findings don't
-affect the exit code.
+Suppressions are matched per model path. Matching findings are marked suppressed and excluded from
+the exit-code gate, but remain recorded in the analysis document with the `suppressed` disposition.
 
 ## Reports
 
@@ -716,9 +722,10 @@ recorded is lost. Results also carry the element as a **logical location**, beca
 line numbers and the physical location can only name the model file.
 
 Element keys come from the model: a `.tm7` supplies its persisted guids, and canonical model JSON
-supplies the author's own element and page ids. Ids that are not guid-shaped are re-keyed internally
-on every load, so the author's id is what gets used — an identity built on the internal guid would
-differ on every run.
+supplies the author's own element and page ids. Non-GUID ids map to deterministic internal GUIDs;
+the analysis document still uses the author's id, so findings can be reconciled against the source.
+Converting between canonical author ids and native GUIDs changes that representation; compare models
+from the same identity lineage and heed comparison warnings about different source ids.
 
 The occurrence counter is the one positional segment. If a rule fires several times against the same
 target and you fix some of them, the survivors can renumber; reconcile on the first three segments
@@ -744,9 +751,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: hacks4snacks/tmforge@v0.7
+      - uses: hacks4snacks/tmforge@v0.12.0
         with:
-          version: "0.7"                                  # pin the engine image, not just the action
+          version: "0.12.0"                               # pin the engine image, not just the action
           models: "**/*.tm7"
           rules: rules/corporate.tmrules.json
           suppression-file: .tmforge/suppressions.json
@@ -759,12 +766,15 @@ jobs:
 | `rules` | *(none)* | Custom rule pack, or a directory of them. Added to the built-in rules. |
 | `ruleset` | *(none)* | `.ruleset` file that enables or disables built-in rules. |
 | `suppression-file` | *(none)* | Suppression `.json` file. |
-| `max-severity` | `error` | Severity at or above which findings gate the build. |
+| `max-severity` | empty (CLI default: `error`) | Severity at or above which findings gate the build. |
 | `fail-on-findings` | `true` | Set `false` to report findings without failing. |
 | `upload-sarif` | `true` | Upload the SARIF to code scanning. |
-| `upload-report` | `false` | Also keep the reports as a workflow artifact. |
+| `upload-report` | `false` | Keep SARIF, HTML, Markdown, and JSON reports as a workflow artifact. |
 | `image` / `version` | `ghcr.io/hacks4snacks/tmforge-cli` / `latest` | Pin `version` for a reproducible gate. |
 | `pull` | `true` | Set `false` to run an image already loaded on the runner. |
+| `category` | `threat-model-forge` | SARIF code-scanning category. |
+| `sarif-directory` | `.tmforge-sarif` | Workspace-relative report directory. |
+| `report-artifact-name` | `tmforge-reports` | Artifact name when `upload-report` is enabled. |
 
 Outputs are `result` (`pass`, `fail`, or `error`), `exit-code`, and `sarif-directory`.
 
@@ -784,8 +794,9 @@ system. Drift detection covers that gap: it reports a change that touched archit
 without touching a threat model.
 
 ```yaml
-      - uses: hacks4snacks/tmforge@v0.7
+      - uses: hacks4snacks/tmforge@v0.12.0
         with:
+          version: "0.12.0"
           drift: notice          # 'off', 'notice' (default), or 'fail'
           drift-watched-paths: |
             src/**
@@ -828,11 +839,15 @@ permissions:
   contents: read
   security-events: write
   pull-requests: write     # only needed for drift-comment
+```
 
-# ...
-        with:
-          drift-comment: "true"
-          drift-watched-paths: src/**
+Add these inputs to the tmforge action step:
+
+```yaml
+with:
+  version: "0.12.0"
+  drift-comment: "true"
+  drift-watched-paths: src/**
 ```
 
 The comment is found by a hidden `<!-- tmforge-drift -->` marker and updated in place, so a pull
@@ -850,8 +865,9 @@ Drift asks whether the model was updated. Review shows **how** it changed, so a 
 have to read a diff of serialized XML:
 
 ```yaml
-      - uses: hacks4snacks/tmforge@v0.7
+      - uses: hacks4snacks/tmforge@v0.12.0
         with:
+          version: "0.12.0"
           review: "on"
           review-comment: "true"   # optional; needs pull-requests: write
           upload-report: "true"    # optional; keeps the full detail with the run
@@ -865,9 +881,30 @@ the individual element and property changes.
 | Input | Default | Purpose |
 | --- | --- | --- |
 | `review` | `off` | `off` or `on`. Review is informational and never gates the build. |
+| `review-format` | `summary` | `summary` keeps the change summary; `md` also includes current findings Markdown for changed models. |
 | `review-comment` | `false` | Keep one pull-request comment up to date with the summary. |
 
 Outputs are `review` (`reviewed` or `skipped`) and `review-changed-models`.
+
+To include the current findings in that same comment and retain full Markdown artifacts:
+
+```yaml
+with:
+  review: "on"
+  review-format: md
+  review-comment: "true"
+  upload-report: "true"
+```
+
+Markdown support requires both an action revision and a CLI image containing this feature.
+The action reuses the head analysis's `<model>.findings.md`, including suppressed findings; it
+does not run another analysis or substitute the threat register. Deleted models have no current
+report. A missing Markdown artifact (including with an older image) is noted in the review.
+Only complete reports that fit the comment budget are included, with an explicit omission notice
+for larger reports. Complete per-model files remain in the reports artifact. The final comment
+is capped at 60,000 bytes; an oversized structural summary falls back to a link-free notice
+directing readers to the workflow summary and reports. The existing comment marker and update
+behavior are unchanged.
 
 Points worth knowing:
 
@@ -883,7 +920,7 @@ Points worth knowing:
   large rename sweep cannot crowd out the one change that alters exposure.
 - **The summary is bounded and the detail is not.** At most 20 element changes appear in the summary
   and the comment; the complete diff for every model is written to `review.json` in the report
-  directory, which `upload-report: true` attaches to the run alongside the HTML findings reports. A
+  directory, which `upload-report: true` attaches to the run alongside HTML and Markdown findings reports. A
   pull request that rewrites a model should not produce a comment nobody can read.
 - **A renamed model is diffed against its previous path**, so moving a file reads as a move rather
   than a wholesale rewrite.
@@ -900,16 +937,24 @@ Points worth knowing:
 
 ### Without the action
 
-Any runner that can execute the CLI works the same way — `analyze` returns `2` when a model has
-findings, which fails the step, and `1` for a tool error:
+Any runner that can execute the CLI works the same way: `analyze` returns `2` for findings at the
+selected severity threshold, and `1` for a tool error. This Bash example handles filenames containing
+spaces and analyzes every model before returning the worst result:
 
 ```yaml
       - name: Analyze threat models
+        shell: bash
         run: |
-          set -e
-          for model in $(git ls-files '*.tm7'); do
-            tmforge analyze "$model" --reportFolder "reports/$(basename "$model")"
-          done
+          set -uo pipefail
+          status=0
+          while IFS= read -r -d '' model; do
+            code=0
+            tmforge analyze "$model" --max-severity warning --reportFolder "reports/$model" || code=$?
+            if [[ "$code" == 1 ]]; then status=1; fi
+            if [[ "$code" == 2 && "$status" == 0 ]]; then status=2; fi
+            if [[ "$code" != 0 && "$code" != 1 && "$code" != 2 ]]; then status=1; fi
+          done < <(git ls-files -z '*.tm7')
+          exit "$status"
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3

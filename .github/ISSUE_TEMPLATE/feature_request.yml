@@ -1,0 +1,40 @@
+name: Feature request
+description: Propose a focused improvement to Threat Model Forge.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues for similar requests. For help with an existing workflow, use [Q&A](https://github.com/Hacks4Snacks/tmforge/discussions/categories/q-a).
+        Keep examples free of secrets and confidential architecture. Report suspected vulnerabilities [privately](https://github.com/Hacks4Snacks/tmforge/security/advisories/new).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What are you trying to accomplish, which interface do you use, and what is missing? Describe the user need independently of a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Describe the behavior you would like. Include relevant model formats or integrations, and keep the request to one logical change.
+    validations:
+      required: true
+  - type: textarea
+    id: success
+    attributes:
+      label: What would success look like?
+      description: Give a concrete example or observable result that would show the improvement solves your problem.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: What have you tried, and why does it not meet the need?
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Link related issues or public examples. Use synthetic or sanitized models and screenshots you have permission to share.

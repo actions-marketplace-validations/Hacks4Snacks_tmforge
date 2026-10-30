@@ -89,15 +89,18 @@ namespace ThreatModelForge.Cli.Tests
         }
 
         /// <summary>
-        /// Verifies that HTML reports materialize rule-backed threats rather than showing only the
+        /// Verifies that reports materialize rule-backed threats rather than showing only the
         /// model's manually-authored register entries.
         /// </summary>
+        /// <param name="format">The report format.</param>
         [TestMethod]
-        public void HtmlIncludesGeneratedThreats()
+        [DataRow("html")]
+        [DataRow("md")]
+        public void ReportIncludesGeneratedThreats(string format)
         {
             string input = this.WriteInput(ThreatBearingJson);
 
-            (int exit, string stdout) = Run(new[] { input });
+            (int exit, string stdout) = Run(new[] { "--format", format, input });
 
             Assert.AreEqual(0, exit);
             StringAssert.Contains(stdout, "TM1023");
@@ -108,17 +111,66 @@ namespace ThreatModelForge.Cli.Tests
         /// <summary>
         /// Verifies that generation for a report honors rule packs disabled in the model.
         /// </summary>
+        /// <param name="format">The report format.</param>
         [TestMethod]
-        public void HtmlHonorsDisabledRulePacks()
+        [DataRow("html")]
+        [DataRow("md")]
+        public void ReportHonorsDisabledRulePacks(string format)
         {
             string json = ThreatBearingJson.Substring(0, ThreatBearingJson.Length - 1)
                 + ",\"analysis\":{\"disabledPacks\":[\"identity-access\"]}}";
             string input = this.WriteInput(json);
 
-            (int exit, string stdout) = Run(new[] { input });
+            (int exit, string stdout) = Run(new[] { "--format", format, input });
 
             Assert.AreEqual(0, exit);
             Assert.IsFalse(stdout.Contains("TM1023", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Verifies that Markdown preserves generated threats and manual decisions without changing
+        /// the input, and emits the same bytes on every run.
+        /// </summary>
+        [TestMethod]
+        public void MarkdownIsDeterministicAndRetainsThreats()
+        {
+            string json = ThreatBearingJson.Substring(0, ThreatBearingJson.Length - 1)
+                + ",\"threats\":[{\"id\":\"manual:reviewed\",\"manual\":true,\"state\":\"Accepted\","
+                + "\"category\":\"Tampering\",\"title\":\"Reviewed risk\",\"justification\":\"Approved exception\","
+                + "\"elementIds\":[\"22222222-2222-4222-8222-222222222222\"]}]}";
+            string input = this.WriteInput(json);
+
+            (int exit, string markdown) = Run(new[] { "--format", "md", input });
+            (int repeatedExit, string repeated) = Run(new[] { "--format", "md", input });
+
+            Assert.AreEqual(0, exit);
+            Assert.AreEqual(0, repeatedExit);
+            Assert.AreEqual(markdown, repeated);
+            Assert.IsTrue(markdown.StartsWith("# ", StringComparison.Ordinal));
+            StringAssert.Contains(markdown, "TM1023");
+            StringAssert.Contains(markdown, "CWE-287");
+            StringAssert.Contains(markdown, "Reviewed risk");
+            StringAssert.Contains(markdown, "Accepted");
+            StringAssert.Contains(markdown, "Approved exception");
+            Assert.IsFalse(markdown.Contains('\r'));
+            Assert.AreEqual(json, File.ReadAllText(input));
+        }
+
+        /// <summary>Markdown file output preserves the CLI JSON envelope contract.</summary>
+        [TestMethod]
+        public void MarkdownFileHasJsonEnvelope()
+        {
+            string input = this.WriteInput();
+            string output = Path.Join(this.WorkingDirectory, "report.md");
+
+            (int exit, string stdout) = Run(new[] { "--format", "md", "--out", output, "--json", input });
+
+            Assert.AreEqual(0, exit);
+            using JsonDocument document = JsonDocument.Parse(stdout);
+            JsonElement data = document.RootElement.GetProperty("data");
+            Assert.AreEqual("md", data.GetProperty("format").GetString());
+            Assert.AreEqual(new FileInfo(output).Length, data.GetProperty("bytes").GetInt64());
+            Assert.IsTrue(File.ReadAllText(output).StartsWith("# ", StringComparison.Ordinal));
         }
 
         /// <summary>

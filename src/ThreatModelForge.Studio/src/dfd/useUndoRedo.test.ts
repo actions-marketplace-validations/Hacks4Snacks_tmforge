@@ -42,6 +42,24 @@ function setup(initialNodes: DfdNode[], initialEdges: DfdEdge[] = []) {
 }
 
 describe('useUndoRedo', () => {
+  it('restores document state and its native undo source with the graph', () => {
+    const before = { threats: ['scoped-decision'], source: 'original native register' };
+    const after = { threats: [] as string[], source: 'edited native register' };
+    const restore = vi.fn();
+    const setNodes = vi.fn();
+    const setEdges = vi.fn();
+    const view = renderHook(({ document }) => useUndoRedo([node('A')], [], setNodes, setEdges, { value: document, restore }), {
+      initialProps: { document: before },
+    });
+    act(() => view.result.current.takeSnapshot());
+    view.rerender({ document: after });
+    act(() => view.result.current.undo());
+    expect(restore).toHaveBeenLastCalledWith(before);
+    view.rerender({ document: before });
+    act(() => view.result.current.redo());
+    expect(restore).toHaveBeenLastCalledWith(after);
+  });
+
   it('starts with nothing to undo or redo', () => {
     const h = setup([node('A')]);
 

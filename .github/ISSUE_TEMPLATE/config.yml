@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/Hacks4Snacks/tmforge/discussions/categories/q-a
+    about: Get help with modeling, formats, rules, installation, or integrations in Q&A.
+  - name: Show and tell
+    url: https://github.com/Hacks4Snacks/tmforge/discussions/categories/show-and-tell
+    about: Share a sanitized model, rule pack, integration, or workflow with the community.
+  - name: Report a security vulnerability privately
+    url: https://github.com/Hacks4Snacks/tmforge/security/advisories/new
+    about: Send suspected vulnerabilities to the maintainers without publishing sensitive details.

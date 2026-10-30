@@ -255,6 +255,7 @@ namespace ThreatModelForge.Api.Tests
             {
                 Elements = baseline.Elements,
                 Metadata = new MetaInformation { Owner = "Security" },
+                Notes = new[] { new Note { Id = 1, Message = "Review context" } },
                 Threats = new[] { new ThreatStateDto { Id = "manual:new", Manual = true, Title = "Manual risk", Category = "Privacy" } },
             };
 
@@ -263,6 +264,7 @@ namespace ThreatModelForge.Api.Tests
             Assert.IsTrue(result.Success);
             Assert.HasCount(0, result.Changes);
             Assert.IsTrue(result.Warnings.Any(warning => warning.Contains("metadata differs", StringComparison.Ordinal)));
+            Assert.IsTrue(result.Warnings.Any(warning => warning.Contains("notes differ", StringComparison.Ordinal)));
             Assert.IsTrue(result.Warnings.Any(warning => warning.Contains("threat records differ", StringComparison.Ordinal)));
         }
 

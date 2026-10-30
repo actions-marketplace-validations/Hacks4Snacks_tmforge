@@ -49,6 +49,9 @@ namespace ThreatModelForge.Formats
         /// </summary>
         private static readonly Guid DefaultSurfaceGuid = new Guid("7e3f1d52-0000-4000-8000-000000000001");
 
+        /// <summary>Gets the stable identity of the implicit page in a flat canonical document.</summary>
+        public static Guid DefaultPageId => DefaultSurfaceGuid;
+
         /// <inheritdoc/>
         public string Id => FormatId;
 
@@ -194,6 +197,7 @@ namespace ThreatModelForge.Formats
                 {
                     Id = surface.Guid.ToString(),
                     Name = name,
+                    Source = CollectPageSource(surface),
                     Elements = pageElements,
                     Flows = pageFlows,
                 });
@@ -205,6 +209,7 @@ namespace ThreatModelForge.Formats
                 Schema = SchemaToken,
                 Version = "0.1",
                 Metadata = model.MetaInformation,
+                Notes = model.Notes.Count > 0 ? model.Notes.ToArray() : null,
                 Elements = diagrams.Count > 0 ? diagrams[0].Elements : Array.Empty<TmForgeJsonElement>(),
                 Flows = diagrams.Count > 0 ? diagrams[0].Flows : Array.Empty<TmForgeJsonFlow>(),
                 Diagrams = diagrams.Count > 0 && (diagrams.Count > 1
@@ -239,6 +244,15 @@ namespace ThreatModelForge.Formats
             return ReadCore(stream, originalIds);
         }
 
+        private static IReadOnlyDictionary<string, string>? CollectPageSource(DrawingSurfaceModel page)
+        {
+            Dictionary<string, string> source = DiagramElementHelper.GetCustomProperties(page)
+                .Where(property => property.Key.StartsWith("Source.", StringComparison.Ordinal))
+                .OrderBy(property => property.Key, StringComparer.Ordinal)
+                .ToDictionary(property => property.Key.Substring("Source.".Length), property => property.Value, StringComparer.Ordinal);
+            return source.Count == 0 ? null : source;
+        }
+
         private static ThreatModel ReadCore(Stream stream, IDictionary<Guid, string>? originalIds)
         {
             if (stream == null)
@@ -252,6 +266,11 @@ namespace ThreatModelForge.Formats
                 ?? new TmForgeJsonModel();
 
             ThreatModel model = new ThreatModel { Version = "1.0", MetaInformation = document.Metadata };
+            if (document.Notes != null)
+            {
+                model.Notes.AddRange(document.Notes);
+            }
+
             DiagramEditor editor = new DiagramEditor(model);
 
             if (document.Diagrams != null && document.Diagrams.Count > 0)
@@ -263,6 +282,11 @@ namespace ThreatModelForge.Formats
                         ? "Diagram " + index.ToString(CultureInfo.InvariantCulture)
                         : page.Name;
                     DrawingSurfaceModel surface = new DrawingSurfaceModel { Guid = ResolveSurfaceGuid(page.Id), Header = header };
+                    foreach (KeyValuePair<string, string> provenance in page.Source ?? new Dictionary<string, string>())
+                    {
+                        DiagramElementHelper.SetCustomProperty(surface, "Source." + provenance.Key, provenance.Value);
+                    }
+
                     model.DrawingSurfaceList.Add(surface);
 
                     // Record the page's wire id too. A page id that is not guid-shaped gets a fresh
@@ -383,7 +407,6 @@ namespace ThreatModelForge.Formats
                 UserThreatCategory = entry.Category,
                 UserThreatDescription = entry.Description,
                 Wide = manual && source == Guid.Empty && target == Guid.Empty && flow == Guid.Empty,
-                ModifiedAt = DateTime.UtcNow,
             };
             if (!string.IsNullOrEmpty(entry.Mitigation))
             {

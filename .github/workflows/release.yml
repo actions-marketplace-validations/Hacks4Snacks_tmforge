@@ -114,9 +114,95 @@ jobs:
           path: ${{ steps.v.outputs.asset }}
           if-no-files-found: error
 
+  vscode:
+    name: VS Code extension (${{ matrix.os }})
+    needs: verify
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.301
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            src/ThreatModelForge.Studio/package-lock.json
+            src/ThreatModelForge.Vscode/package-lock.json
+
+      - name: Verify extension version matches tag
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const root = 'src/ThreatModelForge.Vscode/';
+          const manifest = JSON.parse(readFileSync(root + 'package.json', 'utf8'));
+          const lock = JSON.parse(readFileSync(root + 'package-lock.json', 'utf8'));
+          assert.equal(manifest.publisher, 'hacks4snacks');
+          assert.equal(manifest.name, 'tmforge');
+          assert.equal(manifest.version, process.env.GITHUB_REF_NAME.slice(1), 'Extension version must match the release tag');
+          assert.equal(lock.version, manifest.version);
+          assert.equal(lock.packages[''].version, manifest.version);
+          NODE
+
+      - name: Build bundled engine
+        run: |
+          dotnet workload install wasm-tools wasm-experimental
+          dotnet publish src/ThreatModelForge.Wasm/ThreatModelForge.Wasm.csproj -c Release -o artifacts/vscode-wasm
+          node src/ThreatModelForge.Vscode/scripts/stage-engine.mjs
+
+      - name: Install and test
+        run: |
+          npm --prefix src/ThreatModelForge.Studio ci
+          npm --prefix src/ThreatModelForge.Vscode ci
+          npm --prefix src/ThreatModelForge.Studio test
+          npm --prefix src/ThreatModelForge.Vscode test
+
+      - name: Test minimum and stable VS Code
+        run: |
+          minimum="$(node -p 'require("./src/ThreatModelForge.Vscode/package.json").engines.vscode.replace(/^\^/, "")')"
+          for version in "$minimum" stable; do
+            export VSCODE_TEST_VERSION="$version"
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              xvfb-run -a npm --prefix src/ThreatModelForge.Vscode run test:extension
+            else
+              npm --prefix src/ThreatModelForge.Vscode run test:extension
+            fi
+          done
+
+      - name: Package tested VSIX
+        if: runner.os == 'Linux'
+        run: npm --prefix src/ThreatModelForge.Vscode run package
+
+      - name: Upload VSIX artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: tmforge-vscode
+          path: src/ThreatModelForge.Vscode/*.vsix
+          if-no-files-found: error
+
   release:
     name: release
-    needs: build
+    needs: [build, vscode]
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.vscode.result == 'success' || needs.vscode.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - name: Download build artifacts
@@ -128,11 +214,13 @@ jobs:
         id: meta
         shell: bash
         run: |
+          set -euo pipefail
+          shopt -s nullglob
           version="${GITHUB_REF_NAME#v}"
           mkdir -p dist
-          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.vsix' \) -exec cp {} dist/ \;
           cd dist
-          sha256sum *.tar.gz *.zip > checksums.txt
+          sha256sum -- *.tar.gz *.zip *.vsix > checksums.txt
           artifacts_json='[]'
           for f in *.tar.gz *.zip; do
             [ -e "$f" ] || continue

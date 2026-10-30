@@ -163,7 +163,7 @@ namespace ThreatModelForge.Cli
             Console.Error.WriteLine();
             Console.Error.WriteLine("The target format is taken from --to, or inferred from the --out extension.");
             Console.Error.WriteLine("If --out is omitted, the input name is reused with the target extension.");
-            Console.Error.WriteLine("Formats: tm7, tmforge-json, drawio, vsdx.");
+            Console.Error.WriteLine("Formats: tm7, tmforge-json, drawio, vsdx, threat-dragon (bounded v2 subset).");
             Console.Error.WriteLine("--fail-on-loss refuses conversion warnings before opening the destination. Use preflight for a read-only preview.");
             Console.Error.WriteLine();
             Console.Error.WriteLine("A tm7 export embeds the Threat Model Forge knowledge base by default so the file opens");

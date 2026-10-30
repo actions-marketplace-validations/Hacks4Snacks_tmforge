@@ -1,14 +1,16 @@
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react';
 import { ReactFlowProvider, useReactFlow, type ReactFlowInstance } from '@xyflow/react';
 import { STORAGE_KEY } from './Editor';
 import type { IEngineClient, LayoutElement, ModelCompareResult } from './engineClient';
 import type { TmForgeModel } from './types';
+import type { EditorHost } from './editorContext';
 import { ReviewDiagram, reviewPageId } from './ReviewDiagram';
 import { modelFromPages, pagesFromModel } from './mapping';
 import { createShareUrl, MAX_SHARE_MODEL_BYTES, readShareFragment } from './shareLink';
 import { ShareDialog } from './ShareDialog';
+import { PreflightDialog } from './PreflightDialog';
 
 const engineState = vi.hoisted(() => ({ current: undefined as IEngineClient | undefined, hosted: undefined as IEngineClient | undefined }));
 vi.mock('./engineClient', async (importOriginal) => {
@@ -203,6 +205,228 @@ beforeEach(() => {
   engineState.hosted = undefined;
 });
 
+describe('Model notes in Studio', () => {
+  it('restores, edits, adds and deletes notes with undo/redo without changing the diagram', async () => {
+    const note = { id: 7, message: 'Original scope', date: '2026-09-30T12:00:00.1234567Z', addedBy: 'Reviewer' };
+    await mountEditor({ ...chain(), notes: [note] } as TmForgeModel);
+    expect(screen.getByLabelText('Note 7 text')).toHaveValue(note.message);
+    selectNodes('a');
+    await waitFor(() => expect(within(inspector()).getByLabelText('Name')).toBeInTheDocument());
+    fireEvent.click(screen.getByTitle('Model notes'));
+    expect(document.querySelector('.save-status')).toHaveClass('clean');
+    expect(undoButton()).toBeDisabled();
+
+    fireEvent.focus(screen.getByLabelText('Note 7 text'));
+    fireEvent.change(screen.getByLabelText('Note 7 text'), { target: { value: 'Updated scope\nEvidence' } });
+    const readNotes = () => (JSON.parse(window.localStorage.getItem(STORAGE_KEY)!) as { model: TmForgeModel }).model.notes;
+    await waitFor(() => expect(readNotes()).toEqual([{ ...note, message: 'Updated scope\nEvidence' }]), { timeout: 3000 });
+    expect(document.querySelector('.save-status')).toHaveClass('dirty');
+    fireEvent.click(undoButton());
+    expect(screen.getByLabelText('Note 7 text')).toHaveValue(note.message);
+    expect(undoButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
+    expect(screen.getByLabelText('Note 7 text')).toHaveValue('Updated scope\nEvidence');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add note' }));
+    expect(screen.getByLabelText('Note 1 text')).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete note 7' }));
+    expect(screen.queryByLabelText('Note 7 text')).not.toBeInTheDocument();
+    fireEvent.click(undoButton());
+    expect(screen.getByLabelText('Note 7 text')).toHaveValue('Updated scope\nEvidence');
+    fireEvent.click(undoButton());
+    expect(screen.queryByLabelText('Note 1 text')).not.toBeInTheDocument();
+    await waitFor(() => expect(readNotes()).toEqual([{ ...note, message: 'Updated scope\nEvidence' }]), { timeout: 3000 });
+    expect(persisted()).toEqual({ elements: ['a', 'b', 'c'], flows: ['ab', 'bc'] });
+
+    const recovered = (JSON.parse(window.localStorage.getItem(STORAGE_KEY)!) as { model: TmForgeModel }).model;
+    cleanup();
+    await mountEditor(recovered);
+    expect(screen.getByLabelText('Note 7 text')).toHaveValue('Updated scope\nEvidence');
+    expect(screen.getByLabelText('Note 7 author')).toHaveValue('Reviewer');
+  });
+});
+
+describe('Hosted Studio documents', () => {
+  async function makeHost(): Promise<EditorHost> {
+    const { offlineEngine } = await import('./engineClient');
+    return {
+      model: chain() as TmForgeModel,
+      engine: Object.assign(Object.create(offlineEngine) as IEngineClient, { label: 'host engine' }),
+      fileName: 'workspace.tmforge.json', dirty: false, theme: 'light',
+      onChange: vi.fn(), save: vi.fn(async () => {}), open: vi.fn(async () => undefined),
+      create: vi.fn(async () => {}), download: vi.fn(async () => {}), confirm: vi.fn(async () => true),
+      undo: vi.fn(), redo: vi.fn(), chooseTheme: vi.fn(),
+    };
+  }
+
+  it('publishes model notes and accepts host undo without echoing a second edit', async () => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    const note = { id: 4, message: 'Host scope', date: '2026-09-30T12:00:00Z', addedBy: 'Reviewer' };
+    host.model.notes = [note];
+    const view = render(<ReactFlowProvider><Editor host={host} /></ReactFlowProvider>);
+    await screen.findByLabelText('Note 4 text');
+    expect(host.onChange).not.toHaveBeenCalled();
+
+    fireEvent.focus(screen.getByLabelText('Note 4 text'));
+    fireEvent.change(screen.getByLabelText('Note 4 text'), { target: { value: 'Host edit' } });
+    await waitFor(() => expect(host.onChange).toHaveBeenCalledOnce());
+    const [before, after] = vi.mocked(host.onChange).mock.calls[0];
+    expect(before.notes).toEqual([note]);
+    expect(after.notes).toEqual([{ ...note, message: 'Host edit' }]);
+    expect(after.elements).toEqual(before.elements);
+    expect(after.flows).toEqual(before.flows);
+
+    view.rerender(<ReactFlowProvider><Editor host={{ ...host, model: { ...host.model, notes: [{ ...note }] } }} /></ReactFlowProvider>);
+    await waitFor(() => expect(screen.getByLabelText('Note 4 text')).toHaveValue('Host scope'));
+    expect(host.onChange).toHaveBeenCalledOnce();
+  });
+
+  it('exports the host native document without converting or rebuilding it', async () => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    const original = new TextEncoder().encode('<native-source><opaque>kept</opaque></native-source>');
+    host.readNative = vi.fn(async () => original);
+    host.engine.getFormats = async () => [{ id: 'tm7', displayName: 'Native TM7', extensions: ['.tm7'], canRead: true, canWrite: true }];
+    host.engine.convert = vi.fn();
+    render(<ReactFlowProvider><Editor host={host} /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    const exportButton = screen.getByRole('button', { name: /^Export/ });
+    await waitFor(() => expect(exportButton).toBeEnabled());
+    fireEvent.click(exportButton);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Native TM7' }));
+    await waitFor(() => expect(host.download).toHaveBeenCalledOnce());
+    expect(host.readNative).toHaveBeenCalledOnce();
+    expect(host.engine.convert).not.toHaveBeenCalled();
+    const blob = vi.mocked(host.download).mock.calls[0][0];
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = reject;
+      reader.readAsText(blob);
+    });
+    expect(text).toBe(new TextDecoder().decode(original));
+  });
+
+  it('edits the host document without restoring or overwriting the browser workspace', async () => {
+    const browserModel = chain();
+    browserModel.elements[0].name = 'Browser-only model';
+    const browserSnapshot = JSON.stringify({ model: browserModel });
+    window.localStorage.setItem(STORAGE_KEY, browserSnapshot);
+    vi.resetModules();
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    const onChange = vi.fn<EditorHost['onChange']>();
+    render(<ReactFlowProvider><Editor host={{ ...host, onChange }} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    expect(screen.queryByText('Browser-only model')).not.toBeInTheDocument();
+    expect(document.querySelector('.engine-pill')).toHaveTextContent('host engine');
+    expect(onChange).not.toHaveBeenCalled();
+    selectNodes('a');
+    addCustomProperty('Owner', 'VS Code');
+    await waitFor(() => expect(onChange).toHaveBeenCalledOnce());
+    expect(onChange.mock.calls[0][0].elements[0].properties?.Owner).toBeUndefined();
+    expect(onChange.mock.calls[0][1].elements[0].properties?.Owner).toBe('VS Code');
+    await act(() => new Promise(resolve => window.setTimeout(resolve, 700)));
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(browserSnapshot);
+  });
+
+  it('uses host save and history commands and accepts source edits without echoing changes', async () => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    const view = render(<ReactFlowProvider><Editor host={host} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Undo$/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Redo$/ }));
+    expect(host.save).toHaveBeenCalledOnce();
+    expect(host.undo).toHaveBeenCalledOnce();
+    expect(host.redo).toHaveBeenCalledOnce();
+    const updated = chain() as TmForgeModel;
+    updated.elements[0].name = 'Changed in source';
+    view.rerender(<ReactFlowProvider><Editor host={{ ...host, model: updated, dirty: true, theme: 'dark' }} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Changed in source');
+    expect(document.querySelector('.save-status')).toHaveClass('dirty');
+    expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+    expect(host.onChange).not.toHaveBeenCalled();
+    selectNodes('a');
+    addCustomProperty('Owner', 'After source edit');
+    await waitFor(() => expect(host.onChange).toHaveBeenCalledOnce());
+  });
+
+  it('publishes Tidy on the first page with its mirrored geometry', async () => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    host.model.diagrams = [
+      { id: 'first', name: 'First', elements: host.model.elements, flows: host.model.flows },
+      { id: 'second', name: 'Second', elements: [], flows: [] },
+    ];
+    host.engine.layout = vi.fn(async (_model, positions) => positions!);
+    render(<ReactFlowProvider><Editor host={host} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Tidy' })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tidy' }));
+
+    await waitFor(() => expect(host.onChange).toHaveBeenCalledOnce());
+    const [before, after] = vi.mocked(host.onChange).mock.calls[0];
+    expect(after.elements).not.toEqual(before.elements);
+    expect(after.elements).toEqual(after.diagrams?.[0].elements);
+    expect(after.diagrams?.[1]).toEqual(before.diagrams?.[1]);
+  });
+
+  it.each(['keyboard', 'inspector'])('publishes %s cascade deletion as one host edit with graph and decisions together', async method => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    host.model.threats = [
+      { id: 'manual:dependent', manual: true, state: 'Accepted', elementIds: ['b'], justification: 'Recorded decision' },
+      { id: 'manual:flow', manual: true, state: 'Open', elementIds: ['ab'] },
+      { id: 'manual:model-wide', manual: true, state: 'Open' },
+    ];
+    const onChange = vi.fn<EditorHost['onChange']>();
+    render(<ReactFlowProvider><Editor host={{ ...host, onChange }} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    selectNodes('b');
+    if (method === 'inspector') fireEvent.click(within(inspector()).getByRole('button', { name: /Delete/ }));
+    else fireEvent.keyDown(document.querySelector('.react-flow')!, { key: 'Backspace' });
+    await waitFor(() => expect(canvasNodeIds()).toEqual(['a', 'c']));
+    await waitFor(() => expect(onChange).toHaveBeenCalledOnce());
+    const [before, after] = onChange.mock.calls[0];
+    expect(before.threats).toHaveLength(3);
+    expect(after.threats?.map(threat => threat.id)).toEqual(['manual:model-wide']);
+    expect(after.elements.map(element => element.id)).toEqual(['a', 'c']);
+    expect(after.flows).toEqual([]);
+  });
+
+  it('groups node dragging into one host edit', async () => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    render(<ReactFlowProvider><Editor host={host} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    act(() => flow!.setNodes(nodes => nodes.map(node => node.id === 'a' ? { ...node, position: { x: 32, y: 32 }, dragging: true } : node)));
+    expect(host.onChange).not.toHaveBeenCalled();
+    act(() => flow!.setNodes(nodes => nodes.map(node => node.id === 'a' ? { ...node, position: { x: 64, y: 64 }, dragging: false } : node)));
+    await waitFor(() => expect(host.onChange).toHaveBeenCalledOnce());
+  });
+
+  it('discards analysis completed after an external source update', async () => {
+    const { Editor } = await import('./Editor');
+    const host = await makeHost();
+    let finish!: (value: Awaited<ReturnType<IEngineClient['runAnalysis']>>) => void;
+    host.engine.runAnalysis = vi.fn<IEngineClient['runAnalysis']>(() => new Promise(resolve => { finish = resolve; }));
+    const view = render(<ReactFlowProvider><Editor host={host} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('Alpha');
+    fireEvent.click(screen.getByRole('button', { name: /^Analyze$/ }));
+    const updated = chain() as TmForgeModel;
+    updated.elements[0].name = 'New source';
+    view.rerender(<ReactFlowProvider><Editor host={{ ...host, model: updated }} /><FlowHandle /></ReactFlowProvider>);
+    await screen.findByText('New source');
+    await act(async () => { finish({ findings: [], threats: [], rulePacks: [], diagnostics: [] }); });
+    expect(screen.getByText('New source')).toBeInTheDocument();
+    expect(host.onChange).not.toHaveBeenCalled();
+  });
+});
+
 describe('Read-only review diagrams', () => {
   it('uses separate SVG and accessibility namespaces for both canvases', () => {
     const pages = pagesFromModel(chain() as TmForgeModel);
@@ -311,7 +535,7 @@ describe('Editor comparison review', () => {
     fireEvent.click(within(prompt).getByRole('button', { name: 'Cancel' }));
     expect(within(dialog).getByRole('button', { name: 'Compare' })).toBeDisabled();
     upload('baseline', 'lossy.json');
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Baseline import: lossy.json' })).getByRole('button', { name: 'Continue' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Baseline import: lossy.json' })).getByRole('button', { name: 'Continue import' }));
     await waitFor(() => expect(within(dialog).getByText('lossy.json')).toBeInTheDocument());
     expect(read).toHaveBeenCalledTimes(1);
     expect(preflight).toHaveBeenCalledWith(expect.any(Uint8Array), 'tmforge-json', undefined);
@@ -597,6 +821,21 @@ describe('Editor — guarded Tidy', () => {
     expect(await undoToExhaustion()).toBe(1);
   });
 
+  it('retains the selected page identity in the layout request', async () => {
+    const layout = vi.fn<IEngineClient['layout']>(async (_model, positions) => positions!);
+    await useLayout(layout);
+    const model = chain() as TmForgeModel;
+    model.diagrams = [{ id: 'vscode-page', name: 'VS Code and Copilot', elements: model.elements, flows: model.flows }];
+    await mountEditor(model);
+
+    await tidy();
+
+    await waitFor(() => expect(layout).toHaveBeenCalledOnce());
+    expect(layout.mock.calls[0][0].diagrams?.[0]).toMatchObject({ id: 'vscode-page', name: 'VS Code and Copilot' });
+    expect(layout.mock.calls[0][0].elements).toEqual(model.elements);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Tidy' })).toBeEnabled());
+  });
+
   it('leaves geometry and undo history untouched after a refusal', async () => {
     await useLayout(vi.fn(async () => { throw new Error('Unsafe crossing; no pages were changed.'); }));
     await mountEditor(chain());
@@ -696,6 +935,92 @@ describe('Editor — guarded Tidy', () => {
 });
 
 describe('Editor — deleting from the canvas', () => {
+  it.each(['rename', 'reorder'])('records page %s independently when undo includes page state', async operation => {
+    const model = chain() as TmForgeModel;
+    model.diagrams = [
+      { id: 'one', name: 'First', elements: model.elements, flows: model.flows },
+      { id: 'two', name: 'Second', elements: [], flows: [] },
+    ];
+    await mountEditor(model);
+    selectNodes('a');
+    addCustomProperty('Owner', 'Reviewer');
+    const first = screen.getByRole('tab', { name: /^First/ });
+    if (operation === 'rename') {
+      fireEvent.doubleClick(first);
+      const input = within(first).getByRole('textbox');
+      fireEvent.change(input, { target: { value: 'Renamed' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(screen.getByRole('tab', { name: /^Renamed/ })).toBeInTheDocument();
+    } else {
+      fireEvent.dragStart(first);
+      fireEvent.drop(screen.getByRole('tab', { name: /^Second/ }));
+      expect(screen.getAllByRole('tab')[0]).toHaveTextContent('Second');
+    }
+    fireEvent.click(undoButton());
+    expect(screen.getAllByRole('tab')[0]).toHaveTextContent('First');
+    expect(flow!.getNode('a')!.data.properties).toMatchObject({ Owner: 'Reviewer' });
+    fireEvent.click(undoButton());
+    expect(flow!.getNode('a')!.data.properties ?? {}).not.toHaveProperty('Owner');
+    expect(undoButton()).toBeDisabled();
+  });
+
+  it('deletes a page and scoped decisions together while preserving model-wide risks and one-step undo', async () => {
+    const model = chain() as TmForgeModel;
+    model.diagrams = [
+      { id: 'page-one', name: 'First', elements: model.elements, flows: model.flows },
+      { id: 'page-two', name: 'Second', elements: [{ id: 'other', kind: 'process', name: 'Other', x: 40, y: 40 }], flows: [] },
+    ];
+    model.threats = [
+      { id: 'manual:dependent', manual: true, state: 'Accepted', elementIds: ['b'], justification: 'Saved decision' },
+      { id: 'manual:flow', manual: true, state: 'Open', elementIds: ['ab'] },
+      { id: 'manual:other', manual: true, state: 'Open', elementIds: ['other'] },
+      { id: 'manual:model-wide', manual: true, state: 'Open' },
+    ];
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    try {
+      await mountEditor(model);
+      fireEvent.click(screen.getByRole('button', { name: 'Delete First' }));
+      expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+      expect(undoButton()).toBeDisabled();
+      confirm.mockReturnValue(true);
+      fireEvent.click(screen.getByRole('button', { name: 'Delete First' }));
+      await waitFor(() => expect(canvasNodeIds()).toEqual(['other']));
+      await waitFor(() => {
+        const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!);
+        expect(saved.model.threats.map((threat: { id: string }) => threat.id)).toEqual(['manual:other', 'manual:model-wide']);
+        expect(saved.model.diagrams).toHaveLength(1);
+      }, { timeout: 3000 });
+      fireEvent.click(undoButton());
+      await waitFor(() => expect(canvasNodeIds()).toEqual(['a', 'b', 'c']));
+      expect(undoButton()).toBeDisabled();
+      await waitFor(() => {
+        const saved = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!);
+        expect(saved.model.threats).toEqual(model.threats);
+        expect(saved.model.diagrams).toHaveLength(2);
+      }, { timeout: 3000 });
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  it('deletes only a flow and its decisions while retaining both endpoint decisions', async () => {
+    const model = chain() as TmForgeModel;
+    model.threats = [
+      { id: 'manual:source', manual: true, state: 'Accepted', elementIds: ['a'] },
+      { id: 'manual:target', manual: true, state: 'Accepted', elementIds: ['b'] },
+      { id: 'manual:flow', manual: true, state: 'Accepted', elementIds: ['a', 'b', 'ab'] },
+    ];
+    await mountEditor(model);
+    act(() => flow!.setEdges(edges => edges.map(edge => ({ ...edge, selected: edge.id === 'ab' }))));
+    fireEvent.click(await within(inspector()).findByRole('button', { name: /Delete/ }));
+    await expectPersisted({ elements: ['a', 'b', 'c'], flows: ['bc'] });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).model.threats.map((threat: { id: string }) => threat.id))
+      .toEqual(['manual:source', 'manual:target']);
+    fireEvent.click(undoButton());
+    await expectPersisted({ elements: ['a', 'b', 'c'], flows: ['ab', 'bc'] });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).model.threats).toEqual(model.threats);
+  });
+
   it('takes an element and its flows together, and restores both in one undo', async () => {
     // The bug this guards: React Flow raises a delete callback for nodes AND one for edges, so
     // snapshotting in both charged two undo steps for a single Backspace.
@@ -1164,7 +1489,7 @@ describe('Editor URL sharing', () => {
   });
 });
 
-describe('Editor import-only formats', () => {
+describe('Editor source-preserving imports', () => {
   it.each([
     ['threat-dragon', 'foreign.json', 'foreign.tmforge.json'],
     ['mermaid', 'foreign.mmd', 'foreign.mmd.tmforge.json'],
@@ -1174,14 +1499,14 @@ describe('Editor import-only formats', () => {
     const imported: TmForgeModel = await offlineEngine.read(JSON.stringify(chain()));
     imported.metadata = { owner: 'Imported owner' };
     imported.threats = [{ id: 'manual:threat-dragon.source', state: 'Accepted', manual: true, category: 'Linkability', source: { format: 'threat-dragon', id: 'source' } }];
-    imported.diagrams = [{ id: 'source-page', name: 'Imported page', elements: imported.elements, flows: imported.flows }];
+    imported.diagrams = [{ id: 'source-page', name: 'Imported page', source: { format: 'threat-dragon', id: '7', modelType: 'STRIDE' }, elements: imported.elements, flows: imported.flows }];
     const sourceWrite = vi.fn();
     const targetWrite = vi.fn(async () => undefined);
     const writeModel = vi.fn(async (model: TmForgeModel) => JSON.stringify(model));
     const readFile = vi.fn(async () => imported);
     const open = vi.fn(async () => [{ name: sourceName, getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }), createWritable: sourceWrite }]);
     const save = vi.fn(async () => ({ name: savedName, createWritable: async () => ({ write: targetWrite, close: async () => undefined }) }));
-    const format = { id: formatId, displayName: formatId, canRead: true, canWrite: false, roundTrips: false, extensions: [], fidelityNote: 'Import only' };
+    const format = { id: formatId, displayName: formatId, canRead: true, canWrite: false, roundTrips: false, extensions: [], fidelityNote: 'Bounded conversion' };
     engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
       label: 'import test engine', detect: async () => format, readFile, write: writeModel,
       preflight: async () => ({ success: true, format: formatId, diagnostics: [] }),
@@ -1204,10 +1529,260 @@ describe('Editor import-only formats', () => {
       expect(saved?.metadata).toEqual(imported.metadata);
       expect(saved?.threats).toEqual(imported.threats);
       expect(saved?.diagrams?.[0]).toMatchObject({ id: 'source-page', name: 'Imported page' });
+      expect(saved?.diagrams?.[0].source).toEqual(imported.diagrams[0].source);
     } finally {
       Reflect.deleteProperty(window, 'showOpenFilePicker');
       Reflect.deleteProperty(window, 'showSaveFilePicker');
     }
+  });
+});
+
+describe('Editor source-format saves', () => {
+  it.each([
+    ['tmforge-json', 'source.tmforge.json', false],
+    ['threat-dragon', 'source.json', false],
+    ['threat-dragon', 'source.threatdragon.json', false],
+    ['threat-dragon', 'unsupported.json', true],
+  ])('keeps %s saves bound to %s (rejected: %s)', async (formatId, sourceName, rejected) => {
+    const { offlineEngine } = await import('./engineClient');
+    const imported = await offlineEngine.read(JSON.stringify(chain()));
+    imported.metadata = { owner: 'Imported owner' };
+    imported.diagrams = [{ id: 'source-page', name: 'Imported page', source: { format: 'threat-dragon', id: '7', modelType: 'STRIDE' }, elements: imported.elements, flows: imported.flows }];
+    const sourceWrite = vi.fn(async () => undefined);
+    const writable = vi.fn(async () => ({ write: sourceWrite, close: async () => undefined }));
+    const savePicker = vi.fn();
+    const writeModel = vi.fn(async (model: TmForgeModel) => JSON.stringify(model));
+    const convert = vi.fn(async (_model: TmForgeModel, _format: string) => {
+      if (rejected) throw new Error('Unsupported Threat Dragon property; file was not written.');
+      return new Blob(['converted model'], { type: 'application/json' });
+    });
+    const bytes = new TextEncoder().encode(JSON.stringify(imported));
+    const handle = { name: sourceName, getFile: async () => ({ arrayBuffer: async () => bytes.buffer }), createWritable: writable };
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
+      label: 'source-format test engine', write: writeModel, convert,
+      detect: async () => ({ id: formatId, canRead: true, canWrite: true, extensions: [] }),
+      readFile: async () => imported,
+      preflight: async () => ({ success: true, format: formatId, diagnostics: [] }),
+    });
+    Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, value: async () => [handle] });
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: savePicker });
+    try {
+      await mountEditor(chain());
+      await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('source-format test engine'));
+      fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+      await screen.findByText(sourceName);
+      act(() => flow!.setNodes(nodes => nodes.map(node => node.id === 'a' ? { ...node, data: { ...node.data, label: 'Edited Alpha' } } : node)));
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      if (rejected) {
+        await screen.findByText(/Unsupported Threat Dragon property/);
+        expect(writable).not.toHaveBeenCalled();
+        expect(sourceWrite).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() => expect(sourceWrite).toHaveBeenCalledOnce());
+        expect(writable).toHaveBeenCalledOnce();
+      }
+      expect(savePicker).not.toHaveBeenCalled();
+      const saved = formatId === 'tmforge-json' ? writeModel.mock.calls.at(-1)?.[0] : convert.mock.calls.at(-1)?.[0];
+      expect(saved?.elements.find(element => element.id === 'a')?.name).toBe('Edited Alpha');
+      expect(saved?.metadata).toEqual(imported.metadata);
+      expect(saved?.diagrams?.[0].source).toEqual(imported.diagrams[0].source);
+      if (formatId === 'threat-dragon') expect(convert).toHaveBeenCalledWith(expect.anything(), 'threat-dragon');
+      if (!rejected) {
+        await waitFor(() => expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).saveFormat).toBe(formatId), { timeout: 3000 });
+        expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).fileName).toBe(sourceName);
+        cleanup();
+        vi.resetModules();
+        const { Editor } = await import('./Editor');
+        savePicker.mockResolvedValue(handle);
+        render(<ReactFlowProvider><Editor /></ReactFlowProvider>);
+        await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('source-format test engine'));
+        expect(screen.getByText(sourceName)).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        await waitFor(() => expect(sourceWrite).toHaveBeenCalledTimes(2));
+        expect(savePicker).toHaveBeenCalledWith({ suggestedName: sourceName });
+        if (formatId === 'threat-dragon') expect(convert.mock.calls.at(-1)?.[1]).toBe('threat-dragon');
+      }
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+      Reflect.deleteProperty(window, 'showSaveFilePicker');
+    }
+  });
+});
+
+describe('Editor native TM7 saves', () => {
+  beforeAll(() => {
+    if (!Blob.prototype.arrayBuffer) Object.defineProperty(Blob.prototype, 'arrayBuffer', {
+      configurable: true,
+      value(this: Blob) {
+        return new Promise<ArrayBuffer>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as ArrayBuffer);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsArrayBuffer(this);
+        });
+      },
+    });
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'showOpenFilePicker');
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+  });
+
+  async function prepareNative(model: TmForgeModel = chain() as TmForgeModel) {
+    const { offlineEngine } = await import('./engineClient');
+    const original = new TextEncoder().encode('<native-source/>');
+    let disk = original;
+    const saveTm7 = vi.fn(async (_original: Uint8Array, _model: TmForgeModel, _previous?: Uint8Array) => new Blob([original], { type: 'application/xml' }));
+    const convert = vi.fn(async () => new Blob(['converted']));
+    const write = vi.fn(async (blob: Blob) => { disk = new Uint8Array(await blob.arrayBuffer()); });
+    const writable = vi.fn(async () => ({ write, close: async () => undefined }));
+    const handle = { name: 'source.tm7', getFile: async () => ({ arrayBuffer: async () => disk.buffer }), createWritable: writable };
+    engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
+      label: 'native test engine', saveTm7, convert,
+      detect: async () => ({ id: 'tm7', canRead: true, canWrite: true, extensions: ['.tm7'] }),
+      preflight: async () => ({ success: true, format: 'tm7', diagnostics: [] }),
+      readFile: async () => offlineEngine.read(JSON.stringify(model)),
+    });
+    Object.defineProperty(window, 'showOpenFilePicker', { configurable: true, value: async () => [handle] });
+    await mountEditor(chain());
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('native test engine'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
+    await screen.findByText('source.tm7');
+    return { original, saveTm7, convert, write, writable, changeDisk: () => { disk = new TextEncoder().encode('<external-edit/>'); } };
+  }
+
+  it.each(['inspector', 'keyboard'])('cascades %s deletion to decisions and restores them in one undo after saving', async method => {
+    const model = chain() as TmForgeModel;
+    const removedId = '11111111-2222-4333-8444-555555555555';
+    model.elements[1].id = removedId;
+    model.flows[0].target = removedId;
+    model.flows[1].source = removedId;
+    model.threats = [
+      { id: '11111111222243338444555555555555:TM1000', state: 'Accepted', justification: 'Generated decision' },
+      { id: 'manual:scoped', title: 'Scoped risk', state: 'Mitigated', manual: true, category: 'Tampering', elementIds: [removedId] },
+      { id: 'manual:flow', title: 'Flow risk', state: 'Accepted', justification: 'Flow decision', manual: true, category: 'Tampering', elementIds: ['ab'] },
+      { id: 'manual:unrelated', title: 'Unrelated risk', state: 'Open', manual: true, category: 'Tampering', elementIds: ['a'] },
+      { id: 'manual:model-wide', title: 'Model-wide risk', state: 'Open', manual: true, category: 'Tampering' },
+    ];
+    const { saveTm7, write, convert } = await prepareNative(model);
+    saveTm7.mockResolvedValueOnce(new Blob(['<before-deletion/>']));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByTitle('All changes saved')).toBeInTheDocument());
+    selectNodes(removedId);
+    if (method === 'inspector') fireEvent.click(within(inspector()).getByRole('button', { name: /Delete/ }));
+    else fireEvent.keyDown(document.querySelector('.react-flow')!, { key: 'Backspace' });
+    await waitFor(() => expect(canvasNodeIds()).toEqual(['a', 'c']));
+    await expectPersisted({ elements: ['a', 'c'], flows: [] });
+    expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY)!).model.threats.map((threat: { id: string }) => threat.id))
+      .toEqual(['manual:unrelated', 'manual:model-wide']);
+    saveTm7.mockResolvedValueOnce(new Blob(['<after-deletion/>']));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByTitle('All changes saved')).toBeInTheDocument());
+    expect(saveTm7.mock.calls[1][1].threats?.map(threat => threat.id)).toEqual(['manual:unrelated', 'manual:model-wide']);
+
+    fireEvent.click(undoButton());
+    await waitFor(() => expect(canvasNodeIds()).toEqual(['a', removedId, 'c']));
+    expect(undoButton()).toBeDisabled();
+    saveTm7.mockResolvedValueOnce(new Blob(['<undo-deletion/>']));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(screen.getByTitle('All changes saved')).toBeInTheDocument());
+    expect(new TextDecoder().decode(saveTm7.mock.calls[2][0])).toBe('<before-deletion/>');
+    expect(new TextDecoder().decode(saveTm7.mock.calls[2][2])).toBe('<after-deletion/>');
+    expect(saveTm7.mock.calls[2][1].threats).toEqual(model.threats);
+    expect(saveTm7.mock.calls[2][1].flows).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Redo$/ }));
+    await waitFor(() => expect(canvasNodeIds()).toEqual(['a', 'c']));
+    await expectPersisted({ elements: ['a', 'c'], flows: [] });
+    cleanup();
+    vi.resetModules();
+    const { Editor } = await import('./Editor');
+    const recoveredWrite = vi.fn(async () => undefined);
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true,
+      value: async () => ({ name: 'deleted.tm7', createWritable: async () => ({ write: recoveredWrite, close: async () => undefined }) }) });
+    render(<ReactFlowProvider><Editor /></ReactFlowProvider>);
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('native test engine'));
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+    await waitFor(() => expect(recoveredWrite).toHaveBeenCalledOnce());
+    expect(saveTm7.mock.calls.at(-1)![1].threats?.map(threat => threat.id)).toEqual(['manual:unrelated', 'manual:model-wide']);
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it('saves edits against the original bytes, caches a repeated save, and retains the backing source for undo', async () => {
+    const { original, saveTm7, convert, write } = await prepareNative();
+    selectNodes('a');
+    addCustomProperty('NativeEdit', 'Yes');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(write).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByTitle('All changes saved')).toBeInTheDocument());
+    expect(saveTm7).toHaveBeenCalledOnce();
+    expect(Array.from(saveTm7.mock.calls[0][0])).toEqual(Array.from(original));
+    expect(saveTm7.mock.calls[0][1].elements).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'a', properties: expect.objectContaining({ NativeEdit: 'Yes' }) })]));
+    expect(convert).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    expect(saveTm7).toHaveBeenCalledOnce();
+    fireEvent.click(undoButton());
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!);
+      expect(stored.nativeSource.contentBase64).toBe(btoa('<native-source/>'));
+      expect(stored.model.elements[0].properties?.NativeEdit).toBeUndefined();
+    }, { timeout: 3000 });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(saveTm7).toHaveBeenCalledTimes(2));
+    expect(Array.from(saveTm7.mock.calls[1][2]!)).toEqual(Array.from(original));
+  });
+
+  it('restores the native source after reload and saves a new TM7 copy', async () => {
+    const { saveTm7, convert } = await prepareNative();
+    selectNodes('a');
+    addCustomProperty('RecoveredEdit', 'Yes');
+    await waitFor(() => expect(window.localStorage.getItem(STORAGE_KEY)).toContain('RecoveredEdit'), { timeout: 3000 });
+    cleanup();
+    vi.resetModules();
+    const { Editor } = await import('./Editor');
+    const write = vi.fn(async () => undefined);
+    const picker = vi.fn(async () => ({ name: 'recovered.tm7', createWritable: async () => ({ write, close: async () => undefined }) }));
+    Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: picker });
+    render(<ReactFlowProvider><Editor /></ReactFlowProvider>);
+    await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('native test engine'));
+    expect(screen.getByText('source.tm7')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(write).toHaveBeenCalledOnce());
+    expect(picker).toHaveBeenCalledWith({ suggestedName: 'source.tm7' });
+    expect(saveTm7).toHaveBeenCalledOnce();
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it('refuses to overwrite a native file changed by another editor', async () => {
+    const { changeDisk, writable, convert } = await prepareNative();
+    changeDisk();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText(/changed on disk after it was opened/);
+    expect(writable).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it('saves manual label edits without requiring conversion', async () => {
+    const { saveTm7, write, convert } = await prepareNative();
+    act(() => flow!.setEdges(edges => edges.map(edge => ({ ...edge, data: { ...edge.data, labelOffset: { x: 32, y: -20 }, autoLabelOffset: false } }))));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(write).toHaveBeenCalledOnce());
+    expect(saveTm7.mock.calls[0][1].flows[0].labelOffset).toEqual({ x: 32, y: -20 });
+    expect(convert).not.toHaveBeenCalled();
+  });
+
+  it('does not write or fall back to conversion when preserving the edit is refused', async () => {
+    const { saveTm7, writable, convert } = await prepareNative();
+    saveTm7.mockRejectedValueOnce(new Error('Native edit cannot be preserved.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Native edit cannot be preserved.');
+    expect(writable).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
   });
 });
 
@@ -1217,27 +1792,85 @@ describe('Editor preflight review', () => {
     const model = await offlineEngine.read(JSON.stringify(chain()));
     model.elements[0].name = 'Imported Alpha';
     const readFile = vi.fn(async () => model);
+    const recoverTm7 = vi.fn(async () => model);
+    const createWritable = vi.fn();
     const preflight = vi.fn(async () => result);
     engineState.current = Object.assign(Object.create(offlineEngine) as IEngineClient, {
-      label: 'preflight test engine', preflight, readFile,
-      detect: async () => ({ id: 'threat-dragon', canRead: true, canWrite: false, extensions: [] }),
+      label: 'preflight test engine', preflight, readFile, recoverTm7,
+      detect: async () => ({ id: result.format ?? 'threat-dragon', canRead: true, canWrite: result.format === 'tm7', extensions: [] }),
     });
     Object.defineProperty(window, 'showOpenFilePicker', {
       configurable: true,
-      value: async () => [{ name: 'source.json', getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }) }],
+      value: async () => [{ name: result.format === 'tm7' ? 'source.tm7' : 'source.json', createWritable, getFile: async () => ({ arrayBuffer: async () => new ArrayBuffer(0) }) }],
     });
     await mountEditor(chain());
     await waitFor(() => expect(document.querySelector('.engine-pill')).toHaveTextContent('preflight test engine'));
     fireEvent.click(screen.getByRole('button', { name: 'Open File' }));
-    return { readFile, preflight };
+    return { readFile, preflight, recoverTm7, createWritable };
   }
+
+  it('opens ordinary native files without requiring a conversion acknowledgement', async () => {
+    try {
+      const { readFile } = await prepare({ success: true, format: 'tm7', targetFormat: 'tmforge-json', diagnostics: [
+        { code: 'conversion.knowledge-base', severity: 'warning', path: '$.knowledgeBase', message: 'Template omitted.' },
+        { code: 'conversion.generated-register', severity: 'warning', path: '$.threats', message: 'Register omitted.' },
+      ] });
+      await waitFor(() => expect(readFile).toHaveBeenCalledOnce());
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByText('Imported Alpha')).toBeInTheDocument();
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+    }
+  });
+
+  it('warns about hidden native objects and keeps import diagnostics in collapsed technical details', async () => {
+    try {
+      const { readFile, preflight } = await prepare({
+        success: true, format: 'tm7', targetFormat: 'tmforge-json',
+        diagnostics: [
+          { code: 'conversion.knowledge-base', severity: 'warning', path: '$.knowledgeBase', message: 'The embedded knowledge base is not carried in canonical JSON. Rules and catalogs must be supplied separately.' },
+          { code: 'conversion.line-boundaries', severity: 'warning', path: '$.diagrams', message: 'Line boundaries are omitted.' },
+        ],
+      });
+      const dialog = await screen.findByRole('dialog', { name: 'Review import' });
+      expect(within(dialog).getByRole('heading', { name: 'Original TM7 data will be preserved' })).toBeVisible();
+      expect(within(dialog).getByText(/TM7 data is retained/)).toBeVisible();
+      expect(within(dialog).getByText(/not displayed on the canvas/)).toBeVisible();
+      expect(within(dialog).queryByText('Embedded template will not be preserved')).not.toBeInTheDocument();
+      const proceed = within(dialog).getByRole('button', { name: 'Continue import' });
+      const details = within(dialog).getByText('Technical details');
+      expect(proceed).toBeVisible();
+      expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+      proceed.focus();
+      fireEvent.keyDown(proceed, { key: 'Tab' });
+      expect(details).toHaveFocus();
+      fireEvent.keyDown(details, { key: 'Tab', shiftKey: true });
+      expect(proceed).toHaveFocus();
+      for (const text of ['native.analysis-rules', '$.knowledgeBase', 'tm7']) {
+        expect(within(dialog).getByText(text)).not.toBeVisible();
+      }
+      fireEvent.click(details);
+      for (const text of ['native.analysis-rules', '$.knowledgeBase', 'tm7']) {
+        expect(within(dialog).getByText(text)).toBeVisible();
+      }
+      expect(preflight).toHaveBeenCalledWith(expect.any(Uint8Array), 'tm7', 'tmforge-json');
+      expect(readFile).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+    }
+  });
 
   it('reports errors with paths and leaves the original workspace untouched', async () => {
     try {
       const { readFile } = await prepare({ success: false, diagnostics: [{ code: 'model.unresolved-endpoint', severity: 'error', path: '$.flows[0].target', message: 'Target missing.' }] });
       const dialog = await screen.findByRole('dialog', { name: 'Import blocked' });
-      expect(within(dialog).getByText('$.flows[0].target')).toBeInTheDocument();
-      expect(within(dialog).queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+      expect(within(dialog).getByText('Target missing.')).toBeVisible();
+      expect(within(dialog).getByText('$.flows[0].target')).not.toBeVisible();
+      fireEvent.click(within(dialog).getByText('Technical details'));
+      expect(within(dialog).getByText('$.flows[0].target')).toBeVisible();
+      expect(within(dialog).queryByRole('button', { name: /^Continue/ })).not.toBeInTheDocument();
       fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
       expect(readFile).not.toHaveBeenCalled();
       expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
@@ -1247,12 +1880,61 @@ describe('Editor preflight review', () => {
     }
   });
 
+  it.each([false, true])('requires explicit recovery consent and never binds the source handle (continue=%s)', async (proceed) => {
+    try {
+      const { readFile, preflight, recoverTm7, createWritable } = await prepare({ success: false, canRecover: true, format: 'tm7', targetFormat: 'tmforge-json', diagnostics: [
+        { code: 'model.unresolved-endpoint', severity: 'error', path: '$.diagrams[2].flows', message: "Flow 'Create MOBO Resource' has an unattached endpoint." },
+        { code: 'conversion.knowledge-base', severity: 'warning', path: '$.knowledgeBase', message: 'Template omitted.' },
+      ] });
+      const dialog = await screen.findByRole('dialog', { name: 'Review recovery import' });
+      expect(within(dialog).getByText(/will omit the listed broken flows/)).toBeVisible();
+      expect(within(dialog).queryByText(/Original TM7 data will be preserved/)).not.toBeInTheDocument();
+      expect(recoverTm7).not.toHaveBeenCalled();
+      fireEvent.click(within(dialog).getByRole('button', { name: proceed ? 'Import recovery copy' : 'Cancel' }));
+      if (proceed) {
+        await screen.findByText('Imported Alpha');
+        expect(recoverTm7).toHaveBeenCalledOnce();
+        await waitFor(() => {
+          const workspace = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!);
+          expect(workspace.fileName).toBe('source.recovered.tmforge.json');
+          expect(workspace.saveFormat).toBe('tmforge-json');
+          expect(workspace.savedJson).toBe('');
+          expect(workspace.nativeSource).toBeUndefined();
+        }, { timeout: 3000 });
+        preflight.mockResolvedValue({ success: true, format: 'tmforge-json', diagnostics: [] });
+        const picker = vi.fn(async () => { throw new DOMException('Cancelled.', 'AbortError'); });
+        Object.defineProperty(window, 'showSaveFilePicker', { configurable: true, value: picker });
+        fireEvent.click(screen.getByRole('button', { name: /^Save$/ }));
+        await waitFor(() => expect(picker).toHaveBeenCalledOnce());
+        expect(createWritable).not.toHaveBeenCalled();
+      } else {
+        expect(recoverTm7).not.toHaveBeenCalled();
+        expect(canvasNodeIds()).toEqual(['a', 'b', 'c']);
+        expect(undoButton()).toBeDisabled();
+      }
+      expect(readFile).not.toHaveBeenCalled();
+    } finally {
+      Reflect.deleteProperty(window, 'showOpenFilePicker');
+      Reflect.deleteProperty(window, 'showSaveFilePicker');
+    }
+  });
+
+  it('does not offer recovery for an export even when the source is recoverable', () => {
+    render(<PreflightDialog title="Export blocked" operation="export" onDecision={vi.fn()} result={{
+      success: false, canRecover: true, format: 'tm7', diagnostics: [
+        { code: 'model.unresolved-endpoint', severity: 'error', path: '$.flows', message: 'Missing endpoint.' },
+      ],
+    }} />);
+    expect(screen.queryByRole('button', { name: 'Import recovery copy' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toBeVisible();
+  });
+
   it.each([false, true])('requires an explicit decision before a lossy import (continue=%s)', async (proceed) => {
     try {
       const { readFile } = await prepare({ success: true, diagnostics: [{ code: 'conversion.line-boundaries', severity: 'warning', path: '$.diagrams', message: 'Line boundaries are not represented.' }] });
       const dialog = await screen.findByRole('dialog', { name: 'Review import' });
       expect(readFile).not.toHaveBeenCalled();
-      fireEvent.click(within(dialog).getByRole('button', { name: proceed ? 'Continue' : 'Cancel' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: proceed ? 'Continue import' : 'Cancel' }));
       if (proceed) {
         await waitFor(() => expect(readFile).toHaveBeenCalledOnce());
         await screen.findByText('Imported Alpha');
@@ -1263,6 +1945,35 @@ describe('Editor preflight review', () => {
     } finally {
       Reflect.deleteProperty(window, 'showOpenFilePicker');
     }
+  });
+
+  it('distinguishes explicit template-loss exports from preserving the open native document', () => {
+    render(<PreflightDialog title="Review export" operation="export" onDecision={vi.fn()} result={{
+      success: true, format: 'tm7', targetFormat: 'tmforge-json',
+      diagnostics: [{ code: 'conversion.knowledge-base', severity: 'warning', path: '$.knowledgeBase', message: 'Template omitted.' }],
+    }} />);
+    expect(screen.getByText(/This exported copy will not include/)).toBeVisible();
+    expect(screen.getByText(/Your open native TM7 document is still retained/)).toBeVisible();
+    expect(screen.queryByText(/Saving back to .tm7 rebuilds/)).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])('preserves export actions and unknown diagnostics (continue=%s)', (proceed) => {
+    const onDecision = vi.fn();
+    render(<PreflightDialog title="Review export" operation="export" onDecision={onDecision} result={{
+      success: true, format: 'tmforge-json', targetFormat: 'drawio',
+      diagnostics: [{ code: 'future.metadata', severity: 'warning', path: '$.metadata', message: 'Some metadata cannot be exported.' }],
+    }} />);
+    const dialog = screen.getByRole('dialog', { name: 'Review export' });
+    expect(within(dialog).getByText('Some metadata cannot be exported.')).toBeVisible();
+    expect(within(dialog).queryByRole('button', { name: 'Continue import' })).not.toBeInTheDocument();
+    expect(within(dialog).getByText('future.metadata')).not.toBeVisible();
+    fireEvent.click(within(dialog).getByText('Technical details'));
+    expect(within(dialog).getByText('future.metadata')).toBeVisible();
+    expect(within(dialog).getByText('$.metadata')).toBeVisible();
+    expect(within(dialog).getByText('tmforge-json -> drawio')).toBeVisible();
+    expect(onDecision).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: proceed ? 'Continue' : 'Cancel' }));
+    expect(onDecision).toHaveBeenCalledExactlyOnceWith(proceed);
   });
 
   it('discards a delayed import after the workspace changes', async () => {

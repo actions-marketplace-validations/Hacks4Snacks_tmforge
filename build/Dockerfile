@@ -43,6 +43,6 @@ RUN set -eu; \
     code=0; tmforge analyze /tmp/smoke.tm7 || code=$?; [ "$code" -eq 0 ] || [ "$code" -eq 2 ]; \
     rm -f /tmp/smoke.tm7 /tmp/smoke.html
 
-# Default to the umbrella command's help; override with e.g. `docker run <image> tmforge analyze`.
+# Default to the umbrella command's help; override with e.g. `docker run <image> analyze model.tm7`.
 ENTRYPOINT ["tmforge"]
 CMD ["--help"]

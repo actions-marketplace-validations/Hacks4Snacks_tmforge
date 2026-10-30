@@ -4,6 +4,7 @@ namespace ThreatModelForge.Cli.Tests
     using System.Collections.Generic;
     using System.IO;
     using System.Linq;
+    using System.Net;
     using System.Text.Json;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.Engine;
@@ -109,6 +110,24 @@ namespace ThreatModelForge.Cli.Tests
                 File.ReadAllText(Path.Join(second, "model.analysis.json")));
         }
 
+        /// <summary>Markdown describes every finding from the same run and is byte-stable.</summary>
+        [TestMethod]
+        public void MarkdownMatchesTheAnalysisDocument()
+        {
+            JsonElement document = this.Analyze(out string first);
+            this.Analyze(out string second, folderName: "repeated-markdown");
+            string markdown = File.ReadAllText(Path.Join(first, "model.findings.md"));
+            string literal = WebUtility.HtmlDecode(markdown);
+
+            Assert.AreEqual(markdown, File.ReadAllText(Path.Join(second, "model.findings.md")));
+            Assert.IsFalse(markdown.Contains('\r'));
+            foreach (JsonElement finding in document.GetProperty("findings").EnumerateArray())
+            {
+                StringAssert.Contains(literal, finding.GetProperty("id").GetString());
+                StringAssert.Contains(literal, finding.GetProperty("message").GetString());
+            }
+        }
+
         /// <summary>
         /// A suppressed finding is recorded rather than dropped: it keeps its identity so a consumer
         /// can see it is still there and deliberately silenced, and it loses its threat link because a
@@ -136,6 +155,9 @@ namespace ThreatModelForge.Cli.Tests
                 .Single(entry => entry.GetProperty("id").GetString() == findingId);
 
             Assert.AreEqual("suppressed", finding.GetProperty("disposition").GetString());
+            string markdown = WebUtility.HtmlDecode(File.ReadAllText(Path.Join(suppressed, "model.findings.md")));
+            StringAssert.Contains(markdown, findingId);
+            StringAssert.Contains(markdown, "**Disposition:** Suppressed");
             Assert.IsFalse(
                 finding.TryGetProperty("threatId", out JsonElement threat) &&
                 threat.ValueKind != JsonValueKind.Null,

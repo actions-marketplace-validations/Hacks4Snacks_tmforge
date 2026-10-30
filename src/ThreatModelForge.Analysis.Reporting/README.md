@@ -13,6 +13,10 @@ The core pieces are:
 - `SarifReportWriter`: emits **SARIF** (via `Sarif.Sdk`), the standard static-analysis result
   format that CI systems and code-scanning tools understand.
 - `FindingsHtmlReportWriter`: emits a self-contained **HTML** view of the findings.
+- `FindingsMarkdownReportWriter`: emits deterministic **Markdown** with reported and suppressed
+  findings, the same stable finding IDs as SARIF, and rule configuration. The CLI writes it as
+  `<model>.findings.md` alongside the existing reports. Output uses LF endings, escaped model text,
+  stable ordering, and no generated timestamp.
 
 This is distinct from `ThreatModelForge.Reporting`, which renders the threat *model itself*
 (its diagrams and threats) rather than analysis findings.

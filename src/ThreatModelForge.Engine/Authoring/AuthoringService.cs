@@ -395,6 +395,7 @@ namespace ThreatModelForge.Engine
                 Schema = source.Schema,
                 Version = source.Version,
                 Metadata = source.Metadata,
+                Notes = source.Notes,
                 Elements = source.Elements,
                 Flows = source.Flows,
                 Diagrams = source.Diagrams,

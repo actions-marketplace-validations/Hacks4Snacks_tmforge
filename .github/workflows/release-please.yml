@@ -18,12 +18,11 @@ jobs:
     name: Maintain release PR & draft release
     runs-on: ubuntu-latest
     steps:
-      - uses: googleapis/release-please-action@v5
+      - name: Create draft release
+        uses: googleapis/release-please-action@v5
         id: rp
         with:
-          # release-please opens/updates a "release PR" that bumps the version
-          # (Directory.Build.props VersionPrefix) and CHANGELOG.md from Conventional
-          # Commits. Merging it creates a DRAFT GitHub Release (config "draft": true) so
+          # Merging a release PR creates a DRAFT GitHub Release (config "draft": true) so
           # its assets stay mutable — GitHub freezes a release as immutable only when it
           # is published. A draft does NOT create the git tag, so the "Create release tag"
           # step below creates it, which triggers the tag-based workflows (release.yml ->
@@ -37,6 +36,7 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          skip-github-pull-request: true
 
       # release-please leaves the release as a draft (mutable) and so does not create the
       # git tag. Create it here with the PAT so the tag-triggered workflows run; release.yml
@@ -57,3 +57,11 @@ jobs:
               -f "sha=$SHA"
             echo "Created tag $TAG at $SHA."
           fi
+
+      - name: Maintain release PR
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true

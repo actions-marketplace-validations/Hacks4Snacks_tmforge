@@ -7,15 +7,16 @@ namespace ThreatModelForge.Formats
     using System.Linq;
     using System.Text;
     using System.Text.Json;
+    using System.Text.Json.Nodes;
     using ThreatModelForge.Editing;
     using ThreatModelForge.KnowledgeBase;
     using ThreatModelForge.Model;
     using ThreatModelForge.Model.Abstracts;
 
-    /// <summary>Imports OWASP Threat Dragon v2 JSON without executing foreign analysis rules.</summary>
+    /// <summary>Reads and writes a bounded OWASP Threat Dragon v2 subset without executing foreign rules.</summary>
     public sealed class ThreatDragonFormat : IThreatModelFormat
     {
-        /// <summary>The stable identifier for the import-only provider.</summary>
+        /// <summary>The stable format identifier.</summary>
         public const string FormatId = "threat-dragon";
 
         private const int MaxDocumentBytes = 8 * 1024 * 1024;
@@ -23,11 +24,11 @@ namespace ThreatModelForge.Formats
         private const int MaxCells = 10000;
         private const int MaxThreats = 20000;
 
-        private static readonly FormatCapabilities ImportCapabilities = new FormatCapabilities(
+        private static readonly FormatCapabilities DragonCapabilities = new FormatCapabilities(
             canRead: true,
-            canWrite: false,
+            canWrite: true,
             roundTrips: false,
-            fidelityNote: "Import-only Threat Dragon v2: pages, integer rectangles, directed flows, source properties and authored threats. Curved boundaries, bidirectional flows and unmappable threat states are refused. Styling and flow routing are not retained; out-of-scope flags do not suppress tmforge analysis. Native export is not supported.");
+            fidelityNote: "Bounded Threat Dragon v2: pages, integer rectangles, directed flows, supported source properties and authored threats. Unsupported geometry, properties and threat states are refused on export. Imported identities are retained. Styling and flow routing are not retained; out-of-scope flags do not suppress tmforge analysis.");
 
         /// <inheritdoc/>
         public string Id => FormatId;
@@ -36,10 +37,10 @@ namespace ThreatModelForge.Formats
         public string DisplayName => "OWASP Threat Dragon v2 (.json)";
 
         /// <inheritdoc/>
-        public IReadOnlyList<string> Extensions => Array.Empty<string>();
+        public IReadOnlyList<string> Extensions { get; } = new[] { ".threatdragon.json" };
 
         /// <inheritdoc/>
-        public FormatCapabilities Capabilities => ImportCapabilities;
+        public FormatCapabilities Capabilities => DragonCapabilities;
 
         /// <inheritdoc/>
         public bool CanRead(Stream stream)
@@ -131,6 +132,9 @@ namespace ThreatModelForge.Formats
                     Guid = DeterministicGuid.FromPageId("threat-dragon:" + pageId),
                     Header = Text(diagram, "title", required: true),
                 };
+                DiagramElementHelper.SetCustomProperty(surface, "Source.format", FormatId);
+                DiagramElementHelper.SetCustomProperty(surface, "Source.id", pageId);
+                DiagramElementHelper.SetCustomProperty(surface, "Source.modelType", Text(diagram, "diagramType"));
                 if (!objectIds.Add(surface.Guid))
                 {
                     throw new InvalidDataException($"Threat Dragon diagram '{pageId}' collides with an existing object identity.");
@@ -159,7 +163,471 @@ namespace ThreatModelForge.Formats
         /// <inheritdoc/>
         public void Write(ThreatModel model, Stream stream)
         {
-            throw new NotSupportedException("Threat Dragon is import-only. Save as tmforge-json or tm7 instead.");
+            _ = model ?? throw new ArgumentNullException(nameof(model));
+            _ = stream ?? throw new ArgumentNullException(nameof(stream));
+            RefuseField(model.MetaInformation?.Assumptions, "metadata.Assumptions");
+            RefuseField(model.MetaInformation?.ExternalDependencies, "metadata.ExternalDependencies");
+            if (model.Notes.Count > 0 || model.Validations.Count > 0 || model.KnowledgeBase != null || model.ThreatGenerationEnabled.HasValue)
+            {
+                throw new NotSupportedException("Threat Dragon export cannot preserve model notes, validations, embedded knowledge bases or native threat-generation settings.");
+            }
+
+            if (model.DrawingSurfaceList.Count > MaxDiagrams || model.AllThreatsDictionary.Count > MaxThreats
+                || model.DrawingSurfaceList.Sum(page => (long)page.Borders.Count + page.Lines.Count) > MaxCells)
+            {
+                throw new NotSupportedException($"Threat Dragon export is limited to {MaxDiagrams} diagrams, {MaxCells} cells and {MaxThreats} threats.");
+            }
+
+            HashSet<Guid> objectIds = new HashSet<Guid>();
+            foreach (DrawingSurfaceModel page in model.DrawingSurfaceList)
+            {
+                foreach (Entity entity in new Entity[] { page }.Concat(page.Borders.Values.Concat(page.Lines.Values).OfType<Entity>()))
+                {
+                    if (entity.Guid == Guid.Empty || !objectIds.Add(entity.Guid))
+                    {
+                        throw new NotSupportedException($"Threat Dragon export requires unique nonempty object identities; found '{entity.Guid}'.");
+                    }
+                }
+            }
+
+            JsonArray diagrams = new JsonArray();
+            Dictionary<Guid, long> pageIds = ExportPageIds(model);
+            Dictionary<string, long> threatNumbers = ExportThreatNumbers(model);
+            HashSet<string> writtenThreats = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            ILookup<Guid, KeyValuePair<string, Threat>> scopedThreats = model.AllThreatsDictionary
+                .OrderBy(entry => entry.Key, StringComparer.Ordinal)
+                .ToLookup(entry => entry.Value.FlowGuid != Guid.Empty ? entry.Value.FlowGuid : entry.Value.SourceGuid);
+            foreach (DrawingSurfaceModel page in model.DrawingSurfaceList)
+            {
+                diagrams.Add(WriteDiagram(page, pageIds[page.Guid], scopedThreats, threatNumbers, writtenThreats));
+            }
+
+            if (writtenThreats.Count != model.AllThreatsDictionary.Count)
+            {
+                string missing = model.AllThreatsDictionary.Keys.First(key => !writtenThreats.Contains(key));
+                throw new NotSupportedException($"Threat Dragon export cannot represent threat '{missing}': it must be scoped to one supported cell on an existing diagram.");
+            }
+
+            JsonArray contributors = new JsonArray();
+            if (!string.IsNullOrEmpty(model.MetaInformation?.Contributors))
+            {
+                contributors.Add(new JsonObject { ["name"] = model.MetaInformation!.Contributors });
+            }
+
+            JsonObject document = new JsonObject
+            {
+                ["version"] = "2.6.2",
+                ["summary"] = new JsonObject
+                {
+                    ["title"] = string.IsNullOrWhiteSpace(model.MetaInformation?.ThreatModelName) ? "Threat model" : model.MetaInformation!.ThreatModelName,
+                    ["owner"] = model.MetaInformation?.Owner ?? string.Empty,
+                    ["description"] = model.MetaInformation?.HighLevelSystemDescription ?? string.Empty,
+                },
+                ["detail"] = new JsonObject
+                {
+                    ["reviewer"] = model.MetaInformation?.Reviewer ?? string.Empty,
+                    ["contributors"] = contributors,
+                    ["diagrams"] = diagrams,
+                    ["diagramTop"] = pageIds.Count == 0 ? 0 : pageIds.Values.Max() + 1,
+                    ["threatTop"] = threatNumbers.Count == 0 ? 0 : threatNumbers.Values.Max(),
+                },
+            };
+            byte[] bytes = Encoding.UTF8.GetBytes(document.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            using MemoryStream candidate = new MemoryStream(bytes, writable: false);
+            this.Read(candidate);
+            stream.Write(bytes, 0, bytes.Length);
+        }
+
+        private static JsonObject WriteDiagram(
+            DrawingSurfaceModel page,
+            long diagramId,
+            ILookup<Guid, KeyValuePair<string, Threat>> scopedThreats,
+            IReadOnlyDictionary<string, long> threatNumbers,
+            HashSet<string> writtenThreats)
+        {
+            List<Entity> entities = page.Borders.Values.Concat(page.Lines.Values).OfType<Entity>().ToList();
+            if (entities.Count != page.Borders.Count + page.Lines.Count)
+            {
+                throw new NotSupportedException($"Threat Dragon diagram '{page.Header}' contains an unsupported object.");
+            }
+
+            string pageId = diagramId.ToString(CultureInfo.InvariantCulture);
+            string methodology = ExportProperty(page, "Source.modelType");
+            if (methodology.Length == 0)
+            {
+                methodology = entities.Select(entity => ExportProperty(entity, "ThreatDragon.ModelType"))
+                    .FirstOrDefault(value => value.Length > 0) ?? "STRIDE";
+            }
+
+            Dictionary<Guid, string> ids = entities.ToDictionary(entity => entity.Guid, entity => ExportCellId(entity, pageId));
+            JsonArray cells = new JsonArray();
+            foreach (Entity entity in entities.OrderBy(entity => entity is BorderBoundary ? 0 : entity is Connector ? 2 : 1).ThenBy(entity => entity.Guid))
+            {
+                string kind = entity switch
+                {
+                    BorderBoundary => "tm.BoundaryBox",
+                    StencilEllipse => "tm.Process",
+                    StencilParallelLines => "tm.Store",
+                    StencilRectangle => "tm.Actor",
+                    Connector => "tm.Flow",
+                    _ => throw new NotSupportedException($"Threat Dragon cell '{entity.Guid}' has unsupported type '{entity.GetType().Name}'."),
+                };
+                string shape = kind switch
+                {
+                    "tm.BoundaryBox" => "trust-boundary-box",
+                    "tm.Process" => "process",
+                    "tm.Store" => "store",
+                    "tm.Actor" => "actor",
+                    _ => "flow",
+                };
+                string genericType = kind switch
+                {
+                    "tm.BoundaryBox" => "GE.TB.B",
+                    "tm.Process" => "GE.P",
+                    "tm.Store" => "GE.DS",
+                    "tm.Actor" => "GE.EI",
+                    _ => "GE.DF",
+                };
+                if ((!string.IsNullOrEmpty(entity.TypeId) && entity.TypeId != genericType)
+                    || (!string.IsNullOrEmpty(entity.GenericTypeId) && entity.GenericTypeId != genericType))
+                {
+                    throw new NotSupportedException($"Threat Dragon cell '{entity.Guid}' has unsupported stencil '{entity.TypeId}' / '{entity.GenericTypeId}'.");
+                }
+
+                string name = DiagramElementHelper.GetName(entity);
+                JsonObject data = WriteData(entity, kind, name);
+                JsonArray threats = new JsonArray();
+                foreach (KeyValuePair<string, Threat> entry in scopedThreats[entity.Guid])
+                {
+                    Threat threat = entry.Value;
+                    if (threat.Wide)
+                    {
+                        throw new NotSupportedException($"Threat Dragon export cannot preserve model-wide threat '{entry.Key}'.");
+                    }
+
+                    bool invalidTargetReference = entity is Connector connector
+                        ? threat.SourceGuid != connector.SourceGuid || threat.TargetGuid != connector.TargetGuid
+                        : threat.TargetGuid != Guid.Empty;
+                    if (invalidTargetReference)
+                    {
+                        throw new NotSupportedException($"Threat Dragon threat '{entry.Key}' references multiple or inconsistent target cells.");
+                    }
+
+                    if (threat.DrawingSurfaceGuid != Guid.Empty && threat.DrawingSurfaceGuid != page.Guid)
+                    {
+                        throw new NotSupportedException($"Threat Dragon threat '{entry.Key}' references a different diagram from its cell.");
+                    }
+
+                    threats.Add(WriteThreat(entry.Key, threat, methodology, threatNumbers[entry.Key]));
+                    writtenThreats.Add(entry.Key);
+                }
+
+                data["threats"] = threats;
+                data["hasOpenThreats"] = threats.Any(threat => (string?)threat?["status"] == "Open");
+                JsonObject cell = new JsonObject { ["id"] = ids[entity.Guid], ["shape"] = shape, ["data"] = data, ["zIndex"] = kind == "tm.BoundaryBox" ? 0 : 1 };
+                if (entity is DrawingElement rectangle)
+                {
+                    if (rectangle.Width < 10 || rectangle.Height < 10)
+                    {
+                        throw new NotSupportedException($"Threat Dragon cell '{entity.Guid}' dimensions must be at least 10 to satisfy the v2 schema.");
+                    }
+
+                    cell["position"] = new JsonObject { ["x"] = rectangle.Left, ["y"] = rectangle.Top };
+                    cell["size"] = new JsonObject { ["width"] = rectangle.Width, ["height"] = rectangle.Height };
+                    cell["attrs"] = new JsonObject { ["text"] = new JsonObject { ["text"] = name } };
+                }
+                else if (entity is Connector flow)
+                {
+                    if (!flow.HandleIsAtMidpoint || flow.PortSource != "None" || flow.PortTarget != "None")
+                    {
+                        throw new NotSupportedException($"Threat Dragon flow '{entity.Guid}' has authored routing or ports outside the supported export subset.");
+                    }
+
+                    if (!page.Borders.ContainsKey(flow.SourceGuid) || !page.Borders.ContainsKey(flow.TargetGuid))
+                    {
+                        throw new NotSupportedException($"Threat Dragon flow '{entity.Guid}' has an unattached or cross-page endpoint.");
+                    }
+
+                    cell["source"] = new JsonObject { ["cell"] = ids[flow.SourceGuid] };
+                    cell["target"] = new JsonObject { ["cell"] = ids[flow.TargetGuid] };
+                    cell["labels"] = new JsonArray(new JsonObject
+                    {
+                        ["position"] = 0.5,
+                        ["attrs"] = new JsonObject { ["label"] = new JsonObject { ["text"] = name } },
+                    });
+                }
+
+                cells.Add(cell);
+            }
+
+            return new JsonObject { ["id"] = diagramId, ["title"] = page.Header, ["diagramType"] = methodology, ["thumbnail"] = string.Empty, ["version"] = "2.0", ["cells"] = cells };
+        }
+
+        private static Dictionary<Guid, long> ExportPageIds(ThreatModel model)
+        {
+            Dictionary<Guid, long> ids = new Dictionary<Guid, long>();
+            HashSet<long> used = new HashSet<long>();
+            foreach (DrawingSurfaceModel page in model.DrawingSurfaceList)
+            {
+                string sourceId = ExportProperty(page, "Source.id");
+                if (sourceId.Length == 0)
+                {
+                    sourceId = page.Borders.Values.Concat(page.Lines.Values).OfType<Entity>()
+                        .Select(entity => ExportProperty(entity, "ThreatDragon.DiagramId"))
+                        .FirstOrDefault(id => id.Length > 0 && DeterministicGuid.FromPageId("threat-dragon:" + id) == page.Guid) ?? string.Empty;
+                }
+
+                if (sourceId.Length == 0)
+                {
+                    continue;
+                }
+
+                if (!long.TryParse(sourceId, NumberStyles.None, CultureInfo.InvariantCulture, out long number)
+                    || number > 9007199254740990 || number.ToString(CultureInfo.InvariantCulture) != sourceId
+                    || DeterministicGuid.FromPageId("threat-dragon:" + sourceId) != page.Guid || !used.Add(number))
+                {
+                    throw new NotSupportedException($"Threat Dragon diagram '{page.Header}' source id '{sourceId}' must be a unique nonnegative safe integer matching its imported identity.");
+                }
+
+                ids.Add(page.Guid, number);
+            }
+
+            long next = 0;
+            foreach (DrawingSurfaceModel page in model.DrawingSurfaceList.Where(page => !ids.ContainsKey(page.Guid)))
+            {
+                while (used.Contains(next))
+                {
+                    next++;
+                }
+
+                ids.Add(page.Guid, next);
+                used.Add(next++);
+            }
+
+            return ids;
+        }
+
+        private static Dictionary<string, long> ExportThreatNumbers(ThreatModel model)
+        {
+            Dictionary<string, long> numbers = new Dictionary<string, long>(StringComparer.Ordinal);
+            HashSet<long> used = new HashSet<long>();
+            foreach (KeyValuePair<string, Threat> entry in model.AllThreatsDictionary)
+            {
+                if (entry.Value.Properties == null || !entry.Value.Properties.TryGetValue("Source.number", out string? source))
+                {
+                    continue;
+                }
+
+                if (!long.TryParse(source, NumberStyles.None, CultureInfo.InvariantCulture, out long number)
+                    || number > 9007199254740990 || number.ToString(CultureInfo.InvariantCulture) != source || !used.Add(number))
+                {
+                    throw new NotSupportedException($"Threat Dragon threat '{entry.Key}' source number '{source}' must be a unique nonnegative safe integer.");
+                }
+
+                numbers.Add(entry.Key, number);
+            }
+
+            long next = 1;
+            foreach (string key in model.AllThreatsDictionary.Keys.OrderBy(key => key, StringComparer.Ordinal).Where(key => !numbers.ContainsKey(key)))
+            {
+                while (used.Contains(next))
+                {
+                    next++;
+                }
+
+                numbers.Add(key, next);
+                used.Add(next++);
+            }
+
+            return numbers;
+        }
+
+        private static JsonObject WriteData(Entity entity, string kind, string name)
+        {
+            JsonObject data = new JsonObject();
+            IReadOnlyDictionary<string, string> properties = DiagramElementHelper.GetCustomProperties(entity);
+            foreach (string key in properties.Keys)
+            {
+                bool mapped = kind switch
+                {
+                    "tm.Store" => key is "StoresCredentials" or "StoresLogData" or "Signed" or "Encrypted",
+                    "tm.Actor" => key == "AuthenticatesItself",
+                    "tm.Flow" => key == "Protocol",
+                    _ => false,
+                };
+                if (!mapped && key != "ThreatDragon.Id" && key != "ThreatDragon.DiagramId" && key != "ThreatDragon.ModelType"
+                    && !key.StartsWith("ThreatDragon.data.", StringComparison.Ordinal))
+                {
+                    throw new NotSupportedException($"Threat Dragon cell '{entity.Guid}' has unsupported property '{key}'.");
+                }
+            }
+
+            foreach (KeyValuePair<string, string> property in properties
+                .Where(property => property.Key.StartsWith("ThreatDragon.data.", StringComparison.Ordinal)).OrderBy(property => property.Key, StringComparer.Ordinal))
+            {
+                string key = property.Key.Substring("ThreatDragon.data.".Length);
+                switch (key)
+                {
+                    case "name":
+                    case "type":
+                    case "hasOpenThreats":
+                    case "isTrustBoundary":
+                        break;
+                    case "outOfScope":
+                    case "isBidirectional":
+                    case "providesAuthentication":
+                    case "storesCredentials":
+                    case "isALog":
+                    case "isSigned":
+                    case "isEncrypted":
+                    case "isPublicNetwork":
+                    case "isWebApplication":
+                    case "handlesCardPayment":
+                    case "handlesGoodsOrServices":
+                    case "storesInventory":
+                        if (!bool.TryParse(property.Value, out bool boolean))
+                        {
+                            throw new NotSupportedException($"Threat Dragon cell '{entity.Guid}' property '{key}' must be a boolean.");
+                        }
+
+                        data[key] = boolean;
+                        break;
+                    case "description":
+                    case "reasonOutOfScope":
+                    case "protocol":
+                    case "privilegeLevel":
+                        data[key] = property.Value;
+                        break;
+                    default:
+                        throw new NotSupportedException($"Threat Dragon cell '{entity.Guid}' has unsupported source property '{key}'.");
+                }
+            }
+
+            data["type"] = kind;
+            data["name"] = name;
+            data["isTrustBoundary"] = kind == "tm.BoundaryBox";
+            if (kind == "tm.Store")
+            {
+                WriteControl(data, properties, entity.Guid, "storesCredentials", "StoresCredentials");
+                WriteControl(data, properties, entity.Guid, "isALog", "StoresLogData");
+                WriteControl(data, properties, entity.Guid, "isSigned", "Signed");
+                WriteControl(data, properties, entity.Guid, "isEncrypted", "Encrypted", "At-rest");
+            }
+            else if (kind == "tm.Actor")
+            {
+                WriteControl(data, properties, entity.Guid, "providesAuthentication", "AuthenticatesItself");
+            }
+            else if (kind == "tm.Flow")
+            {
+                data.Remove("protocol");
+                if (properties.TryGetValue("Protocol", out string? protocol))
+                {
+                    data["protocol"] = protocol;
+                }
+            }
+
+            return data;
+        }
+
+        private static void WriteControl(JsonObject data, IReadOnlyDictionary<string, string> properties, Guid id, string field, string key, string positive = "Yes")
+        {
+            data.Remove(field);
+            if (!properties.TryGetValue(key, out string? value))
+            {
+                return;
+            }
+
+            if (value != positive && value != "No")
+            {
+                throw new NotSupportedException($"Threat Dragon cell '{id}' property '{key}' has value '{value}'; only '{positive}' and 'No' can be exported as a boolean.");
+            }
+
+            data[field] = value == positive;
+        }
+
+        private static JsonObject WriteThreat(string key, Threat threat, string methodology, long number)
+        {
+            if (!ManualThreatId.IsManual(key)
+                || (!string.IsNullOrEmpty(threat.TypeId) && !ManualThreatId.IsNativeTypeId(threat.TypeId)))
+            {
+                throw new NotSupportedException($"Threat Dragon export cannot preserve generated threat '{key}'; only authored threats are supported.");
+            }
+
+            RefuseField(threat.ChangedBy, "threat '" + key + "'.ChangedBy");
+            RefuseField(threat.InteractionString, "threat '" + key + "'.InteractionString");
+            if (threat.ModifiedAt != default || threat.Upgraded)
+            {
+                throw new NotSupportedException($"Threat Dragon threat '{key}' contains unsupported audit metadata.");
+            }
+
+            foreach (string property in threat.Properties?.Keys ?? Enumerable.Empty<string>())
+            {
+                string? projected = property switch
+                {
+                    "Title" => threat.Title,
+                    "UserThreatCategory" => threat.UserThreatCategory,
+                    "UserThreatShortDescription" => threat.UserThreatShortDescription,
+                    "UserThreatDescription" => threat.UserThreatDescription,
+                    "StateInformation" => threat.StateInformation,
+                    "InteractionString" => threat.InteractionString,
+                    "Priority" => threat.Priority,
+                    _ => null,
+                };
+                if (projected != null && string.Equals(projected, threat.Properties![property], StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (property != "Mitigation" && property != "Source.format" && property != "Source.version" && property != "Source.id"
+                    && property != "Source.cellId" && property != "Source.diagramId" && property != "Source.modelType"
+                    && property != "Source.status" && property != "Source.severity" && property != "Source.score" && property != "Source.number")
+                {
+                    throw new NotSupportedException($"Threat Dragon threat '{key}' has unsupported property '{property}'.");
+                }
+            }
+
+            string status = threat.State switch
+            {
+                ThreatState.AutoGenerated => "Open",
+                ThreatState.Mitigated => "Mitigated",
+                ThreatState.NotApplicable => "Accepted",
+                _ => throw new NotSupportedException($"Threat Dragon threat '{key}' has unsupported state '{threat.State}'."),
+            };
+            string id = key.StartsWith("manual:threat-dragon.", StringComparison.OrdinalIgnoreCase)
+                ? key.Substring("manual:threat-dragon.".Length) : key.Substring("manual:".Length);
+            return new JsonObject
+            {
+                ["id"] = id,
+                ["number"] = number,
+                ["title"] = threat.Title,
+                ["type"] = threat.UserThreatCategory,
+                ["modelType"] = threat.Properties != null && threat.Properties.TryGetValue("Source.modelType", out string? modelType) ? modelType : methodology,
+                ["description"] = threat.UserThreatDescription ?? threat.UserThreatShortDescription ?? string.Empty,
+                ["mitigation"] = threat.Properties != null && threat.Properties.TryGetValue("Mitigation", out string? mitigation) ? mitigation : string.Empty,
+                ["severity"] = threat.Priority,
+                ["status"] = status,
+                ["justification"] = threat.StateInformation ?? string.Empty,
+                ["score"] = threat.Properties != null && threat.Properties.TryGetValue("Source.score", out string? score) ? score : string.Empty,
+            };
+        }
+
+        private static string ExportProperty(Entity entity, string key) =>
+            DiagramElementHelper.GetCustomProperties(entity).TryGetValue(key, out string? value) ? value : string.Empty;
+
+        private static void RefuseField(string? value, string field)
+        {
+            if (!string.IsNullOrEmpty(value))
+            {
+                throw new NotSupportedException($"Threat Dragon export cannot preserve '{field}'.");
+            }
+        }
+
+        private static string ExportCellId(Entity entity, string pageId)
+        {
+            string sourceId = ExportProperty(entity, "ThreatDragon.Id");
+            Guid imported = Guid.TryParse(sourceId, out Guid parsed) ? parsed
+                : DeterministicGuid.FromElementId($"threat-dragon:{pageId.Length}:{pageId}:{sourceId}");
+            return sourceId.Length > 0 && imported == entity.Guid ? sourceId : entity.Guid.ToString("D");
         }
 
         private static void ReadCells(
@@ -384,6 +852,10 @@ namespace ThreatModelForge.Formats
                         ["Source.score"] = Text(item, "score"),
                     },
                 });
+                if (item.TryGetProperty("number", out _))
+                {
+                    model.AllThreatsDictionary[key].Properties!["Source.number"] = Identifier(item, "number");
+                }
             }
         }
 

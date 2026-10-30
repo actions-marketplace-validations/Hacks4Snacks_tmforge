@@ -540,6 +540,57 @@ describe('routeEdges', () => {
 });
 
 describe('tidyGraph', () => {
+  it.each([false, true])('keeps ungrouped actors outside grown manifest boundaries (declared=%s)', (declared) => {
+    const input: DfdNode[] = [
+      node('webview-origin', 'boundary', 'VS Code webview origin', 40, 40, 408, 156),
+      node('extension-authority', 'boundary', 'Extension-host authority', 40, 236, 408, 240),
+      node('author', 'external', 'Model author', 40, 516, 120, 60),
+      node('copilot', 'external', 'Copilot conversation', 190, 516, 120, 60),
+      node('webview', 'process', 'Studio webview', 64, 88, 100, 60),
+      node('host', 'process', 'Document / tool host', 64, 284, 100, 60),
+      node('worker', 'process', '.NET WASM worker', 184, 284, 100, 60),
+      node('document', 'datastore', 'Open model document', 304, 284, 120, 50),
+      node('files', 'datastore', 'Model files / exports', 64, 368, 120, 50),
+    ].map(item => ({ ...item, data: {
+      ...item.data,
+      stencilType: item.type === 'boundary' ? undefined : item.type,
+      properties: declared && (item.type === 'process' || item.type === 'datastore')
+        ? { Boundary: item.id === 'webview' ? 'webview-origin' : 'extension-authority' } : undefined,
+    } }));
+    const original = structuredClone(input);
+    const result = tidyGraph(input, [edge('edit', 'author', 'webview')]);
+    const boundaries = result.nodes.filter(item => item.type === 'boundary');
+    for (const actor of result.nodes.filter(item => item.type === 'external')) {
+      for (const boundary of boundaries) {
+        const overlaps = actor.position.x < boundary.position.x + boundary.width!
+          && actor.position.x + actor.width! > boundary.position.x
+          && actor.position.y < boundary.position.y + boundary.height!
+          && actor.position.y + actor.height! > boundary.position.y;
+        expect(overlaps, `${actor.id} overlaps ${boundary.id}: ${JSON.stringify(result.nodes)}`).toBe(false);
+      }
+    }
+    expect(input).toEqual(original);
+    expect(tidyGraph(result.nodes, result.edges).nodes).toEqual(result.nodes);
+  });
+
+  it('keeps parent-only members outside a grown child boundary', () => {
+    const input = [
+      node('outer', 'boundary', 'Host authority', 0, 0, 600, 500),
+      node('inner', 'boundary', 'Worker', 40, 40, 220, 130),
+      node('child', 'process', 'A worker process with a long label', 60, 75, 100, 60),
+      node('peer', 'datastore', 'Host document', 60, 190, 120, 64),
+    ];
+    const result = tidyGraph(input, [edge('read', 'child', 'peer')]);
+    const outer = result.nodes.find(item => item.id === 'outer')!;
+    const inner = result.nodes.find(item => item.id === 'inner')!;
+    const peer = result.nodes.find(item => item.id === 'peer')!;
+
+    expect(peer.position.y).toBeGreaterThanOrEqual(inner.position.y + inner.height! + 24);
+    expect(peer.position.x).toBeGreaterThan(outer.position.x);
+    expect(peer.position.y + peer.height!).toBeLessThan(outer.position.y + outer.height!);
+    expect(tidyGraph(result.nodes, result.edges).nodes).toEqual(result.nodes);
+  });
+
   it('fits shapes and separates overlapping labels in one pass', () => {
     const nodes: DfdNode[] = [
       node('a', 'external', 'Cluster workload / kubectl (client)', 0, 0, 120, 80),

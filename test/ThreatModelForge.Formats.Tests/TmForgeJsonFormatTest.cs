@@ -101,6 +101,9 @@ namespace ThreatModelForge.Formats.Tests
         [DataRow("{\"schema\":\"other\"}", "input.schema")]
         [DataRow("{\"version\":\"9.0\"}", "input.version")]
         [DataRow("{\"elements\":[null]}", "input.null-entry")]
+        [DataRow("{\"notes\":[null]}", "input.null-entry")]
+        [DataRow("{\"notes\":[{\"id\":true}]}", "input.invalid-value")]
+        [DataRow("{\"notes\":[{\"date\":\"not-a-date\"}]}", "input.invalid-value")]
         [DataRow("{\"elements\":[{}]}", "model.invalid-id")]
         [DataRow("{\"elements\":[{\"id\":\"00000000-0000-0000-0000-000000000000\"}]}", "model.invalid-id")]
         [DataRow("{\"elements\":[{\"id\":\"x\",\"ID\":\"y\"}]}", "input.duplicate-field")]
@@ -349,6 +352,52 @@ namespace ThreatModelForge.Formats.Tests
             StringAssert.Contains(json, "Web App");
             StringAssert.Contains(json, "Database");
             StringAssert.Contains(json, "query");
+        }
+
+        /// <summary>Model notes retain their native fields through canonical and native round trips.</summary>
+        [TestMethod]
+        public void ModelNotesRoundTrip()
+        {
+            ThreatModel source = ReadJson(SampleJson);
+            source.Notes.Add(new Note
+            {
+                Id = 7,
+                Message = "Scope <review>\nSecond line & evidence",
+                AddedBy = "Reviewer",
+                Date = new DateTime(2026, 9, 30, 12, 0, 0, DateTimeKind.Utc).AddTicks(1234567),
+            });
+            source.Notes.Add(new Note { Id = 12, Date = new DateTime(2026, 9, 29) });
+
+            using MemoryStream json = new MemoryStream();
+            new TmForgeJsonFormat().Write(source, json);
+            using JsonDocument document = JsonDocument.Parse(json.ToArray());
+            Assert.AreEqual(2, document.RootElement.GetProperty("notes").GetArrayLength());
+            Assert.HasCount(0, JsonModelPreflight.Inspect(Encoding.UTF8.GetString(json.ToArray())));
+
+            ThreatModel canonical = ReadJson(Encoding.UTF8.GetString(json.ToArray()));
+            using MemoryStream native = new MemoryStream();
+            canonical.Save(native);
+            native.Position = 0;
+            ThreatModel restored = ThreatModel.Load(native);
+            Assert.HasCount(source.Notes.Count, restored.Notes);
+            for (int index = 0; index < source.Notes.Count; index++)
+            {
+                Assert.AreEqual(source.Notes[index].Id, restored.Notes[index].Id);
+                Assert.AreEqual(source.Notes[index].Message, restored.Notes[index].Message);
+                Assert.AreEqual(source.Notes[index].AddedBy, restored.Notes[index].AddedBy);
+                Assert.AreEqual(source.Notes[index].Date, restored.Notes[index].Date);
+                Assert.AreEqual(source.Notes[index].Date.Kind, restored.Notes[index].Date.Kind);
+            }
+        }
+
+        /// <summary>Older models without notes retain their existing canonical shape.</summary>
+        [TestMethod]
+        public void EmptyModelNotesAreOmitted()
+        {
+            using MemoryStream output = new MemoryStream();
+            new TmForgeJsonFormat().Write(ReadJson(SampleJson), output);
+            using JsonDocument document = JsonDocument.Parse(output.ToArray());
+            Assert.IsFalse(document.RootElement.TryGetProperty("notes", out _));
         }
 
         /// <summary>

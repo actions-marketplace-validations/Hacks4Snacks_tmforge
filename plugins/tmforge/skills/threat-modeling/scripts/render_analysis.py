@@ -6,19 +6,28 @@ import html
 import json
 import os
 import re
+import secrets
 import sys
 import tempfile
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote
 
+from generate_suppressions import (
+    artifact_stream,
+    output_directory,
+    require_distinct_output,
+    validate_output_entry,
+)
 from validate_analysis import (
     JsonObject,
     as_object,
     as_object_list,
     as_string_list,
+    display_id,
     load_document,
     natural_key,
+    page_views,
     validate_document,
 )
 
@@ -120,6 +129,14 @@ def sequence_label(value: object) -> str:
 
 def render_flowchart(document: JsonObject) -> list[str]:
     """Render a stable Mermaid flowchart from canonical elements and flows."""
+    if document.get("pages"):
+        page_lines: list[str] = []
+        for page, view in page_views(document):
+            page_lines.extend(
+                (f"### {markdown(page['id'])}: {markdown(page['name'])}", "")
+            )
+            page_lines.extend(render_flowchart(view))
+        return page_lines
     boundaries = as_object_list(document.get("boundaries")) or []
     elements = as_object_list(document.get("elements")) or []
     flows = as_object_list(document.get("flows")) or []
@@ -160,7 +177,7 @@ def render_flowchart(document: JsonObject) -> list[str]:
             lines.append("    %% No elements assigned to this boundary")
         lines.append("  end")
     for flow in flows:
-        flow_id = str(flow["id"])
+        flow_id = display_id(flow)
         source_id = str(flow["sourceId"])
         target_id = str(flow["targetId"])
         label = mermaid_label(f"{flow_id}: {text(flow.get('name'))}")
@@ -171,6 +188,14 @@ def render_flowchart(document: JsonObject) -> list[str]:
 
 def render_sequence(document: JsonObject) -> list[str]:
     """Render a stable sequence view of all enumerated flows."""
+    if document.get("pages"):
+        page_lines: list[str] = []
+        for page, view in page_views(document):
+            page_lines.extend(
+                (f"### {markdown(page['id'])}: {markdown(page['name'])}", "")
+            )
+            page_lines.extend(render_sequence(view))
+        return page_lines
     elements = as_object_list(document.get("elements")) or []
     flows = as_object_list(document.get("flows")) or []
     lines = ["```mermaid", "sequenceDiagram"]
@@ -179,7 +204,7 @@ def render_sequence(document: JsonObject) -> list[str]:
         label = sequence_label(f"{element_id}: {text(element.get('name'))}")
         lines.append(f"  participant N_{element_id} as {label}")
     for flow in flows:
-        flow_id = str(flow["id"])
+        flow_id = display_id(flow)
         source_id = str(flow["sourceId"])
         target_id = str(flow["targetId"])
         label = sequence_label(f"{flow_id}: {text(flow.get('name'))}")
@@ -198,6 +223,8 @@ def render_data_flow(document: JsonObject, ledger_name: str) -> str:
     assets = as_object_list(document.get("assets")) or []
     threat_actors = as_object_list(document.get("threatActors")) or []
     evidence = as_object_list(document.get("evidence")) or []
+    local_numbering = any("displayId" in flow for flow in flows)
+    element_pages = {str(item["id"]): item.get("pageId") for item in elements}
 
     lines = [
         GENERATED_NOTICE,
@@ -221,6 +248,38 @@ def render_data_flow(document: JsonObject, ledger_name: str) -> str:
             )
         ],
     )
+
+    if document.get("pages"):
+        lines.extend(("## Diagram Pages", ""))
+        append_table(
+            lines,
+            (
+                "ID", "Name", "Boundaries", "Elements",
+                "Stable Flow IDs" if local_numbering else "Flows",
+            ),
+            (
+                (
+                    page["id"],
+                    page["name"],
+                    join_values(
+                        [
+                            item["id"]
+                            for item in as_object_list(view.get("boundaries")) or []
+                        ]
+                    ),
+                    join_values(
+                        [
+                            item["id"]
+                            for item in as_object_list(view.get("elements")) or []
+                        ]
+                    ),
+                    join_values(
+                        [item["id"] for item in as_object_list(view.get("flows")) or []]
+                    ),
+                )
+                for page, view in page_views(document)
+            ),
+        )
 
     lines.extend(("## Trust Boundaries", ""))
     append_table(
@@ -256,10 +315,29 @@ def render_data_flow(document: JsonObject, ledger_name: str) -> str:
     )
 
     lines.extend(("## Data Flows", ""))
+    if local_numbering:
+        lines.extend(
+            (
+                "Display IDs restart at F1 within each numbered page. Use the "
+                "page and display ID together (for example PG1/F1); stable IDs "
+                "remain the references used by findings, coverage and evidence. "
+                "These are flow references, not execution-order guarantees.",
+                "",
+            )
+        )
+        flows = [
+            flow
+            for _, view in page_views(document)
+            for flow in sorted(
+                as_object_list(view.get("flows")) or [],
+                key=lambda item: natural_key(display_id(item)),
+            )
+        ]
     append_table(
         lines,
         (
-            "ID",
+            *(("Page", "Display ID") if local_numbering else ()),
+            "Stable ID" if local_numbering else "ID",
             "Name",
             "Source",
             "Target",
@@ -270,6 +348,10 @@ def render_data_flow(document: JsonObject, ledger_name: str) -> str:
         ),
         (
             (
+                *(
+                    (element_pages[str(item["sourceId"])], display_id(item))
+                    if local_numbering else ()
+                ),
                 item.get("id"),
                 item.get("name"),
                 item.get("sourceId"),
@@ -434,13 +516,12 @@ def render_threat_model(
     lines.extend(("## Evidence Baseline", ""))
     append_table(
         lines,
-        ("Revision", "Date", "Approved By"),
+        ("Revision", "Date"),
         (
             [
                 (
                     baseline.get("revision"),
                     baseline.get("date"),
-                    baseline.get("approvedBy"),
                 )
             ]
             if baseline
@@ -574,6 +655,28 @@ def render_threat_model(
         )
 
     lines.extend(("## Threat Register", ""))
+    if any("displayId" in flow for flow in flows):
+        lines.extend(
+            (
+                "Flow targets retain their stable IDs. The page-local diagram "
+                "label mapping appears "
+                + (
+                    "in the Data Flows table of [data-flow.md](./data-flow.md)."
+                    if not standalone else "below."
+                ),
+                "",
+            )
+        )
+        if standalone:
+            append_table(
+                lines,
+                ("Page", "Display ID", "Stable ID", "Name"),
+                (
+                    (page["id"], display_id(flow), flow["id"], flow["name"])
+                    for page, view in page_views(document)
+                    for flow in as_object_list(view.get("flows")) or []
+                ),
+            )
     append_table(
         lines,
         ("ID", "Title", "Origin", "Status", "Level", "Score", "Targets"),
@@ -638,6 +741,7 @@ def render_threat_model(
                     "Date",
                     "Reviewer",
                     "Decision",
+                    "Status",
                     "Rationale",
                     "Related",
                     "Work Items",
@@ -649,6 +753,7 @@ def render_threat_model(
                         item.get("date"),
                         item.get("reviewer"),
                         item.get("decision"),
+                        item.get("status"),
                         item.get("rationale"),
                         join_values(item.get("relatedThreatIds")),
                         join_values(item.get("workItemIds")),
@@ -758,10 +863,16 @@ def compare_documents(expected: dict[str, str], output_directory: Path) -> list[
     failures: list[str] = []
     for name in DOCUMENT_NAMES:
         path = output_directory / name
-        if not path.is_file():
+        try:
+            with artifact_stream(path) as stream:
+                content = stream.read().decode("utf-8")
+        except FileNotFoundError:
             failures.append(f"missing generated document: {path}")
             continue
-        if path.read_text(encoding="utf-8") != expected[name]:
+        except (OSError, ValueError) as exc:
+            failures.append(f"cannot read generated document {path}: {exc}")
+            continue
+        if content != expected[name]:
             failures.append(f"stale generated document: {path}")
     return failures
 
@@ -769,21 +880,44 @@ def compare_documents(expected: dict[str, str], output_directory: Path) -> list[
 def atomic_write(path: Path, content: str) -> bool:
     """Write changed content atomically and return whether bytes changed."""
     encoded = content.encode("utf-8")
-    if path.is_file() and path.read_bytes() == encoded:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    with output_directory(path.parent, create=True) as directory:
+        location = path.name if directory is not None else path
+        try:
+            info = os.stat(location, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            validate_output_entry(info)
+            descriptor = os.open(
+                location,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                dir_fd=directory,
+            )
+            with os.fdopen(descriptor, "rb") as source:
+                opened = os.fstat(source.fileno())
+                validate_output_entry(opened)
+                if (info.st_dev, info.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise ValueError("output changed while opening")
+                if source.read() == encoded:
+                    return False
+        name = f".{path.name}.{secrets.token_hex(16)}.tmp"
+        temporary = name if directory is not None else path.parent / name
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory
+        )
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, location, src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
     return True
 
 
@@ -830,7 +964,7 @@ def run_self_test() -> int:
         raise AssertionError("standalone report contains a companion-file link")
 
     with tempfile.TemporaryDirectory() as temporary_directory:
-        output_directory = Path(temporary_directory)
+        output_directory = Path(temporary_directory).resolve()
         changed = write_documents(first, output_directory)
         if len(changed) != len(DOCUMENT_NAMES):
             raise AssertionError(f"expected both documents to be written: {changed}")
@@ -866,6 +1000,21 @@ def main() -> int:
     if args.ledger is None:
         parser.error("ledger is required unless --self-test is used")
 
+    output_directory = args.output_dir or args.ledger.parent
+    if args.standalone_report is not None and args.output_dir is not None:
+        parser.error("--output-dir cannot be combined with --standalone-report")
+    destinations = (
+        (args.standalone_report,)
+        if args.standalone_report is not None
+        else tuple(output_directory / name for name in DOCUMENT_NAMES)
+    )
+    try:
+        for destination in destinations:
+            require_distinct_output(destination, (args.ledger,))
+    except (OSError, ValueError) as exc:
+        print(f"INVALID: {exc}", file=sys.stderr)
+        return 1
+
     try:
         document = load_document(args.ledger)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -878,10 +1027,7 @@ def main() -> int:
         print(f"INVALID: {len(errors)} ledger error(s)", file=sys.stderr)
         return 1
 
-    output_directory = args.output_dir or args.ledger.parent
     if args.standalone_report is not None:
-        if args.output_dir is not None:
-            parser.error("--output-dir cannot be combined with --standalone-report")
         expected_report = render_threat_model(
             document, args.ledger.name, standalone=True
         )

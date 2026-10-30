@@ -2,6 +2,7 @@ namespace ThreatModelForge.Analysis.Tests
 {
     using System;
     using System.Collections.Generic;
+    using System.IO;
     using System.Linq;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.KnowledgeBase;
@@ -21,6 +22,161 @@ namespace ThreatModelForge.Analysis.Tests
         public void PrepareThrowsForNullModel()
         {
             Assert.Throws<ArgumentNullException>(() => Tm7ExportPreparer.Prepare(null!));
+        }
+
+        /// <summary>MTMT requires a user-defined type id and reads finding text from the declared property bag.</summary>
+        /// <param name="native">Whether to use the native-preserving save path.</param>
+        /// <param name="foreign">Whether the document has a foreign template.</param>
+        [TestMethod]
+        [DataRow(false, false)]
+        [DataRow(false, true)]
+        [DataRow(true, false)]
+        [DataRow(true, true)]
+        public void PreparePersistsMtmtThreatContract(bool native, bool foreign)
+        {
+            ThreatModel model = ModelWithFlow("Protocol", "HTTPS");
+            if (foreign)
+            {
+                model.KnowledgeBase = new KnowledgeBaseData
+                {
+                    Manifest = new Manifest { Id = Guid.NewGuid(), Name = "Foreign template" },
+                };
+            }
+
+            const string ManualKey = "manual:review-T-001";
+            Threat manual = new Threat
+            {
+                Id = 1,
+                InteractionKey = ManualKey,
+                DrawingSurfaceGuid = model.DrawingSurfaceList[0].Guid,
+                SourceGuid = Flow(model).Guid,
+                Title = "Unauthorized update",
+                UserThreatCategory = "Tampering",
+                UserThreatShortDescription = "Untrusted write",
+                UserThreatDescription = "An untrusted writer can change the record.",
+                StateInformation = "Review the writer's authorization.",
+                InteractionString = "Update record",
+                Priority = "High",
+                State = ThreatState.NeedsInvestigation,
+                Properties = new Dictionary<string, string> { ["Mitigation"] = "Authorize the writer." },
+            };
+            model.AllThreatsDictionary[ManualKey] = manual;
+            Threat generated = new Threat
+            {
+                Id = 2,
+                TypeId = "TM1023",
+                InteractionKey = Flow(model).Guid.ToString("N") + ":TM1023",
+                DrawingSurfaceGuid = manual.DrawingSurfaceGuid,
+                SourceGuid = manual.SourceGuid,
+                Title = "Rule finding",
+                UserThreatCategory = "Spoofing",
+                Priority = "Medium",
+                Properties = new Dictionary<string, string>
+                {
+                    ["Rule"] = "TM1023",
+                    ["PriorityOverride"] = "true",
+                    ["Mitigation"] = "Authenticate the caller.",
+                },
+            };
+            model.AllThreatsDictionary[generated.InteractionKey] = generated;
+            using RuleSet rules = new RuleSet();
+            if (native)
+            {
+                Tm7ExportPreparer.ExtendNativeTemplate(model, rules);
+            }
+            else
+            {
+                Tm7ExportPreparer.Prepare(model, rules);
+            }
+
+            using MemoryStream first = new MemoryStream();
+            model.Save(first);
+            first.Position = 0;
+            ThreatModel saved = ThreatModel.Load(first);
+            Threat savedManual = saved.AllThreatsDictionary[ManualKey];
+            Assert.IsNotNull(savedManual.TypeId, "MTMT Threat.Configure rejects a null TypeId.");
+            StringAssert.StartsWith(savedManual.TypeId, "BS");
+            Assert.AreEqual(38, savedManual.TypeId.Length, "MTMT IsUserDefined requires BS plus a hyphenated GUID.");
+            Assert.IsTrue(Guid.TryParseExact(savedManual.TypeId.Substring(2), "D", out _));
+            Assert.AreEqual(manual.SourceGuid, savedManual.SourceGuid);
+            Assert.AreEqual(manual.DrawingSurfaceGuid, savedManual.DrawingSurfaceGuid);
+            Assert.AreEqual(manual.State, savedManual.State);
+            Assert.AreEqual(manual.UserThreatShortDescription, savedManual.Properties!["UserThreatShortDescription"]);
+            Assert.AreEqual(manual.UserThreatDescription, savedManual.Properties["UserThreatDescription"]);
+            Assert.AreEqual(manual.StateInformation, savedManual.Properties["StateInformation"]);
+            Assert.AreEqual(manual.InteractionString, savedManual.Properties["InteractionString"]);
+            Assert.AreEqual("TM1023", saved.AllThreatsDictionary[generated.InteractionKey].TypeId);
+            foreach (Threat threat in saved.AllThreatsDictionary.Values)
+            {
+                Assert.AreEqual(threat.Title, threat.Properties!["Title"]);
+                Assert.AreEqual(threat.UserThreatCategory, threat.Properties["UserThreatCategory"]);
+                Assert.AreEqual(threat.Priority, threat.Properties["Priority"]);
+                foreach (string name in threat.Properties.Keys)
+                {
+                    Assert.IsTrue(
+                        saved.KnowledgeBase!.ThreatMetaData!.PropertiesMetaData.Any(datum => datum.Name == name),
+                        $"MTMT retains only declared threat properties: {name}.");
+                }
+            }
+
+            ThreatMetaDatum mitigation = saved.KnowledgeBase!.ThreatMetaData!.PropertiesMetaData.Single(datum => datum.Name == "Mitigation");
+            Assert.IsFalse(mitigation.HideFromUI);
+            Assert.AreEqual(2, mitigation.AttributeType);
+            if (native)
+            {
+                Tm7ExportPreparer.ExtendNativeTemplate(saved, rules);
+            }
+            else
+            {
+                Tm7ExportPreparer.Prepare(saved, rules);
+            }
+
+            using MemoryStream second = new MemoryStream();
+            saved.Save(second);
+            CollectionAssert.AreEqual(first.ToArray(), second.ToArray(), "Preparing an unchanged register must be idempotent.");
+        }
+
+        /// <summary>Foreign property-only findings and custom metadata must not be replaced by empty legacy fields.</summary>
+        [TestMethod]
+        public void PreparePreservesForeignThreatPropertiesAndMetadata()
+        {
+            ThreatModel model = ModelWithFlow("Protocol", "HTTPS");
+            model.KnowledgeBase = KnowledgeBaseCatalog.CreateDefault();
+            model.KnowledgeBase.Manifest!.Id = Guid.NewGuid();
+            ThreatMetaDatum mitigation = new ThreatMetaDatum
+            {
+                Name = "Mitigation",
+                Label = "Response",
+                Id = "foreign-mitigation",
+                AttributeType = 2,
+            };
+            model.KnowledgeBase.ThreatMetaData!.PropertiesMetaData.Add(mitigation);
+            const string Key = "foreign-register-key";
+            const string TypeId = "BS11111111-2222-4333-8444-555555555555";
+            Threat threat = new Threat
+            {
+                TypeId = TypeId,
+                InteractionKey = Key,
+                Properties = new Dictionary<string, string>
+                {
+                    ["Title"] = "Native title",
+                    ["UserThreatDescription"] = "Native description",
+                    ["Priority"] = "Low",
+                    ["Mitigation"] = "Native mitigation",
+                    ["CustomEvidence"] = "Evidence must survive.",
+                },
+            };
+            model.AllThreatsDictionary[Key] = threat;
+            Dictionary<string, string> before = new Dictionary<string, string>(threat.Properties);
+
+            Tm7ExportPreparer.Prepare(model);
+
+            Assert.AreEqual(TypeId, threat.TypeId);
+            CollectionAssert.AreEquivalent(before.ToArray(), threat.Properties.ToArray());
+            Assert.AreSame(mitigation, model.KnowledgeBase.ThreatMetaData.PropertiesMetaData.Single(datum => datum.Name == "Mitigation"));
+            Assert.AreEqual("Response", mitigation.Label);
+            Assert.AreEqual("foreign-mitigation", mitigation.Id);
+            Assert.IsTrue(model.KnowledgeBase.ThreatMetaData.PropertiesMetaData.Any(datum => datum.Name == "CustomEvidence"));
         }
 
         /// <summary>

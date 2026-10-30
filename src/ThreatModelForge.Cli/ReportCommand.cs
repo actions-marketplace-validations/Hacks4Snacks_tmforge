@@ -45,9 +45,9 @@ namespace ThreatModelForge.Cli
             string? input = parsed.Positionals.Count > 0 ? parsed.Positionals[0] : null;
             string? output = parsed.Get("out");
             string formatId = (parsed.Get("format") ?? "html").ToLowerInvariant();
-            if (formatId != "html" && formatId != "svg")
+            if (formatId != "html" && formatId != "svg" && formatId != "md")
             {
-                Console.Error.WriteLine("Unknown --format: " + formatId + " (expected html or svg).");
+                Console.Error.WriteLine("Unknown --format: " + formatId + " (expected html, svg, or md).");
                 return 1;
             }
 
@@ -65,7 +65,7 @@ namespace ThreatModelForge.Cli
 
             ThreatModel model = ThreatModelFormatRegistry.CreateDefault().Load(input!);
             IReadOnlyCollection<string>? staleIds = null;
-            if (formatId == "html")
+            if (formatId != "svg")
             {
                 using RuleSet ruleSet = AnalysisRuleSources.Create(RuleSourceCli.FromPath(parsed.Get(RuleSourceCli.OptionName)));
                 ApplyModelRuleSelection(ruleSet, input!);
@@ -81,9 +81,12 @@ namespace ThreatModelForge.Cli
                 ThreatGenerator.Apply(model, generation);
             }
 
-            string content = formatId == "svg"
-                ? new DiagramSvgRenderer().RenderModel(model).ToString()
-                : new HtmlReportWriter().Write(model, staleIds);
+            string content = formatId switch
+            {
+                "svg" => new DiagramSvgRenderer().RenderModel(model).ToString(),
+                "md" => new MarkdownReportWriter().Write(model, staleIds),
+                _ => new HtmlReportWriter().Write(model, staleIds),
+            };
 
             if (parsed.Json)
             {
@@ -139,9 +142,10 @@ namespace ThreatModelForge.Cli
         {
             Console.Error.WriteLine("Threat Model Forge report generator.");
             Console.Error.WriteLine("Usage:");
-            Console.Error.WriteLine("  tmforge report [--format <html|svg>] [--out <path>] [--rules <path>] [--json] <model.tm7>");
+            Console.Error.WriteLine("  tmforge report [--format <html|svg|md>] [--out <path>] [--rules <path>] [--json] <model.tm7>");
             Console.Error.WriteLine("If --out is omitted, the report is written to standard output.");
             Console.Error.WriteLine("--format html (default) writes a self-contained HTML report; --format svg writes the diagram as a standalone SVG.");
+            Console.Error.WriteLine("--format md writes deterministic Markdown with diagram tables and the threat register, without a generated timestamp.");
             Console.Error.WriteLine("--rules loads custom declarative rules (a *.tmrules.json file or a directory of them) alongside the built-in rules.");
         }
     }

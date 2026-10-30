@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Threat Model Forge rules",
+  "type": "object",
+  "if": { "anyOf": [{ "required": ["schema"] }, { "required": ["version"] }, { "required": ["dialect"] }, { "required": ["pack"] }] },
+  "then": { "$ref": "./tmforge-rules-v2.schema.json" },
+  "else": {
+    "description": "Legacy rule-only file. Prefer a version 2 pack for full schema completion and validation.",
+    "properties": { "rules": { "type": "array", "items": { "type": "object" } } }
+  }
+}

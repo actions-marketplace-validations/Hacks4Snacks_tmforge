@@ -45,6 +45,7 @@ describe('OfflineEngineClient — the honest fallback contract', () => {
     await expect(offlineEngine.report(emptyModel(), 'html')).rejects.toThrow(/require[s]? the .NET engine/i);
     await expect(offlineEngine.merge(null, emptyModel(), emptyModel())).rejects.toThrow(/require[s]? the .NET engine/i);
     await expect(offlineEngine.exportTm7(emptyModel())).rejects.toThrow(/require[s]? the .NET engine/i);
+    await expect(offlineEngine.saveTm7(new Uint8Array(), emptyModel())).rejects.toThrow(/requires the .NET engine/i);
   });
 
   it('rejects opening an authoring manifest rather than re-implementing the builder', async () => {
@@ -118,6 +119,26 @@ describe('looksLikeManifest — routing an unidentified document', () => {
 });
 
 describe('engine model normalization', () => {
+  it('retains native note fields and timestamp precision across normalization and offline saves', async () => {
+    const note = { id: '7', message: 'Scope\nEvidence <review>', date: '2026-09-30T12:00:00.1234567Z', addedBy: 'Reviewer' };
+    const model = toModel({ notes: [note] });
+    expect(model.notes).toEqual([{ ...note, id: 7 }]);
+    expect((await offlineEngine.read(await offlineEngine.write(model))).notes).toEqual(model.notes);
+    expect(toModel({ notes: [] }).notes).toEqual([]);
+    expect(toModel({}).notes).toBeUndefined();
+  });
+
+  it('normalizes absent native note fields without inventing author or date information', () => {
+    expect(toModel({ notes: [{ id: 1, message: null, addedBy: null }] }).notes).toEqual([
+      { id: 1, message: undefined, addedBy: undefined, date: '0001-01-01T00:00:00' },
+    ]);
+  });
+
+  it('restores native canvas labels and ports', () => {
+    const model = toModel({ flows: [{ id: 'flow', source: 'a', target: 'b', labelOffset: { x: 32, y: -20 }, sourceHandle: 'r', targetHandle: 'l' }] });
+    expect(model.flows[0]).toMatchObject({ labelOffset: { x: 32, y: -20 }, sourceHandle: 'r', targetHandle: 'l' });
+  });
+
   it('preserves imported metadata and threat provenance', () => {
     const dto: components['schemas']['TmForgeModelDto'] = {
       metadata: { owner: 'Author', threatModelName: 'Threat Dragon model', reviewer: 'Reviewer' },
@@ -134,7 +155,7 @@ describe('engine model normalization', () => {
   it('preserves every imported page and the expected rule fingerprints before layout', () => {
     const dto: components['schemas']['TmForgeModelDto'] = {
       diagrams: [
-        { id: 'first', name: 'First', elements: [{ id: 'a', kind: 'process', x: 170, y: 130 }], flows: [] },
+        { id: 'first', name: 'First', source: { format: 'threat-dragon', id: '7', modelType: 'LINDDUN' }, elements: [{ id: 'a', kind: 'process', x: 170, y: 130 }], flows: [] },
         { id: 'second', name: 'Second', elements: [{ id: 'b', kind: 'boundary', x: 280, y: 190, width: 700, height: 400 }], flows: [] },
       ],
       analysis: { expectedPacks: [{ id: 'policy', fingerprint: 'sha256:unchanged' }] },
@@ -143,6 +164,7 @@ describe('engine model normalization', () => {
     const model = toModel(dto);
 
     expect(model.diagrams?.map((page) => page.id)).toEqual(['first', 'second']);
+    expect(model.diagrams?.[0].source).toEqual(dto.diagrams?.[0].source);
     expect(model.diagrams?.[1].elements[0]).toMatchObject({ id: 'b', x: 280, y: 190, width: 700, height: 400 });
     expect(model.analysis?.expectedPacks).toEqual(dto.analysis?.expectedPacks);
   });
@@ -196,6 +218,59 @@ describe('engine model normalization', () => {
         elementIds: ['source', 'target', 'flow'],
       },
     ]);
+  });
+});
+
+describe('asynchronous engine transport', () => {
+  it('carries the latest successful save when preserving an older undo source', async () => {
+    const invoke = vi.fn(async () => btoa('<preserved/>'));
+    const engine = new WasmEngineClient(invoke);
+    await engine.saveTm7(new Uint8Array([1]), emptyModel(), new Uint8Array([2]));
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('SaveTm7WithPrevious', 'AQ==', JSON.stringify(emptyModel()), 'Ag==');
+  });
+
+  it('surfaces the HTTP native-save refusal instead of hiding it behind a status code', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ detail: 'The native threat register references this object.' }), {
+      status: 400, headers: { 'Content-Type': 'application/problem+json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await expect(createHttpEngine().saveTm7(new Uint8Array([1]), emptyModel())).rejects.toThrow('The native threat register references this object.');
+      const request = fetchMock.mock.calls[0] as unknown as [Request];
+      expect(request[0].url).toContain('/v1/model/save/tm7');
+      expect(await request[0].json()).toMatchObject({ contentBase64: 'AQ==', model: emptyModel() });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('sends original bytes and edits through native save without using conversion', async () => {
+    const invoke = vi.fn(async () => btoa('<preserved/>'));
+    const engine = new WasmEngineClient(invoke);
+    const original = new TextEncoder().encode('<original/>');
+    const model = emptyModel();
+
+    const saved = await engine.saveTm7(original, model);
+
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('SaveTm7', btoa('<original/>'), JSON.stringify(model));
+    expect(saved.type).toBe('application/xml');
+    expect(saved.size).toBe('<preserved/>'.length);
+  });
+
+  it('shares decoding for message-based preflight, detection, catalogs and exports', async () => {
+    const invoke = vi.fn(async (method: string, ..._args: string[]) => {
+      if (method === 'Preflight') return JSON.stringify({ success: true, format: 'tmforge-json', diagnostics: [] });
+      if (method === 'Detect') return '';
+      if (method === 'ExportTm7') return btoa('<model/>');
+      return '[]';
+    });
+    const engine = new WasmEngineClient(invoke, 'engine (VS Code)');
+    expect((await engine.preflight(new Uint8Array(), 'tmforge-json')).success).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('Preflight', '', 'tmforge-json', '');
+    expect(await engine.detect(new Uint8Array())).toBeNull();
+    expect(await engine.getStencils()).toEqual([]);
+    expect((await engine.exportTm7({ schema: 'tmforge-json', version: '0.1', elements: [], flows: [] })).size).toBe(8);
+    expect(engine.label).toBe('engine (VS Code)');
   });
 });
 
@@ -278,8 +353,31 @@ describe('preflight transports', () => {
 
   it('does not pretend offline or incomplete preflight succeeded', async () => {
     await expect(offlineEngine.preflight(new Uint8Array())).rejects.toThrow(/requires the .NET engine/);
+    await expect(offlineEngine.recoverTm7(new Uint8Array())).rejects.toThrow(/requires the .NET engine/);
     const wasm = new WasmEngineClient({ Preflight: () => '{}' } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
     await expect(wasm.preflight(new Uint8Array())).rejects.toThrow(/complete preflight/);
+  });
+
+  it('carries recovery eligibility and requests recovery only through the explicit operation', async () => {
+    const result = { success: false, canRecover: true, format: 'tm7', targetFormat: 'tmforge-json', diagnostics: [
+      { code: 'model.unresolved-endpoint', severity: 'error', path: '$.diagrams[2].flows', message: 'Missing endpoint.' },
+    ] };
+    const bytes = new TextEncoder().encode('native source');
+    const recover = vi.fn(() => JSON.stringify(emptyModel()));
+    const wasm = new WasmEngineClient({ Preflight: () => JSON.stringify(result), RecoverTm7: recover } as unknown as ConstructorParameters<typeof WasmEngineClient>[0]);
+    expect(await wasm.preflight(bytes, 'tm7', 'tmforge-json')).toEqual(result);
+    expect(recover).not.toHaveBeenCalled();
+    vi.stubGlobal('fetch', vi.fn(async (request: Request) => {
+      expect(request.url).toBe('http://localhost/v1/model/recover/tm7');
+      expect(await request.json()).toEqual({ contentBase64: btoa('native source') });
+      return new Response(JSON.stringify(emptyModel()), { headers: { 'Content-Type': 'application/json' } });
+    }));
+    expect(await wasm.recoverTm7(bytes)).toEqual(await createHttpEngine('http://localhost').recoverTm7(bytes));
+    expect(recover).toHaveBeenCalledExactlyOnceWith(btoa('native source'));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ detail: 'Duplicate identities cannot be recovered.' }), {
+      status: 400, headers: { 'Content-Type': 'application/problem+json' },
+    })));
+    await expect(createHttpEngine('http://localhost').recoverTm7(bytes)).rejects.toThrow('Duplicate identities cannot be recovered.');
   });
 });
 

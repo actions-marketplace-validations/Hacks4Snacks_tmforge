@@ -2,7 +2,7 @@
 
 Threat Model Forge (`tmforge`) is a toolkit for **authoring, validating, and reporting on
 threat models** across platforms. It reads and writes Microsoft Threat Modeling Tool `.tm7`
-files losslessly, adds a browser authoring experience and a headless CLI, and validates models
+files natively, adds browser and VS Code authoring plus a headless CLI, and analyzes models
 against a built-in rule set you can gate a CI build on.
 
 ## Why Threat Model Forge
@@ -10,12 +10,12 @@ against a built-in rule set you can gate a CI build on.
 The Microsoft Threat Modeling Tool (MTMT) is Windows-only and GUI-only. Threat Model Forge keeps
 its file format and fidelity while removing those constraints:
 
-- **Cross-platform.** Native binaries and container images for Linux, macOS, and Windows (x64 and
-  arm64). No Windows dependency.
+- **Cross-platform.** Self-contained CLI binaries for Linux, macOS, and Windows (x64 and arm64),
+  plus Linux amd64/arm64 container images. No Windows dependency for model processing.
 - **Automatable.** A headless CLI and an HTTP API let agents and CI pipelines author and validate
   models without a GUI ("threat-model-as-code").
-- **Lossless `.tm7`.** Reads and writes `.tm7` **byte-for-byte** identically to MTMT, so models
-  move between tools without drift.
+- **Native `.tm7` preservation.** Unchanged native saves retain the original bytes. Native edits
+  preserve unrelated XML, template data, and threat decisions; XML formatting may change.
 - **Pluggable formats.** Beyond `.tm7`, import/export draw.io and Visio for interoperability, plus
   a canonical JSON wire format.
 - **Git-native.** Semantic `diff` and three-way `merge` treat `.tm7` files like source code, so
@@ -23,15 +23,15 @@ its file format and fidelity while removing those constraints:
 - **CI-grade validation.** A built-in rule set flags completeness and security-hygiene issues, with
   SARIF and HTML reports and meaningful exit codes.
 
-## The three surfaces
+## The interfaces
 
 Everything runs on one .NET engine over a single canonical, `.tm7`-shaped in-memory model.
 
 ### 1. CLI (`tmforge`)
 
 The headless, scriptable face. Inspect, author, validate, report on, and convert models from a
-shell or CI pipeline. Every command supports `--json` for machine-readable output and stable exit
-codes so agents and pipelines can drive it deterministically. See the
+shell or CI pipeline. Model commands offer `--json` output and documented exit codes so agents and
+pipelines can drive them deterministically; MCP uses JSON-RPC rather than the CLI envelope. See the
 [CLI reference](cli-reference.md).
 
 ### 2. Studio (browser authoring)
@@ -45,7 +45,19 @@ WebAssembly), or read the [Studio guide](studio-guide.md).
 ### 3. Engine API (`/v1`)
 
 A small, versioned HTTP surface over the engine that also serves Studio from its root, so the API
-and UI ship as one hosted artifact. See the [API reference](api-reference.md).
+and UI ship as one hosted artifact. It has no built-in authentication or model persistence; shared
+deployments require an operator-provided access boundary. See the [API reference](api-reference.md)
+and [security posture](deployment.md#security-posture).
+
+### 4. VS Code extension
+
+The same Studio editor opens `.tm7` and `.tmforge.json` in VS Code. A bundled WASM engine handles
+local processing; VS Code owns saves, undo/redo, and source synchronization. Findings appear in
+Problems, and manifests/rule packs/suppressions have JSON editing hints. See the
+[extension guide](../src/ThreatModelForge.Vscode/README.md).
+
+The CLI also exposes the engine over MCP for agents. The [Copilot plugin](../plugins/tmforge/README.md)
+provides an evidence-backed threat-modeling workflow; it is separate from the VS Code extension.
 
 ## Core concepts
 
@@ -67,9 +79,9 @@ what you set in Studio, the CLI, or MTMT stays consistent.
 
 ### Authoring
 
-- **Browser authoring** (Studio): four DFD stencils, drag-to-connect data flows, double-click
-  rename, resizable trust boundaries, pan/zoom/minimap/fit, undo/redo, and an inspector to edit
-  flow properties.
+- **Visual authoring** (Studio): a multi-pack stencil palette, drag-to-connect data flows,
+  double-click rename, resizable elements and trust boundaries, pan/zoom/minimap/fit, undo/redo,
+  multi-selection, and an inspector for element and flow properties.
 - **Headless authoring** (CLI): `new`, `add`, `connect`, `remove`, `rename`, and `set` verbs
   mutate models in place with atomic writes and deterministic auto-layout. No GUI or server
   required.
@@ -96,6 +108,9 @@ what you set in Studio, the CLI, or MTMT stays consistent.
   locally or globally.
 - **Model-as-code manifests** (`apply`, `export`): build or capture a whole model from a
   declarative JSON manifest, atomically and idempotently.
+- **Studio comparison**: review structural and findings changes without changing either model.
+- **Browser sharing**: explicitly create a URL containing a compressed canonical snapshot; the
+  fragment is not sent to the static host but is visible to anyone with the link.
 
 ### Validation
 
@@ -113,8 +128,9 @@ what you set in Studio, the CLI, or MTMT stays consistent.
 
 ### Interoperability
 
-- **Formats**: `.tm7` (lossless), `tmforge-json` (canonical wire model), `.drawio`
-  (draw.io / diagrams.net), and `.vsdx` (Microsoft Visio). See [Formats](formats.md).
+- **Read/write formats**: `.tm7`, `tmforge-json`, `.drawio` (draw.io / diagrams.net), and `.vsdx`
+  (Microsoft Visio). **Import only**: supported Threat Dragon v2 JSON, Mermaid, and Graphviz DOT
+  subsets. Structural conversions are not lossless native round-trips. See [Formats](formats.md).
 
 ## Next steps
 

@@ -97,6 +97,7 @@ namespace ThreatModelForge.Analysis
             if (model.KnowledgeBase != null && !KnowledgeBaseCatalog.IsDefault(model.KnowledgeBase))
             {
                 MergeThreatCatalog(model.KnowledgeBase, KnowledgeBaseCatalog.CreateDefault(ruleSet), true);
+                ThreatMetaDataContract.PrepareInstances(model);
                 return;
             }
 
@@ -110,6 +111,70 @@ namespace ThreatModelForge.Analysis
             SchemaBackedProperties.Apply(model, knowledgeBase);
             StencilSubtypeProjection.Apply(model, knowledgeBase);
             model.KnowledgeBase = knowledgeBase;
+            ThreatMetaDataContract.PrepareInstances(model);
+        }
+
+        /// <summary>Supplies missing template definitions without replacing existing customizations.</summary>
+        /// <param name="model">The native document being edited.</param>
+        /// <param name="ruleSet">The active analysis rules.</param>
+        public static void ExtendNativeTemplate(ThreatModel model, RuleSet ruleSet)
+        {
+            KnowledgeBaseData additions = KnowledgeBaseCatalog.CreateDefault(ruleSet);
+            SchemaBackedProperties.Apply(new ThreatModel(), additions);
+            if (model.KnowledgeBase == null)
+            {
+                model.KnowledgeBase = additions;
+            }
+            else
+            {
+                MergeElementTypes(model.KnowledgeBase.GenericElements, additions.GenericElements);
+                MergeElementTypes(model.KnowledgeBase.StandardElements, additions.StandardElements);
+                MergeThreatCatalog(model.KnowledgeBase, additions, false);
+            }
+
+            ThreatMetaDataContract.PrepareInstances(model);
+            StencilSubtypeProjection.Apply(model, model.KnowledgeBase);
+            foreach (Entity element in model.DrawingSurfaceList.SelectMany(page => page.Borders.Values.Concat(page.Lines.Values)).OfType<Entity>())
+            {
+                foreach (ListDisplayAttribute property in element.Properties.OfType<ListDisplayAttribute>())
+                {
+                    if (property.Value is not string[] values)
+                    {
+                        continue;
+                    }
+
+                    foreach (KnowledgeBaseAttribute attribute in model.KnowledgeBase.GenericElements.Concat(model.KnowledgeBase.StandardElements)
+                        .Where(type => type.Id == element.TypeId || type.Id == element.GenericTypeId).SelectMany(type => type.Attributes)
+                        .Where(attribute => attribute.Name == property.Name || attribute.DisplayName == property.DisplayName))
+                    {
+                        UnionValues(attribute.AttributeValues, values);
+                    }
+                }
+            }
+        }
+
+        /// <summary>Translates whole pages into the MTMT canvas range without changing relative geometry.</summary>
+        /// <param name="model">The model to normalize.</param>
+        public static void NormalizeNativeCoordinates(ThreatModel model) => NormalizeCoordinates(model);
+
+        private static void MergeElementTypes(List<ElementType> target, IEnumerable<ElementType> source)
+        {
+            foreach (ElementType type in source)
+            {
+                ElementType? existing = target.FirstOrDefault(candidate => string.Equals(candidate.Id, type.Id, StringComparison.OrdinalIgnoreCase));
+                if (existing == null)
+                {
+                    target.Add(type);
+                    continue;
+                }
+
+                foreach (KnowledgeBaseAttribute attribute in type.Attributes.Where(attribute =>
+                    !existing.Attributes.Any(candidate => string.Equals(candidate.Name, attribute.Name, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(candidate.DisplayName, attribute.DisplayName, StringComparison.OrdinalIgnoreCase))))
+                {
+                    existing.Attributes.Add(attribute);
+                }
+            }
         }
 
         private static void MergeThreatCatalog(KnowledgeBaseData target, KnowledgeBaseData source, bool rejectConflicts)

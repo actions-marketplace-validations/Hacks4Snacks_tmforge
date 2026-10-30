@@ -15,7 +15,8 @@ MTMT 7.3.51110.1 is x86 and derives its model types from WPF, so this relaunches
 Windows PowerShell in STA mode.
 
 .PARAMETER PayloadDirectory
-A verified MTMT payload directory. See the README for how to obtain one.
+An existing MTMT payload directory. If omitted, finds a single complete installation in the
+current user's ClickOnce cache. Multiple installations require an explicit path.
 
 .PARAMETER ModelDirectory
 A directory of .tm7 files to probe.
@@ -35,7 +36,7 @@ script can gate a release check.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)][string]$PayloadDirectory,
+    [string]$PayloadDirectory,
     [Parameter(Mandatory = $true)][string]$ModelDirectory,
     [string]$OutputPath,
     [string]$ElementId,
@@ -44,6 +45,29 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+    throw 'This probe requires Windows, .NET Framework 4.8 and an existing MTMT installation.'
+}
+
+if ([string]::IsNullOrWhiteSpace($PayloadDirectory)) {
+    $cacheDirectory = Join-Path $env:LOCALAPPDATA 'Apps\2.0'
+    if (-not (Test-Path -LiteralPath $cacheDirectory -PathType Container)) {
+        throw 'No ClickOnce cache was found. Specify the existing MTMT directory with -PayloadDirectory.'
+    }
+
+    $candidates = @(Get-ChildItem -LiteralPath $cacheDirectory -Filter 'ThreatModeling.Model.dll' -Recurse |
+        Where-Object {
+            (Test-Path -LiteralPath (Join-Path $_.DirectoryName 'ThreatModeling.ExternalStorage.Abstracts.dll') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $_.DirectoryName 'ThreatModeling.ExternalStorage.Local.dll') -PathType Leaf)
+        })
+    if ($candidates.Count -ne 1) {
+        $paths = ($candidates | ForEach-Object { $_.DirectoryName }) -join '; '
+        throw "Found $($candidates.Count) complete MTMT installations. Specify -PayloadDirectory. Candidates: $paths"
+    }
+
+    $PayloadDirectory = $candidates[0].DirectoryName
+}
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
     $OutputPath = Join-Path $ModelDirectory 'openability.json'
@@ -61,7 +85,7 @@ if ([IntPtr]::Size -ne 4 -or -not $isSta) {
     }
 
     $arguments = @(
-        '-NoProfile', '-Sta', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath,
+        '-NoProfile', '-Sta', '-File', $PSCommandPath,
         '-PayloadDirectory', $PayloadDirectory, '-ModelDirectory', $ModelDirectory,
         '-OutputPath', $OutputPath)
     if (-not [string]::IsNullOrWhiteSpace($ElementId)) { $arguments += @('-ElementId', $ElementId) }
@@ -209,10 +233,13 @@ try {
     foreach ($file in $models) {
         $record = [ordered]@{
             file = $file.Name
+            sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            bytes = $file.Length
             opens = $false
             hasLoadIssues = $null
             loadIssues = @()
             error = $null
+            errorStackTrace = $null
             observedProperty = $null
         }
 
@@ -235,6 +262,7 @@ try {
         catch {
             $base = $_.Exception.GetBaseException()
             $record.error = $base.GetType().FullName + ': ' + $base.Message
+            $record.errorStackTrace = $base.StackTrace
         }
 
         $results += [pscustomobject]$record
@@ -243,6 +271,9 @@ try {
     $refused = @($results | Where-Object { -not $_.opens })
     $payload = [pscustomobject][ordered]@{
         mtmtPayloadDirectory = $PayloadDirectory
+        mtmtFileVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($assemblies['ThreatModeling.Model']).FileVersion
+        mtmtProductVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($assemblies['ThreatModeling.Model']).ProductVersion
+        modelAssembly = $modelAssembly.FullName
         modelDirectory = $ModelDirectory
         probed = $results.Count
         refused = $refused.Count

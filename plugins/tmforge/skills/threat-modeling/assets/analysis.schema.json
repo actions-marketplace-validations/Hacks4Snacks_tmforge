@@ -60,6 +60,7 @@
           "$ref": "#/$defs/ownershipDecision"
         },
         "baseline": {
+          "description": "Evidence revision and date only. Model acceptance and approvers are tracked externally, for example through pull-request approvals.",
           "type": "object",
           "additionalProperties": false,
           "required": ["revision", "date"],
@@ -71,10 +72,6 @@
             "date": {
               "type": "string",
               "format": "date"
-            },
-            "approvedBy": {
-              "type": "string",
-              "minLength": 1
             }
           }
         },
@@ -91,6 +88,14 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/evidence"
+      }
+    },
+    "pages": {
+      "description": "Optional ordered diagram pages. When present, every boundary and element requires a pageId; flows inherit their endpoints' shared page.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/page"
       }
     },
     "boundaries": {
@@ -174,6 +179,24 @@
     }
   },
   "$defs": {
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/pageId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pageId": {
+      "type": "string",
+      "pattern": "^PG[0-9]+$"
+    },
     "scopeInput": {
       "type": "object",
       "additionalProperties": false,
@@ -318,8 +341,12 @@
           "pattern": "^TB[0-9]+$"
         },
         "name": {
+          "description": "Bare descriptive name, without the stable ID prefix. Renderers add 'ID: ' exactly once.",
           "type": "string",
           "minLength": 1
+        },
+        "pageId": {
+          "$ref": "#/$defs/pageId"
         },
         "axis": {
           "description": "The kind of trust change this boundary represents. Nesting is only meaningful within a single axis.",
@@ -357,8 +384,12 @@
           "pattern": "^(A|X|P|DS)[0-9]+$"
         },
         "name": {
+          "description": "Bare descriptive name, without the stable ID prefix. Renderers add 'ID: ' exactly once.",
           "type": "string",
           "minLength": 1
+        },
+        "pageId": {
+          "$ref": "#/$defs/pageId"
         },
         "kind": {
           "enum": ["actor", "external", "process", "data-store"]
@@ -406,7 +437,13 @@
           "type": "string",
           "pattern": "^F[0-9]+$"
         },
+        "displayId": {
+          "description": "Optional page-local diagram label, distinct from the stable id. Requires declared pages and complete F1..Fn numbering for every flow on the same page. References, coverage, findings and manifest aliases continue to use id.",
+          "type": "string",
+          "pattern": "^F[1-9][0-9]*$"
+        },
         "name": {
+          "description": "Bare flow phrase, without an ID prefix. The manifest and diagram label add displayId when present, otherwise the stable id, exactly once.",
           "type": "string",
           "minLength": 1
         },
@@ -632,6 +669,10 @@
           "type": "string",
           "minLength": 1
         },
+        "status": {
+          "description": "Threat status explicitly recorded by this review disposition.",
+          "enum": ["open", "mitigated", "accepted", "transferred", "unknown"]
+        },
         "decision": {
           "enum": [
             "confirmed",
@@ -698,6 +739,17 @@
           },
           "then": {
             "required": ["evidenceIds"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {"enum": ["mitigated", "accepted", "transferred"]}
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "required": ["reference", "evidenceIds"]
           }
         }
       ]

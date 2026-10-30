@@ -2,6 +2,8 @@ namespace ThreatModelForge.Analysis
 {
     using System;
     using System.Collections.Generic;
+    using System.Linq;
+    using ThreatModelForge.KnowledgeBase;
     using ThreatModelForge.Model;
 
     /// <summary>
@@ -92,6 +94,51 @@ namespace ThreatModelForge.Analysis
 
             metadata.PropertiesMetaData.Add(priority);
             return metadata;
+        }
+
+        /// <summary>Projects persisted findings into the identity and property contract MTMT actually loads.</summary>
+        /// <param name="model">The model whose template has already been prepared.</param>
+        public static void PrepareInstances(ThreatModel model)
+        {
+            ThreatMetaData metadata = model.KnowledgeBase!.ThreatMetaData!;
+            foreach (KeyValuePair<string, Threat> entry in model.AllThreatsDictionary)
+            {
+                Threat threat = entry.Value;
+                string key = string.IsNullOrEmpty(threat.InteractionKey) ? entry.Key : threat.InteractionKey!;
+                if (ManualThreatId.IsManual(key) && string.IsNullOrEmpty(threat.TypeId))
+                {
+                    // Configure rejects null; IsUserDefined requires exactly BS plus a 36-character GUID.
+                    threat.TypeId = ManualThreatId.ToNativeTypeId(key);
+                }
+
+                threat.Properties ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, string?> projected = new Dictionary<string, string?>
+                {
+                    [TitleName] = threat.Title,
+                    [CategoryName] = threat.UserThreatCategory,
+                    [ShortDescriptionName] = threat.UserThreatShortDescription,
+                    [DescriptionName] = threat.UserThreatDescription,
+                    [StateInformationName] = threat.StateInformation,
+                    [InteractionName] = threat.InteractionString,
+                    [PriorityName] = threat.Priority,
+                };
+                foreach (KeyValuePair<string, string?> property in projected.Where(property => property.Value != null))
+                {
+                    // MTMT ignores these legacy fields once a property bag exists. Keep native-only values
+                    // when the legacy field is absent, rather than erasing a foreign tool's finding text.
+                    threat.Properties[property.Key] = property.Value!;
+                }
+
+                foreach (string name in threat.Properties.Keys.OrderBy(name => name, StringComparer.Ordinal))
+                {
+                    if (!metadata.PropertiesMetaData.Any(datum => string.Equals(datum.Name, name, StringComparison.Ordinal)))
+                    {
+                        // MTMT initializes and saves only declared properties, including private override markers.
+                        bool mitigation = string.Equals(name, "Mitigation", StringComparison.Ordinal);
+                        metadata.PropertiesMetaData.Add(Datum(name, name, "tmforge:threat-property:" + name, mitigation ? 2 : 0, !mitigation));
+                    }
+                }
+            }
         }
 
         private static ThreatMetaDatum Datum(string name, string label, string id, int attributeType, bool hideFromUI)

@@ -13,6 +13,7 @@ import {
   applyFlags,
   highlightForFocus,
   deleteFromGraph,
+  threatIdsForDeletedObjects,
   sameIds,
   initialTheme,
   STORAGE_KEY,
@@ -30,6 +31,30 @@ const externalNode: DfdNode = { id: 'n2', type: 'external', position: { x: 200, 
 
 beforeEach(() => {
   window.localStorage.clear();
+});
+
+describe('Threat scope deletion', () => {
+  it('matches sparse generated identities and explicit scopes without deleting model-wide decisions', async () => {
+    const objectId = '11111111-2222-4333-8444-555555555555';
+    const flowId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const removed = await threatIdsForDeletedObjects([
+      { id: '11111111222243338444555555555555:TM1023' },
+      { id: 'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE:pack/rule' },
+      { id: 'foreign-threat-key', elementIds: [objectId] },
+      { id: 'manual:scoped', manual: true, elementIds: [flowId] },
+      { id: 'manual:model-wide', manual: true },
+      { id: 'manual:unrelated', elementIds: ['99999999-2222-4333-8444-555555555555'] },
+    ], [objectId, flowId]);
+    expect([...removed]).toEqual(['11111111222243338444555555555555:TM1023',
+      'AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE:pack/rule', 'foreign-threat-key', 'manual:scoped']);
+  });
+
+  it('uses the engine identity for aliases and keeps page and object namespaces distinct', async () => {
+    const threats = [{ id: '6b3c361cb7be5f01be4b0cd6e29c6686:TM1021' }, { id: 'manual:scoped', elementIds: ['audit'] }];
+    expect([...await threatIdsForDeletedObjects(threats, ['audit'])]).toEqual(threats.map(threat => threat.id));
+    expect([...await threatIdsForDeletedObjects([threats[0]], [], 'audit')]).toEqual([]);
+    expect([...await threatIdsForDeletedObjects([], ['audit'])]).toEqual([]);
+  });
 });
 
 describe('Editor — workspace persistence and legacy migration', () => {

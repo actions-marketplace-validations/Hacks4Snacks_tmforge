@@ -1,5 +1,6 @@
 namespace ThreatModelForge.Api.Tests
 {
+    using System;
     using System.Collections.Generic;
     using System.IO;
     using System.Linq;
@@ -40,6 +41,62 @@ namespace ThreatModelForge.Api.Tests
         public void ConvertToTm7EmbedsKnowledgeBase()
         {
             AssertEmbedsKnowledgeBase(Parse(EngineService.Convert(ConnectedModel(), "tm7")));
+        }
+
+        /// <summary>Every engine save path emits native manual findings with their complete authored content.</summary>
+        /// <param name="path">The export or save path to exercise.</param>
+        [TestMethod]
+        [DataRow("export")]
+        [DataRow("convert")]
+        [DataRow("native")]
+        public void ManualThreatsCarryMtmtIdentityAndProperties(string path)
+        {
+            byte[] original = EngineService.Convert(ConnectedModel(), "tm7");
+            TmForgeModelDto baseline = EngineService.ReadModel(original, "tm7");
+            const string Key = "manual:native-contract";
+            ThreatStateDto finding = new ThreatStateDto
+            {
+                Id = Key,
+                Manual = true,
+                Title = "Authored finding",
+                Category = "Tampering",
+                Priority = "High",
+                Description = "Authored description",
+                Mitigation = "Authored mitigation",
+                State = "NeedsInvestigation",
+                Justification = "Awaiting evidence",
+                ElementIds = new[] { baseline.Elements![0].Id },
+            };
+            TmForgeModelDto edited = new TmForgeModelDto
+            {
+                Schema = baseline.Schema,
+                Version = baseline.Version,
+                Metadata = baseline.Metadata,
+                Diagrams = baseline.Diagrams,
+                Elements = baseline.Elements,
+                Flows = baseline.Flows,
+                Threats = (baseline.Threats ?? Array.Empty<ThreatStateDto>()).Append(finding).ToArray(),
+            };
+
+            byte[] bytes = path switch
+            {
+                "export" => EngineService.ExportTm7(edited),
+                "convert" => EngineService.Convert(edited, "tm7"),
+                _ => EngineService.SaveTm7(original, edited),
+            };
+            ThreatModel model = ReadBack(bytes);
+            Threat threat = model.AllThreatsDictionary[Key];
+
+            Assert.AreEqual(ManualThreatId.ToNativeTypeId(Key), threat.TypeId);
+            Assert.AreEqual(finding.Title, threat.Properties!["Title"]);
+            Assert.AreEqual(finding.Description, threat.Properties["UserThreatDescription"]);
+            Assert.AreEqual(finding.Category, threat.Properties["UserThreatCategory"]);
+            Assert.AreEqual(finding.Priority, threat.Properties["Priority"]);
+            Assert.AreEqual(finding.Mitigation, threat.Properties["Mitigation"]);
+            Assert.AreEqual(finding.Justification, threat.Properties["StateInformation"]);
+            Assert.AreEqual(Guid.Parse(finding.ElementIds[0]), threat.SourceGuid);
+            Assert.IsTrue(model.KnowledgeBase!.ThreatMetaData!.PropertiesMetaData.Any(datum => datum.Name == "Mitigation" && !datum.HideFromUI));
+            CollectionAssert.AreEqual(bytes, EngineService.SaveTm7(bytes, EngineService.ReadModel(bytes, "tm7")));
         }
 
         /// <summary>

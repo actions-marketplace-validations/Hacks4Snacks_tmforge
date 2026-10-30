@@ -1,0 +1,29 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Threat Model Forge mark: a hammer-strike on the anvil scatters a data-flow
+    diagram into the air, echoing the marketplace icon. The anvil uses
+    currentColor so the mark adapts to light or dark surroundings; the burst
+    and nodes keep the brand palette (ember orange, steel blue).
+  -->
+  <!-- burst rays: long rays reach the scattered nodes, short stubs fill the star -->
+  <g stroke="#F2833C" stroke-width="2.4" stroke-linecap="round">
+    <path d="M33 33 20 20.5"/>
+    <path d="M33 33 41.5 16.5"/>
+    <path d="M33 33 46 26.5"/>
+    <path d="M33 33 33 24.5"/>
+    <path d="M33 33 24.5 31"/>
+    <path d="M33 33 41 34"/>
+  </g>
+  <circle cx="33" cy="33" r="2.6" fill="#F2833C"/>
+  <!-- scattered model: process, external entity, data store -->
+  <circle cx="17.5" cy="18" r="4" fill="#4D9FDB"/>
+  <rect x="38.6" y="7.6" width="7" height="7" fill="#F2833C"/>
+  <g fill="#4D9FDB">
+    <rect x="46.4" y="20" width="10.8" height="7.4" rx="2.5"/>
+  </g>
+  <path d="M47 23H56.6M47 25.2H56.6" stroke="#2E6FA3" stroke-width="1.1"/>
+  <!-- anvil -->
+  <g transform="translate(10 26.5) scale(2.9)">
+    <path fill="currentColor" d="M5.4 3.4H13.2Q14 3.4 14 4.2V5.8Q14 6.6 13.2 6.6H9.8L9 9.6H10.6Q11.4 9.6 11.4 10.4V11.2Q11.4 12 10.6 12H5.4Q4.6 12 4.6 11.2V10.4Q4.6 9.6 5.4 9.6H7L6.2 6.6H5C3.9 6.55 2.9 6.3 2.1 5.8Q1.2 5.2 1.5 4.6Q1.8 4.1 2.9 3.8C3.7 3.55 4.5 3.4 5.4 3.4Z"/>
+  </g>
+</svg>

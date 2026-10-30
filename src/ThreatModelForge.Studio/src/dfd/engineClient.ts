@@ -2,7 +2,7 @@ import createClient, { type Client } from 'openapi-fetch';
 import { FALLBACK_PACKS, FALLBACK_STENCILS } from './stencils';
 import { normalizeKind } from './types';
 import type { DfdKind, ThreatLifecycleState, ThreatTriage, TmForgeModel } from './types';
-import type { components, paths } from './engine/schema';
+import type { components, paths } from './engine/schema.js';
 
 export type Severity = 'info' | 'warning' | 'error';
 
@@ -222,6 +222,7 @@ export interface DocumentDiagnostic {
 
 export interface PreflightResult {
   success: boolean;
+  canRecover?: boolean;
   format?: string;
   targetFormat?: string;
   diagnostics: DocumentDiagnostic[];
@@ -267,6 +268,7 @@ export interface IEngineClient {
    */
   runAnalysis(model: TmForgeModel): Promise<AnalysisResult>;
   exportTm7(model: TmForgeModel): Promise<Blob>;
+  saveTm7(original: Uint8Array, model: TmForgeModel, previous?: Uint8Array): Promise<Blob>;
   /**
    * Selects the custom rule packs this engine runs, and reports what actually loaded. The selection
    * persists for the session, so catalogs, analysis, threat generation, reports, and exports all use
@@ -293,6 +295,7 @@ export interface IEngineClient {
   preflight(bytes: Uint8Array, formatId?: string, targetFormat?: string): Promise<PreflightResult>;
   /** Reads a document in any registered format into the canonical tmforge-json model. */
   readFile(bytes: Uint8Array, formatId?: string): Promise<TmForgeModel>;
+  recoverTm7(bytes: Uint8Array): Promise<TmForgeModel>;
   /**
    * Materializes a declarative authoring manifest into a model. A manifest is a threat model's
    * reviewable source rather than a model document, so it has no registered format and cannot go
@@ -382,6 +385,7 @@ function toPreflight(dto: components['schemas']['PreflightResultDto'] | undefine
   });
   return {
     success: dto.success && !diagnostics.some((item) => item.severity === 'error'),
+    ...(dto.canRecover === true && !dto.success && dto.format === 'tm7' ? { canRecover: true } : {}),
     format: dto.format ?? undefined,
     targetFormat: dto.targetFormat ?? undefined,
     diagnostics,
@@ -463,7 +467,7 @@ function layoutElements(dto: components['schemas']['LayoutResultDto'] | undefine
 }
 
 /** Encodes bytes as base64 for the engine's read/detect payloads. */
-function toBase64(bytes: Uint8Array): string {
+export function toBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 1) {
     binary += String.fromCharCode(bytes[i]);
@@ -473,12 +477,16 @@ function toBase64(bytes: Uint8Array): string {
 
 /** Decodes a base64 string (the WASM boundary's byte encoding) into a typed Blob for download. */
 function blobFromBase64(base64: string, type: string): Blob {
+  return new Blob([fromBase64(base64)], { type });
+}
+
+export function fromBase64(base64: string): Uint8Array<ArrayBuffer> {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) {
     bytes[i] = binary.charCodeAt(i);
   }
-  return new Blob([bytes], { type });
+  return bytes;
 }
 
 /** The download content-type for a converted document (mirrors the /v1 convert endpoint). */
@@ -487,6 +495,7 @@ function mimeForFormat(formatId: string): string {
     case 'vsdx':
       return 'application/vnd.ms-visio.drawing';
     case 'tmforge-json':
+    case 'threat-dragon':
       return 'application/json';
     default:
       return 'application/xml';
@@ -619,16 +628,26 @@ export function toModel(dto: components['schemas']['TmForgeModelDto']): TmForgeM
     target: f.target ?? '',
     name: f.name ?? '',
     properties: f.properties ?? {},
+    ...(f.labelOffset ? { labelOffset: { x: Number(f.labelOffset.x ?? 0), y: Number(f.labelOffset.y ?? 0) } } : {}),
+    ...(f.sourceHandle ? { sourceHandle: f.sourceHandle } : {}),
+    ...(f.targetHandle ? { targetHandle: f.targetHandle } : {}),
   }));
   return {
     schema: 'tmforge-json',
     version: '0.1',
     metadata: dto.metadata ?? undefined,
+    notes: dto.notes?.map(note => ({
+      id: Number(note.id ?? 0),
+      message: note.message ?? undefined,
+      date: note.date ?? '0001-01-01T00:00:00',
+      addedBy: note.addedBy ?? undefined,
+    })),
     elements: elements(dto.elements),
     flows: flows(dto.flows),
     diagrams: dto.diagrams?.map((page) => ({
       id: page.id ?? '',
       name: page.name ?? '',
+      ...(page.source ? { source: page.source } : {}),
       elements: elements(page.elements),
       flows: flows(page.flows),
     })),
@@ -772,6 +791,10 @@ class OfflineEngineClient implements IEngineClient {
     );
   }
 
+  public saveTm7(): Promise<Blob> {
+    return Promise.reject(new Error('Preserving a native .tm7 requires the .NET engine. Reload the page or use the hosted app.'));
+  }
+
   public setRules(): Promise<RuleBundle> {
     // Offline: there is no rule engine to load a pack into, so say so rather than accept it silently.
     return Promise.reject(
@@ -833,6 +856,10 @@ class OfflineEngineClient implements IEngineClient {
 
   public preflight(): Promise<PreflightResult> {
     return Promise.reject(new Error('Document preflight requires the .NET engine. Wait for the engine to load or connect to the API. Nothing was changed.'));
+  }
+
+  public recoverTm7(): Promise<TmForgeModel> {
+    return Promise.reject(new Error('TM7 recovery requires the .NET engine. Nothing was changed.'));
   }
 
   public applyManifest(): Promise<TmForgeModel> {
@@ -933,6 +960,18 @@ class HttpEngineClient implements IEngineClient {
       throw new Error(`Engine export failed (${response.status}).`);
     }
     return await response.blob();
+  }
+
+  public async saveTm7(original: Uint8Array, model: TmForgeModel, previous?: Uint8Array): Promise<Blob> {
+    const { response, error } = await this.client.POST('/v1/model/save/tm7', {
+      body: { contentBase64: toBase64(original), model, previousContentBase64: previous ? toBase64(previous) : undefined },
+      parseAs: 'stream',
+    });
+    if (!response.ok) {
+      const problem = error as { detail?: string } | undefined;
+      throw new Error(problem?.detail ?? `Native TM7 save failed (${response.status}). The source was not changed.`);
+    }
+    return response.blob();
   }
 
   public async getFormats(): Promise<FormatInfo[]> {
@@ -1036,6 +1075,16 @@ class HttpEngineClient implements IEngineClient {
     return toModel(data);
   }
 
+  public async recoverTm7(bytes: Uint8Array): Promise<TmForgeModel> {
+    const { data, error, response } = await this.client.POST('/v1/model/recover/tm7', {
+      body: { contentBase64: toBase64(bytes) },
+    });
+    if (!response.ok || !data) {
+      throw new Error(error?.detail ?? `TM7 recovery failed (${response.status}). Nothing was changed.`);
+    }
+    return toModel(data);
+  }
+
   public async applyManifest(manifestJson: string): Promise<TmForgeModel> {
     const { data, response } = await this.client.POST('/v1/model/manifest', {
       body: { manifest: manifestJson },
@@ -1125,8 +1174,11 @@ interface WasmEngineExports {
   Detect(contentBase64: string): string;
   Preflight(contentBase64: string, formatId: string, targetFormat: string): string;
   ReadFile(contentBase64: string, formatId: string): string;
+  RecoverTm7(contentBase64: string): string;
   ApplyManifest(manifestJson: string): string;
   ExportTm7(tmforgeJson: string): string;
+  SaveTm7(contentBase64: string, tmforgeJson: string): string;
+  SaveTm7WithPrevious(contentBase64: string, tmforgeJson: string, previousBase64: string): string;
   ConvertModel(tmforgeJson: string, toFormatId: string): string;
   Report(tmforgeJson: string, format: string): string;
   Merge(baseJson: string, oursJson: string, theirsJson: string): string;
@@ -1138,18 +1190,19 @@ interface WasmEngineExports {
   Layout(requestJson: string): string;
 }
 
+export type EngineInvoker = (method: keyof WasmEngineExports, ...args: string[]) => Promise<string>;
+
 /**
  * Calls the real .NET engine compiled to WebAssembly, in-browser, with no network. It is the SAME
  * engine the `/v1` API runs (both go through the shared `ThreatModelForge.Engine` facade); only the
  * transport differs. tmforge-json crosses the boundary as a string, binary documents as base64.
  */
 export class WasmEngineClient implements IEngineClient {
-  public readonly label = 'engine (wasm)';
+  private readonly invoke: EngineInvoker;
 
-  private readonly wasm: WasmEngineExports;
-
-  public constructor(wasm: WasmEngineExports) {
-    this.wasm = wasm;
+  public constructor(wasm: WasmEngineExports | EngineInvoker, public readonly label = 'engine (wasm)') {
+    this.invoke = typeof wasm === 'function' ? wasm : async (method, ...args) =>
+      (wasm[method] as (...values: string[]) => string)(...args);
   }
 
   public write(model: TmForgeModel): Promise<string> {
@@ -1161,107 +1214,118 @@ export class WasmEngineClient implements IEngineClient {
   }
 
   public async preflight(bytes: Uint8Array, formatId?: string, targetFormat?: string): Promise<PreflightResult> {
-    return toPreflight(JSON.parse(this.wasm.Preflight(toBase64(bytes), formatId ?? '', targetFormat ?? '')));
+    return toPreflight(JSON.parse(await this.invoke('Preflight', toBase64(bytes), formatId ?? '', targetFormat ?? '')));
   }
 
   public async analyze(model: TmForgeModel): Promise<Finding[]> {
-    const findings = JSON.parse(this.wasm.Analyze(JSON.stringify(model))) as Array<components['schemas']['FindingDto']>;
+    const findings = JSON.parse(await this.invoke('Analyze', JSON.stringify(model))) as Array<components['schemas']['FindingDto']>;
     return findings.map(toFinding);
   }
 
   public async generateThreats(model: TmForgeModel): Promise<Threat[]> {
-    const threats = JSON.parse(this.wasm.Threats(JSON.stringify(model))) as Array<components['schemas']['ThreatDto']>;
+    const threats = JSON.parse(await this.invoke('Threats', JSON.stringify(model))) as Array<components['schemas']['ThreatDto']>;
     return threats.map(toThreat);
   }
 
   public async runAnalysis(model: TmForgeModel): Promise<AnalysisResult> {
     return toAnalysisResult(
-      JSON.parse(this.wasm.Analysis(JSON.stringify(model))) as components['schemas']['AnalysisResultDto'],
+      JSON.parse(await this.invoke('Analysis', JSON.stringify(model))) as components['schemas']['AnalysisResultDto'],
     );
   }
 
   public async exportTm7(model: TmForgeModel): Promise<Blob> {
-    return blobFromBase64(this.wasm.ExportTm7(JSON.stringify(model)), 'application/xml');
+    return blobFromBase64(await this.invoke('ExportTm7', JSON.stringify(model)), 'application/xml');
+  }
+
+  public async saveTm7(original: Uint8Array, model: TmForgeModel, previous?: Uint8Array): Promise<Blob> {
+    const encoded = previous
+      ? await this.invoke('SaveTm7WithPrevious', toBase64(original), JSON.stringify(model), toBase64(previous))
+      : await this.invoke('SaveTm7', toBase64(original), JSON.stringify(model));
+    return blobFromBase64(encoded, 'application/xml');
   }
 
   public async getFormats(): Promise<FormatInfo[]> {
-    return (JSON.parse(this.wasm.Formats()) as Array<components['schemas']['FormatDto']>).map(toFormatInfo);
+    return (JSON.parse(await this.invoke('Formats')) as Array<components['schemas']['FormatDto']>).map(toFormatInfo);
   }
 
   public async getStencils(): Promise<StencilInfo[]> {
-    return (JSON.parse(this.wasm.Stencils()) as Array<components['schemas']['StencilDto']>).map(toStencilInfo);
+    return (JSON.parse(await this.invoke('Stencils')) as Array<components['schemas']['StencilDto']>).map(toStencilInfo);
   }
 
   public async getStencilPacks(): Promise<PackInfo[]> {
-    return (JSON.parse(this.wasm.StencilPacks()) as Array<components['schemas']['PackDto']>).map(toPackInfo);
+    return (JSON.parse(await this.invoke('StencilPacks')) as Array<components['schemas']['PackDto']>).map(toPackInfo);
   }
 
   public async getRules(): Promise<RuleInfo[]> {
-    return (JSON.parse(this.wasm.Rules()) as Array<components['schemas']['RuleDto']>).map(toRuleInfo);
+    return (JSON.parse(await this.invoke('Rules')) as Array<components['schemas']['RuleDto']>).map(toRuleInfo);
   }
 
   public async setRules(sources: RuleSource[]): Promise<RuleBundle> {
-    return toRuleBundle(JSON.parse(this.wasm.SetRules(sources.length === 0 ? '' : JSON.stringify(sources))));
+    return toRuleBundle(JSON.parse(await this.invoke('SetRules', sources.length === 0 ? '' : JSON.stringify(sources))));
   }
 
   public async getRuleBundle(): Promise<RuleBundle> {
-    return toRuleBundle(JSON.parse(this.wasm.RuleBundle()));
+    return toRuleBundle(JSON.parse(await this.invoke('RuleBundle')));
   }
 
   public async getRulePacks(): Promise<RulePackInfo[]> {
-    return (JSON.parse(this.wasm.RulePacks()) as Array<components['schemas']['RulePackDto']>).map(toRulePackInfo);
+    return (JSON.parse(await this.invoke('RulePacks')) as Array<components['schemas']['RulePackDto']>).map(toRulePackInfo);
   }
 
   public async getPropertySchema(): Promise<PropertyDescriptorInfo[]> {
-    return (JSON.parse(this.wasm.PropertySchema()) as Array<components['schemas']['PropertyDescriptor']>).map(
+    return (JSON.parse(await this.invoke('PropertySchema')) as Array<components['schemas']['PropertyDescriptor']>).map(
       toPropertyDescriptor,
     );
   }
 
   public async detect(bytes: Uint8Array): Promise<FormatInfo | null> {
-    const json = this.wasm.Detect(toBase64(bytes));
+    const json = await this.invoke('Detect', toBase64(bytes));
     return json ? toFormatInfo(JSON.parse(json) as components['schemas']['FormatDto']) : null;
   }
 
   public async readFile(bytes: Uint8Array, formatId?: string): Promise<TmForgeModel> {
-    const dto = JSON.parse(this.wasm.ReadFile(toBase64(bytes), formatId ?? '')) as components['schemas']['TmForgeModelDto'];
+    const dto = JSON.parse(await this.invoke('ReadFile', toBase64(bytes), formatId ?? '')) as components['schemas']['TmForgeModelDto'];
     return toModel(dto);
+  }
+
+  public async recoverTm7(bytes: Uint8Array): Promise<TmForgeModel> {
+    return toModel(JSON.parse(await this.invoke('RecoverTm7', toBase64(bytes))) as components['schemas']['TmForgeModelDto']);
   }
 
   public async applyManifest(manifestJson: string): Promise<TmForgeModel> {
     return modelFromApplyResult(
-      JSON.parse(this.wasm.ApplyManifest(manifestJson)) as components['schemas']['ApplyResultDto'],
+      JSON.parse(await this.invoke('ApplyManifest', manifestJson)) as components['schemas']['ApplyResultDto'],
     );
   }
 
   public async convert(model: TmForgeModel, toFormatId: string): Promise<Blob> {
-    return blobFromBase64(this.wasm.ConvertModel(JSON.stringify(model), toFormatId), mimeForFormat(toFormatId));
+    return blobFromBase64(await this.invoke('ConvertModel', JSON.stringify(model), toFormatId), mimeForFormat(toFormatId));
   }
 
   public async report(model: TmForgeModel, format: 'html' | 'svg'): Promise<Blob> {
-    return blobFromBase64(this.wasm.Report(JSON.stringify(model), format), format === 'svg' ? 'image/svg+xml' : 'text/html');
+    return blobFromBase64(await this.invoke('Report', JSON.stringify(model), format), format === 'svg' ? 'image/svg+xml' : 'text/html');
   }
 
   public async analysisReport(model: TmForgeModel, format: AnalysisReportFormat): Promise<Blob> {
     return blobFromBase64(
-      this.wasm.AnalysisReport(JSON.stringify(model), format),
+      await this.invoke('AnalysisReport', JSON.stringify(model), format),
       analysisReportMime(format),
     );
   }
 
   public async merge(base: TmForgeModel | null, ours: TmForgeModel, theirs: TmForgeModel): Promise<MergeResult> {
     const dto = JSON.parse(
-      this.wasm.Merge(base ? JSON.stringify(base) : '', JSON.stringify(ours), JSON.stringify(theirs)),
+      await this.invoke('Merge', base ? JSON.stringify(base) : '', JSON.stringify(ours), JSON.stringify(theirs)),
     ) as components['schemas']['MergeResultDto'];
     return toMergeResult(dto);
   }
 
   public async compare(baseline: TmForgeModel, proposed: TmForgeModel): Promise<ModelCompareResult> {
-    return toComparison(JSON.parse(this.wasm.Compare(JSON.stringify({ baseline, proposed }))));
+    return toComparison(JSON.parse(await this.invoke('Compare', JSON.stringify({ baseline, proposed }))));
   }
 
   public async layout(model: TmForgeModel, positions: LayoutElement[]): Promise<LayoutElement[]> {
-    return layoutElements(JSON.parse(this.wasm.Layout(JSON.stringify({ model, positions }))), positions);
+    return layoutElements(JSON.parse(await this.invoke('Layout', JSON.stringify({ model, positions }))), positions);
   }
 }
 

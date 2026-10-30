@@ -193,7 +193,18 @@ namespace ThreatModelForge.Engine
         private static void InspectConversion(ThreatModel model, string source, string target, List<DocumentDiagnostic> diagnostics, string? json)
         {
             List<Entity> elements = model.DrawingSurfaceList.SelectMany(page => page.Borders.Values.Concat(page.Lines.Values)).OfType<Entity>().ToList();
-            if (target == TmForgeJsonFormat.FormatId)
+            if (target == ThreatDragonFormat.FormatId)
+            {
+                try
+                {
+                    new ThreatDragonFormat().Write(model, Stream.Null);
+                }
+                catch (Exception error) when (error is NotSupportedException || error is InvalidDataException || error is JsonException)
+                {
+                    JsonDocumentPreflight.Add(diagnostics, "conversion.threat-dragon.unsupported", "$", error.Message);
+                }
+            }
+            else if (target == TmForgeJsonFormat.FormatId)
             {
                 int boundaries = elements.OfType<LineBoundary>().Count();
                 if (boundaries > 0)
@@ -213,6 +224,11 @@ namespace ThreatModelForge.Engine
             }
             else if (target == DrawIoFormat.FormatId || target == VisioFormat.FormatId)
             {
+                if (model.Notes.Count > 0)
+                {
+                    JsonDocumentPreflight.Add(diagnostics, "conversion.notes", "$.notes", "Model notes are not preserved by this diagram format. Keep the source model to retain them.", "warning");
+                }
+
                 if (model.AllThreatsDictionary.Count > 0)
                 {
                     string message = target == DrawIoFormat.FormatId
@@ -238,7 +254,7 @@ namespace ThreatModelForge.Engine
                 using JsonDocument raw = JsonDocument.Parse(json);
                 if (Find(raw.RootElement, "analysis", out _))
                 {
-                    JsonDocumentPreflight.Add(diagnostics, "conversion.analysis-settings", "$.analysis", "A format conversion does not carry all workspace rule selections and expected pack fingerprints. Keep the canonical source and its rule configuration.", "warning");
+                    JsonDocumentPreflight.Add(diagnostics, "conversion.analysis-settings", "$.analysis", "A format conversion does not carry all workspace rule selections and expected pack fingerprints. Keep the canonical source and its rule configuration.", target == ThreatDragonFormat.FormatId ? "error" : "warning");
                 }
             }
 

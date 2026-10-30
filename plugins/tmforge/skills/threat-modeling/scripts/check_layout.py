@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import cast
+
+from generate_suppressions import artifact_stream
 
 ARRAYS = "{http://schemas.microsoft.com/2003/10/Serialization/Arrays}"
 MODEL = "{http://schemas.datacontract.org/2004/07/ThreatModeling.Model}"
@@ -32,6 +36,8 @@ LABEL_H = 18.0
 # it loads the file, which piles clamped shapes on top of each other.
 MAX_CANVAS_X = 1890.0
 MAX_CANVAS_Y = 2090.0
+MAX_CONNECTOR_X = 1990.0
+MAX_CONNECTOR_Y = 2190.0
 
 
 def _number(node: ET.Element, tag: str) -> float | None:
@@ -70,7 +76,24 @@ def _properties(node: ET.Element) -> tuple[str | None, str | None]:
 
 def read_geometry(path: Path) -> dict[str, object]:
     """Extract boundary boxes, element boxes, and connector segments from a ``.tm7``."""
-    root = ET.parse(path).getroot()
+    with artifact_stream(path) as stream:
+        root = ET.parse(stream).getroot()
+    geometry = _surface_geometry(root)
+    surfaces = list(root.iter(MODEL + "DrawingSurfaceModel"))
+    if len(surfaces) > 1:
+        geometry["pages"] = [
+            {
+                **_surface_geometry(surface),
+                "id": surface.findtext(ABSTRACTS + "Guid", ""),
+                "name": surface.findtext(MODEL + "Header") or f"Diagram {index}",
+            }
+            for index, surface in enumerate(surfaces, start=1)
+        ]
+    return geometry
+
+
+def _surface_geometry(root: ET.Element) -> dict[str, object]:
+    """Extract geometry from one surface without mixing page coordinate systems."""
     boundaries: dict[str, dict[str, object]] = {}
     elements: dict[str, dict[str, object]] = {}
     by_guid: dict[str, tuple[str, str]] = {}
@@ -168,7 +191,9 @@ def _segments_cross(
     return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
 
 
-def label_boxes(connectors: list[dict[str, object]]) -> list[tuple[str, dict[str, float]]]:
+def label_boxes(
+    connectors: list[dict[str, object]],
+) -> list[tuple[str, dict[str, float]]]:
     """Rectangles the flow names are printed in, as ``(name, box)`` pairs.
 
     The tool draws the name centred on the midpoint of the connector's quadratic curve —
@@ -217,6 +242,59 @@ def _covers(outer: dict[str, object], inner: dict[str, object]) -> bool:
 def check(model_path: Path, analysis_path: Path | None) -> dict[str, object]:
     """Return a machine-readable layout report for one ``.tm7``."""
     geometry = read_geometry(model_path)
+    ledger: dict = {}
+    if analysis_path is not None:
+        with artifact_stream(analysis_path) as stream:
+            ledger = json.loads(stream.read().decode("utf-8"))
+    pages = cast(list[dict[str, object]], geometry.get("pages", []))
+    if not pages:
+        return _check_geometry(model_path, geometry, ledger)
+    reports = [
+        {
+            **_check_geometry(model_path, page, ledger),
+            "page": page["name"],
+            "id": page["id"],
+        }
+        for page in pages
+    ]
+    failures = [
+        f"{report['page']}: {message}"
+        for report in reports
+        for message in cast(list[str], report["failures"])
+    ]
+    warnings = [
+        f"{report['page']}: {message}"
+        for report in reports
+        for message in cast(list[str], report["warnings"])
+    ]
+    canvases = [cast(dict[str, float], report["canvas"]) for report in reports]
+    return {
+        "model": str(model_path),
+        **{
+            field: sum(cast(int, report[field]) for report in reports)
+            for field in (
+                "boundaries",
+                "elements",
+                "connectors",
+                "crossings",
+                "obstructedLabels",
+            )
+        },
+        "columns": max(cast(int, report["columns"]) for report in reports),
+        "canvas": {
+            field: max(canvas[field] for canvas in canvases) for field in canvases[0]
+        },
+        "failures": failures,
+        "warnings": warnings,
+        "ok": not failures,
+        "pages": reports,
+    }
+
+
+def _check_geometry(
+    model_path: Path, geometry: dict[str, object], ledger: dict
+) -> dict[str, object]:
+    """Check only objects that share a drawing surface."""
     boundaries: dict[str, dict[str, object]] = geometry["boundaries"]  # type: ignore[assignment]
     elements: dict[str, dict[str, object]] = geometry["elements"]  # type: ignore[assignment]
     connectors: list[dict[str, object]] = geometry["connectors"]  # type: ignore[assignment]
@@ -226,8 +304,7 @@ def check(model_path: Path, analysis_path: Path | None) -> dict[str, object]:
 
     home: dict[str, str] = {}
     parents: dict[str, str] = {}
-    if analysis_path is not None:
-        ledger = json.loads(analysis_path.read_text(encoding="utf-8"))
+    if ledger:
         for element in ledger.get("elements", []):
             ids = element.get("boundaryIds") or []
             # Only the first boundary is representable in a .tm7 drawing surface.
@@ -236,6 +313,22 @@ def check(model_path: Path, analysis_path: Path | None) -> dict[str, object]:
         for boundary in ledger.get("boundaries", []):
             if boundary.get("parentId"):
                 parents[boundary["id"]] = boundary["parentId"]
+
+    ancestors: dict[str, set[str]] = {}
+    for alias, boundary in sorted(boundaries.items()):
+        ancestors[alias] = set()
+        ancestor_id = parents.get(alias)
+        while ancestor_id is not None:
+            if ancestor_id == alias or ancestor_id in ancestors[alias]:
+                failures.append(f"boundary {alias} has a cyclic parent hierarchy")
+                break
+            ancestors[alias].add(ancestor_id)
+            ancestor = boundaries.get(ancestor_id)
+            if ancestor is not None and not _contains(ancestor, boundary):
+                failures.append(
+                    f"boundary {alias} is drawn outside its ancestor {ancestor_id}"
+                )
+            ancestor_id = parents.get(ancestor_id)
 
     for alias, boundary_id in sorted(home.items()):
         element = elements.get(alias)
@@ -248,7 +341,7 @@ def check(model_path: Path, analysis_path: Path | None) -> dict[str, object]:
                 f"diagram asserts a trust relationship the ledger does not make"
             )
         for other_id, other in sorted(boundaries.items()):
-            if other_id == boundary_id or parents.get(boundary_id) == other_id:
+            if other_id == boundary_id or other_id in ancestors[boundary_id]:
                 continue
             if _overlaps(element, other):
                 failures.append(
@@ -263,14 +356,26 @@ def check(model_path: Path, analysis_path: Path | None) -> dict[str, object]:
 
     boundary_keys = sorted(boundaries)
     for index, alias in enumerate(boundary_keys):
-        for other in boundary_keys[index + 1 :]:
-            if parents.get(alias) == other or parents.get(other) == alias:
+        for other_alias in boundary_keys[index + 1 :]:
+            if other_alias in ancestors[alias] or alias in ancestors[other_alias]:
                 continue
-            if _overlaps(boundaries[alias], boundaries[other]):
-                failures.append(f"boundaries {alias} and {other} overlap")
+            if _overlaps(boundaries[alias], boundaries[other_alias]):
+                failures.append(f"boundaries {alias} and {other_alias} overlap")
 
     segments: list[tuple[float, float, float, float]] = []
-    for connector in connectors:
+    for position, connector in enumerate(connectors, start=1):
+        for point in ("source", "target", "handle"):
+            for axis, limit in (("X", MAX_CONNECTOR_X), ("Y", MAX_CONNECTOR_Y)):
+                coordinate = f"{point}{axis}"
+                value = connector.get(coordinate)
+                if not isinstance(value, (int, float)):
+                    continue
+                number = float(value)
+                if not math.isfinite(number) or number > limit:
+                    failures.append(
+                        f"connector {connector.get('name') or position} {coordinate}={number:g} "
+                        f"must be finite and not exceed {limit:.0f}; out-of-range connector points are clamped on load"
+                    )
         values = (
             connector["sourceX"],
             connector["sourceY"],
@@ -303,7 +408,9 @@ def check(model_path: Path, analysis_path: Path | None) -> dict[str, object]:
     for name, label in labels:
         for alias, element in sorted(elements.items()):
             if _covers(element, label):
-                buried.append(f"flow label '{name}' is completely hidden behind {alias}")
+                buried.append(
+                    f"flow label '{name}' is completely hidden behind {alias}"
+                )
             elif _overlaps(element, label):
                 obstructed.add(name)
     for index, (name, label) in enumerate(labels):

@@ -144,6 +144,9 @@ The ledger contains:
 
 Do not hand-maintain duplicate counts or inventories in rendered documents.
 
+For multi-page diagrams, declare `pages: [{"id": "PG1", "name": "Runtime"}, ...]` and a `pageId` on every boundary and element.
+Flows require one shared page. IDs stay globally unique; page names are unique and ordered. Omit `pages` for legacy ledgers.
+
 ### Declare a boundary axis and keep boundaries flat
 
 Every boundary declares an `axis` naming the kind of trust change it represents: `authority`, `host`,
@@ -191,18 +194,15 @@ projected file rather than over the network. An exemption keeps a real judgement
 
 ## 4. Allocate Stable IDs and Ordering
 
-Preserve every existing ID. Never renumber, reuse, or compact IDs after deletion.
-
-The allocation rules below bootstrap a new model. They are not a rebuild strategy. Re-deriving IDs from a changed
-inventory renumbers every entry after an insertion, because allocation is positional, and that silently invalidates
-anything keyed by ID: diagram property tables, suppression justifications, review comments, and work-item links. The
-failure is quiet and dangerous, because a justification written for one element stays syntactically valid while
-attaching to a different one. Key every generator input, sidecar, and lookup table on a stable alias or name, and
-prove stability by validating a rebuilt ledger against its predecessor with `validate_analysis.py --baseline`.
+Preserve every existing ID; never renumber, reuse, or compact after deletion. Allocation below is for new models, not
+rebuilds: inventory changes can make positional IDs silently attach properties, suppressions, comments, or work-item
+links to the wrong elements. Key generators, sidecars, and lookups on stable aliases or names; prove rebuild
+stability against the previous ledger with `validate_analysis.py --baseline`.
 
 For a new model, freeze the discovered inventory, sort it, then allocate:
 
 - Scope inputs: precedence order, then normalized `(kind, reference)` -> `SI001`, `SI002`, ...
+- Pages: authored view order -> `PG1`, `PG2`, ...; preserve IDs when reordering pages.
 - Boundaries: normalized `(parent ID, name)` order -> `TB1`, `TB2`, ...
 - Elements: kind order `actor`, `external`, `process`, `data-store`, then normalized `(boundary IDs, name)`; use
   `A1`, `X1`, `P1`, and `DS1` respectively.
@@ -211,13 +211,17 @@ For a new model, freeze the discovered inventory, sort it, then allocate:
 - Threat actors: normalized `(capability, name)` order -> `TA1`, `TA2`, ...
 - Assumptions and unknowns: normalized text order -> `A001` and `U001`.
 
-On update, allocate the next numeric suffix for that prefix after the highest existing value. Append new entries and
-then sort arrays by natural ID order. Sort coverage by natural target ID and category order `S`, `T`, `R`, `I`, `D`,
-`E`.
+On update, allocate the next suffix above the highest existing value for each prefix; append entries, then sort by
+natural ID order. Sort coverage by natural target ID and STRIDE order `S`, `T`, `R`, `I`, `D`, `E`.
 
-A `name` is a label, not a description. It is drawn on the diagram beside its ID, unwrapped, so a long one covers the
-shapes around it; keep a flow name to a terse phrase and put the explanation in `data-flow.md`, which is keyed by the
-same ID and is where a reviewer reads it. The tmforge skill records the exact budget and the check that enforces it.
+Use bare, terse ledger names: `{"id":"F1","name":"Submit request"}` displays as `F1: Submit request` exactly once.
+Put fuller explanations in linked evidence claims or threat descriptions; the renderer includes them in the report.
+
+Opt into per-page flow numbering with `displayId` in a declared `pages` view. Number every flow on that page
+uniquely and contiguously from `F1` to `Fn`; other pages may repeat labels. `{"id":"F68","displayId":"F1","name":"Action results"}`
+displays `F1: Action results` while manifest aliases, coverage, evidence, and threat targets retain global `F68`.
+Display IDs are references, not execution order; never renumber stable IDs for presentation. Documents map
+page/display IDs to stable IDs. Without `displayId`, labels and rendering are unchanged.
 
 For new threat IDs:
 
@@ -308,9 +312,10 @@ for those decisions: they are unversioned, unqueryable, and they disappear the m
 next reviewer re-litigates the same finding from scratch.
 
 Record each decision as a `triage` entry on the threat it concerns. The entry carries `date`, `reviewer`, `decision`,
-and `rationale`, plus `reference`, `relatedThreatIds`, `workItemIds`, and `evidenceIds` where they apply. Entries
+`status` at the time of review, and `rationale`, plus `reference`, `relatedThreatIds`, `workItemIds`, and `evidenceIds` where they apply. Entries
 accumulate and are sorted by date then reviewer, so the trail shows how a finding's disposition changed rather than
 only where it landed.
+For `mitigated`, `accepted`, or `transferred` threats, the latest triage status must match the threat status, with an accountable threat owner and supporting evidence.
 
 Use only these decisions:
 
@@ -324,7 +329,7 @@ Use only these decisions:
 Triage records what review decided. It never substitutes for the evidence that decides whether a control is real, so
 three rules are enforced rather than advised:
 
-- `resolved` requires `evidenceIds` and a threat `status` of `mitigated` or `transferred`. A statement that something
+- `resolved` requires `evidenceIds` and an entry `status` of `mitigated` or `transferred`. A statement that something
   is fixed is not proof that it is; the commit, pull request, or runtime observation belongs in the evidence ledger
   first, at its true evidence rank. A reviewer's recollection is an `assumption`, not `runtime` evidence.
 - `duplicate` requires `relatedThreatIds`. Overlapping findings are cross-linked, not merged: STRIDE coverage is
@@ -442,12 +447,13 @@ python3 <skill-directory>/scripts/validate_changed_packages.py verify --root <re
 
 Use the same root for both commands. Without `--root`, the current Git worktree is discovered from the working
 directory, not from the installed script. An explicit root supports non-Git directories. `--state-dir` isolates
-parallel sessions on the same worktree; default snapshots live in temporary storage, outside the installed plugin.
+parallel sessions; the default is private `~/.copilot-threat-model-validation`. macOS system `/var` and `/tmp` aliases
+work, but user-created state symlinks are refused. Runtime caches such as `.vscode-test` are excluded from discovery.
 
 `verify` runs the unified verifier against each package whose files changed since the snapshot, and exits non-zero
-when any package fails. Pass `--all` to validate every retained package without a baseline, and `--keep` to retain
-the baseline for a later run. This detects document-only edits too, so a hand-edited generated Markdown file is
-caught rather than silently diverging from its ledger.
+when any package fails. `--all` selects directories with `analysis.json`, not standalone model fixtures or build
+outputs. It ignores the baseline and cannot discover a deleted ledger; use snapshot/verify for that protection.
+`--keep` retains the baseline. Session verification catches deleted ledgers and hand-edited generated documents.
 
 The ledger validator enforces structure, unique and natural ID ordering, referential integrity, evidence references,
 complete STRIDE coverage, category consistency, score arithmetic, risk mapping, controlled statuses, and canonical
@@ -465,29 +471,29 @@ package whose diagram draws an element outside its boundary or overlaps shapes, 
 a trust claim; it warns on single-column stacking, connector crossings, and unreadable aspect ratios. Fix the
 canonical ledger, rerender, and rerun the verifier before delivery.
 
-Diagram geometry belongs in the manifest. Derive it with
-[the layout generator](./scripts/layout.py), which layers boundaries left to right by flow direction, grids elements
-inside their own boundary, and searches orderings to minimise crossings. It permutes exhaustively only within small
-groups, so a dense model can settle in a poor local minimum; pass `--restarts <n> --seed <n>` to sample randomised
-starting orders and keep the best result. Restarts cost time roughly linearly, so raise them only while crossings
-remain. Inspect any generated `.tm7` directly with [the layout checker](./scripts/check_layout.py). Never repair a
-diagram with an automatic layout pass; see the tmforge skill for why that silently breaks containment.
+[The layout generator](./scripts/layout.py) derives page-local geometry, wraps columns, and minimizes predicted label
+obstructions before crossings/length. `--manifest model.tm.json --out candidate.tm.json` preserves controls, stencils,
+and direction; `--page PG1` selects a preview. Restarted manifest output requires `--tmforge "<selected command>"`:
+native unseeded/restarted candidates are compared, retaining unseeded on worse crossings, labels, or page dimensions.
+Preview improvements can invert in native output. Check the artifact with [the layout checker](./scripts/check_layout.py).
+Previews and unseeded generation need no CLI. Preview warnings exit `0`; `--strict` returns `1` without writing `--out`;
+input/evaluation errors return `2`. Use the tmforge skill's labels-only workflow for already-correct shape placement.
 
-Rebuilding a package by hand invites a stale artifact, because the steps are order-dependent and a skipped one usually
-fails silently rather than loudly. Drive the whole sequence with
-[the rebuild driver](./scripts/rebuild_package.py), which regenerates the manifest, validates the ledger, applies the
-manifest through tmforge, checks layout, regenerates and verifies the suppression sidecar, renders, and runs the
-package verifier, stopping at the first failure:
+[The rebuild driver](./scripts/rebuild_package.py) runs manifest generation, ledger validation, apply, native layout,
+suppression verification, rendering, and package verification in a candidate before promotion. Defaults are
+`model.tm.json` and `model.tm7`; use `--manifest` and `--model` for another convention. Missing required artifacts
+fail their step. `--manifest-command` runs as argv in candidate cwd: absolute script paths, relative package paths;
+no shell operators. Regenerate the ledger before invoking the driver; the manifest step cannot change it. Missing or
+unchanged output fails; evidence/prose-only re-baselining commonly needs `--allow-unchanged-manifest` after review. Hashes/cwd
+are reported. Absolute owned-package paths bypass staging; commands are not sandboxed. Document-only mode needs no CLI.
 
 ```bash
-python3 <skill-directory>/scripts/rebuild_package.py <package-directory> \
-    --manifest-command "<command that regenerates the manifest>" \
+python3 <skill-directory>/scripts/rebuild_package.py <package-directory> --tmforge 'dotnet /absolute/tmforge.dll' \
+  --manifest-command 'python3 <layout-script> analysis.json --manifest model.tm.json --out model.tm.json --tmforge "dotnet /absolute/tmforge.dll"' \
     --justifications <justifications.json> --baseline <previous-analysis.json>
 ```
 
 Run compatible local formatting and stricter package gates when discovered. If a required validator cannot run,
 report the artifact as `unvalidated`; do not silently substitute a weaker verdict.
 
-Capture repeatable friction separately from product findings: missing indexes or ownership metadata, inaccessible
-evidence, unclear boundaries or flows, missing stencils/properties/rules, and recurring control patterns. Recommend the
-smallest reusable documentation, tooling, or instruction improvement, or report `None`.
+Capture repeatable tool friction separately from product findings; recommend the smallest reusable fix, or report `None`.

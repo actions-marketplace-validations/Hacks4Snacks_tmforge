@@ -21,6 +21,21 @@
           "type": "json",
           "path": ".github/plugin/marketplace.json",
           "jsonpath": "$.plugins[0].version"
+        },
+        {
+          "type": "json",
+          "path": "src/ThreatModelForge.Vscode/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "src/ThreatModelForge.Vscode/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "src/ThreatModelForge.Vscode/package-lock.json",
+          "jsonpath": "$.packages[''].version"
         }
       ]
     }

@@ -36,7 +36,7 @@ namespace ThreatModelForge.Cli
             new CommandInfo("analysis", "Validate a stored tmforge-analysis document (optionally against its model).", "operation, path, status, stale, schemaVersion, findingCount, problems[]", AnalysisCommand.Run),
             new CommandInfo("threats", "Report threats: the persisted, triaged view of the analysis findings (--write to persist).", "summary{count,written}, threats[]{id,ruleId,category,categoryId,categoryName,stride,title,mitigation,severity,priority,references[],scope,interaction}", ThreatsCommand.Run),
             new CommandInfo("accept", "Accept a generated threat's risk (marks it not-applicable with a reason).", "threat, state, reason", AcceptCommand.Run),
-            new CommandInfo("report", "Generate an HTML report from a threat model.", "output, format, bytes", ReportCommand.Run),
+            new CommandInfo("report", "Generate an HTML or Markdown report, or an SVG diagram, from a threat model.", "output, format, bytes", ReportCommand.Run),
             new CommandInfo("convert", "Convert a threat model between file formats.", "input, output, format, diagnostics[]{code,severity,path,message}", ConvertCommand.Run),
             new CommandInfo("apply", "Build a model from a declarative JSON manifest (all-or-nothing).", "output, format, dryRun, boundaries, elements, flows", ApplyCommand.Run),
             new CommandInfo("export", "Export a model as a declarative JSON manifest.", "output, boundaries, elements, flows", ExportCommand.Run),

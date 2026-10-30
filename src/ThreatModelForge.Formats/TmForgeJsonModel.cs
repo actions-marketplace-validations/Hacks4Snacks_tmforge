@@ -21,6 +21,9 @@ namespace ThreatModelForge.Formats
         /// <summary>Gets the author-owned model description, owner and review metadata.</summary>
         public MetaInformation? Metadata { get; init; }
 
+        /// <summary>Gets the author-owned model notes.</summary>
+        public IReadOnlyList<Note>? Notes { get; init; }
+
         /// <summary>Gets the diagram elements (processes, data stores, external entities, boundaries).</summary>
         public TmForgeJsonElement[] Elements { get; init; } = Array.Empty<TmForgeJsonElement>();
 

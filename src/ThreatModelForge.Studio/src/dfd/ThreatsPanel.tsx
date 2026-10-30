@@ -351,7 +351,6 @@ export function ThreatsPanel({
 }: ThreatsPanelProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-
   const byCategory = new Map<string, Threat[]>();
   const categoryLabels = new Map<string, string>();
   const categoryStride = new Map<string, string>();

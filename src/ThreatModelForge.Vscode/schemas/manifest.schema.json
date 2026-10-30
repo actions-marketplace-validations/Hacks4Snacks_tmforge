@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:tmforge:schema:manifest:v1",
+  "title": "Threat Model Forge authoring manifest",
+  "description": "Declarative source for tmforge apply. Schema hints do not replace engine validation of references, properties and geometry.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "tmforge-manifest", "default": "tmforge-manifest" },
+    "version": { "const": 1, "default": 1 },
+    "name": { "type": "string" },
+    "pages": { "type": "array", "items": { "$ref": "#/definitions/page" } },
+    "boundaries": { "type": "array", "items": { "$ref": "#/definitions/boundary" } },
+    "elements": { "type": "array", "items": { "$ref": "#/definitions/element" } },
+    "flows": { "type": "array", "items": { "$ref": "#/definitions/flow" } }
+  },
+  "definitions": {
+    "properties": { "type": "object", "description": "Security properties; keys and values are validated by the engine's property catalog.", "additionalProperties": { "type": "string" } },
+    "page": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "alias": { "type": "string" }, "name": { "type": "string" } }
+    },
+    "boundary": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "alias": { "type": "string" }, "name": { "type": "string" }, "page": { "type": "string" },
+        "x": { "type": "integer" }, "y": { "type": "integer" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 }
+      },
+      "dependencies": { "x": ["y"], "y": ["x"], "width": ["height"], "height": ["width"] }
+    },
+    "element": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "alias": { "type": "string" }, "name": { "type": "string" },
+        "kind": { "enum": ["process", "store", "datastore", "external", "boundary"] },
+        "stencil": { "type": "string", "description": "A catalog stencil id, for example k8s-configmap." },
+        "boundary": { "type": "string", "description": "Boundary alias or unique name." },
+        "page": { "type": "string" }, "props": { "$ref": "#/definitions/properties" },
+        "x": { "type": "integer" }, "y": { "type": "integer" }, "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 }
+      },
+      "dependencies": { "x": ["y"], "y": ["x"], "width": ["height"], "height": ["width"] }
+    },
+    "flow": {
+      "type": "object", "additionalProperties": false, "required": ["from", "to"],
+      "properties": {
+        "alias": { "type": "string" }, "name": { "type": "string" },
+        "from": { "type": "string", "minLength": 1, "description": "Source element alias or unique name." },
+        "to": { "type": "string", "minLength": 1, "description": "Target element alias or unique name." },
+        "props": { "$ref": "#/definitions/properties" }
+      }
+    }
+  }
+}

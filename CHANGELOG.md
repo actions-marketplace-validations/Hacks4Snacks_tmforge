@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.14.0](https://github.com/Hacks4Snacks/tmforge/compare/v0.13.1...v0.14.0) (2026-10-21)
+
+
+### Features
+
+* support an override option for imported objects ([#137](https://github.com/Hacks4Snacks/tmforge/issues/137)) ([1ecd03d](https://github.com/Hacks4Snacks/tmforge/commit/1ecd03d69546e09e6070b3af488a4595ee4774ac))
+* support model note creation ([#139](https://github.com/Hacks4Snacks/tmforge/issues/139)) ([c7e95b2](https://github.com/Hacks4Snacks/tmforge/commit/c7e95b272ec38ff0a227d44a788da707e5da9810))
+
+
+### Bug Fixes
+
+* MTMT opening error + skill updates for per-page flow numbering ([#144](https://github.com/Hacks4Snacks/tmforge/issues/144)) ([58dfae8](https://github.com/Hacks4Snacks/tmforge/commit/58dfae8121643dec0b6620f931e0da9e6fdb507d))
+
+## [0.13.1](https://github.com/Hacks4Snacks/tmforge/compare/v0.13.0...v0.13.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* Harden Plugin Components ([#132](https://github.com/Hacks4Snacks/tmforge/issues/132)) ([372ec06](https://github.com/Hacks4Snacks/tmforge/commit/372ec066e729e96b5249f12fa2712df8012ddaab))
+
+## [0.13.0](https://github.com/Hacks4Snacks/tmforge/compare/v0.12.1...v0.13.0) (2026-09-23)
+
+
+### Features
+
+* Support markdown formatted reporting ([#129](https://github.com/Hacks4Snacks/tmforge/issues/129)) ([16ef07d](https://github.com/Hacks4Snacks/tmforge/commit/16ef07d01eb2c9998038d9ce6314d3d492e49c1e))
+* Support Threat Dragon model v2 export ([#131](https://github.com/Hacks4Snacks/tmforge/issues/131)) ([62342e1](https://github.com/Hacks4Snacks/tmforge/commit/62342e1c5d581d92ebee7fce899a68d9a379fd13))
+
+## [0.12.1](https://github.com/Hacks4Snacks/tmforge/compare/v0.12.0...v0.12.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* Address bug with VSCode Extension TM Save ([#128](https://github.com/Hacks4Snacks/tmforge/issues/128)) ([6919317](https://github.com/Hacks4Snacks/tmforge/commit/69193178b678fc12676dfd4a0bc9118786df4110))
+* adjust action sequencing to prevent PR generation with incorrect verison ([#125](https://github.com/Hacks4Snacks/tmforge/issues/125)) ([f237b9d](https://github.com/Hacks4Snacks/tmforge/commit/f237b9d1d95178393658531d56c15e729856dc21))
+
+## [0.12.0](https://github.com/Hacks4Snacks/tmforge/compare/v0.11.0...v0.12.0) (2026-09-21)
+
+
+### Features
+
+* Add opt-in starter packs to help users adopt and customize declarative security policies ([#112](https://github.com/Hacks4Snacks/tmforge/issues/112)) ([59b65e4](https://github.com/Hacks4Snacks/tmforge/commit/59b65e438110497cf16a9eda626b19b8d05f15f9))
+* add vscode extension for threat model editing ([#123](https://github.com/Hacks4Snacks/tmforge/issues/123)) ([7e83868](https://github.com/Hacks4Snacks/tmforge/commit/7e83868191542e38d04a6c8e22c249cde91e6174))
+* Compare threat models in Studio ([#117](https://github.com/Hacks4Snacks/tmforge/issues/117)) ([8a420d2](https://github.com/Hacks4Snacks/tmforge/commit/8a420d25c5dc1e036f4622562dc8f9d7c1456d28))
+* copilot plugin marketplace publication ([#106](https://github.com/Hacks4Snacks/tmforge/issues/106)) ([af16a44](https://github.com/Hacks4Snacks/tmforge/commit/af16a445ce416255e87a5ff2e6cc656ff35450a1))
+* Expose cacheable MCP grounding resources ([#113](https://github.com/Hacks4Snacks/tmforge/issues/113)) ([f4c4a22](https://github.com/Hacks4Snacks/tmforge/commit/f4c4a2255363ecebd82bbcf874383c34035c3f9c))
+* Extend custom rule packs ([#111](https://github.com/Hacks4Snacks/tmforge/issues/111)) ([4a418e6](https://github.com/Hacks4Snacks/tmforge/commit/4a418e6cc33af1b8334e24ca5be1d6c87ada30c8))
+* mermaid + graphviz import support ([#118](https://github.com/Hacks4Snacks/tmforge/issues/118)) ([07282fe](https://github.com/Hacks4Snacks/tmforge/commit/07282fe22497cf18f919531613d9803124203bc2))
+* owasp threat dragon threat model import support ([#115](https://github.com/Hacks4Snacks/tmforge/issues/115)) ([4bcb012](https://github.com/Hacks4Snacks/tmforge/commit/4bcb0123718f7b17adbd797b04f8aa387f2f15ae))
+* preflight validation support for model conversions ([#116](https://github.com/Hacks4Snacks/tmforge/issues/116)) ([719dd9f](https://github.com/Hacks4Snacks/tmforge/commit/719dd9f12ac0aec8674d0667d495e1b3a8fe9213))
+* share canonical model snapshots as URLs ([#119](https://github.com/Hacks4Snacks/tmforge/issues/119)) ([40e64e8](https://github.com/Hacks4Snacks/tmforge/commit/40e64e89f6f2a8a79c65b617abfb2d1b8958390b))
+
+
+### Bug Fixes
+
+* preserve model semantics during tidy and CLI layout ([#109](https://github.com/Hacks4Snacks/tmforge/issues/109)) ([1915631](https://github.com/Hacks4Snacks/tmforge/commit/1915631251eb85de63a0944a0f2637b13a7c5993))
+
 ## [0.11.0](https://github.com/Hacks4Snacks/tmforge/compare/v0.10.0...v0.11.0) (2026-09-04)
 
 

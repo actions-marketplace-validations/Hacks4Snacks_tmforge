@@ -177,6 +177,9 @@
                 writer.Write(report);
             }
 
+            string markdownPath = Path.Join(reportFolderPath, $"{targetFileName!}.findings.md");
+            File.WriteAllText(markdownPath, new FindingsMarkdownReportWriter().Write(report));
+
             string sarifFilePath = Path.Join(
                 reportFolderPath,
                 $"{targetFileName!}.sarif");

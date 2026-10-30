@@ -4,26 +4,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import ExitStack, contextmanager
+from functools import partial
 from pathlib import Path
+from typing import BinaryIO
+
+from windows_permissions import windows_directory_handle
 
 TIMEOUT_SECONDS = 300
 
 # `tmforge analyze` names the flagged object either inside brackets after a short kind
 # label, or inline after "The". Both forms end with the stable `ID=<guid>` descriptor.
 TARGET = re.compile(
-    r"Diagram \d+: (?:[A-Za-z ]*\[(?P<bracketed>[^\[\]]*?ID=[0-9a-fA-F-]{36})\s*\]"
+    r"^(?P<model>.+?): (?:[A-Za-z ]*\[(?P<bracketed>[^\[\]]*?ID=[0-9a-fA-F-]{36})\s*\]"
     r"|The (?P<plain>.*?ID=[0-9a-fA-F-]{36}))"
 )
 HEAD = re.compile(
-    r"^(?P<file>\S+): \w+ (?P<rule>TM\d+): (?P<model>Diagram \d+): ",
+    r"^(?P<file>.+?): \w+ (?P<rule>TM\d+): ",
 )
 # Aliases are the ledger ids rendered into the element name by the manifest.
-NAMED = re.compile(r"^(?:DS|P|F|X|A)\d+: (?P<name>.+?) \(Generic ")
+NAMED = re.compile(
+    r"^(?:DS|TB|P|F|X|A)\d+(?::\s*|\s+)(?P<name>.+) "
+    r"\([^()\r\n]+\) ID=[0-9a-fA-F-]{36}$"
+)
 
 
 def parse_findings(text: str) -> list[dict[str, str]]:
@@ -31,16 +43,18 @@ def parse_findings(text: str) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     for line in text.splitlines():
         head = HEAD.match(line)
-        target = TARGET.search(line)
-        if head is None or target is None:
+        if head is None:
             continue
+        target = TARGET.match(line[head.end() :])
+        if target is None:
+            raise ValueError(f"unparsed analyzer diagnostic: {line}")
         descriptor = target.group("bracketed") or target.group("plain")
         findings.append(
             {
                 "rule": head.group("rule"),
                 # `model` names the drawing surface, not the file. Using the path here
                 # makes tmforge skip the suppression with a TM0001 warning.
-                "model": head.group("model"),
+                "model": target.group("model"),
                 "target": descriptor.strip(),
             }
         )
@@ -64,7 +78,10 @@ def build_document(
     for finding in findings:
         name = target_name(finding["target"])
         if name is None:
-            missing.append(f"{finding['rule']}: unparsed target {finding['target']!r}")
+            missing.append(
+                f"{finding['rule']}: target name must start with a diagram ID "
+                f"('ID: Name' or 'ID Name'): {finding['target']!r}"
+            )
             continue
         text = justifications.get(finding["rule"], {}).get(name)
         if not text:
@@ -121,6 +138,166 @@ def resolve_invocation(raw: str | None) -> list[str] | None:
     return [found] if found else None
 
 
+def verify_sidecar(invocation: list[str], model: Path, sidecar: Path) -> int:
+    verify_text, failure = run_analyze(invocation, model, sidecar)
+    if failure is not None:
+        print(f"ERROR: verification run failed: {failure}", file=sys.stderr)
+        return 2
+    try:
+        remaining = parse_findings(verify_text)
+    except ValueError as exc:
+        print(f"ERROR: verification failed: {exc}", file=sys.stderr)
+        return 2
+    skipped = "TM0001" in verify_text
+    for finding in remaining:
+        print(
+            f"ERROR: unanswered after suppression: {finding['rule']} {finding['target']}",
+            file=sys.stderr,
+        )
+    if skipped:
+        print(
+            "ERROR: tmforge skipped a suppression (TM0001); check that model "
+            "names the drawing surface and file names the model",
+            file=sys.stderr,
+        )
+    return 1 if remaining or skipped else 0
+
+
+def require_distinct_output(output: Path, inputs: Iterable[Path | None]) -> None:
+    """Reject outputs that name an input, including existing file aliases."""
+    destination = output.resolve()
+    for source in inputs:
+        if source is not None and (
+            destination == source.resolve()
+            or (output.exists() and source.exists() and output.samefile(source))
+        ):
+            raise ValueError(f"output must be distinct from input: {source}")
+
+
+def validate_output_entry(info: os.stat_result, directory: bool = False) -> None:
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+    )
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if reparse or not expected_type(info.st_mode):
+        raise ValueError(
+            "output paths must use regular files and directories, not symlinks or reparse points"
+        )
+
+
+def system_path(path: Path) -> Path:
+    """Expand only macOS's root-owned temporary-directory aliases, not user links."""
+    absolute = path.absolute()
+    if sys.platform == "darwin" and absolute.parts[1:2] in (("var",), ("tmp",)):
+        alias = Path(absolute.anchor) / absolute.parts[1]
+        expected = Path("/private") / alias.name
+        info = alias.lstat()
+        if (
+            stat.S_ISLNK(info.st_mode)
+            and info.st_uid == 0
+            and alias.parent / os.readlink(alias) == expected
+        ):
+            return expected.joinpath(*absolute.parts[2:])
+    return absolute
+
+
+@contextmanager
+def output_directory(path: Path, create: bool = False) -> Iterator[int | None]:
+    absolute = system_path(path)
+    descriptor = None
+    handles = ExitStack()
+    try:
+        if os.name == "posix":
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            descriptor = os.open(absolute.anchor, flags)
+            for name in absolute.parts[1:]:
+                try:
+                    info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    if not create:
+                        raise
+                    try:
+                        os.mkdir(name, mode=0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    info = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                validate_output_entry(info, directory=True)
+                child = os.open(name, flags, dir_fd=descriptor)
+                os.close(descriptor)
+                descriptor = child
+                validate_output_entry(os.fstat(descriptor), directory=True)
+        else:
+            for parent in [*reversed(absolute.parents), absolute]:
+                try:
+                    info = parent.lstat()
+                except FileNotFoundError:
+                    if not create:
+                        raise
+                    parent.mkdir(mode=0o700, exist_ok=True)
+                    info = parent.lstat()
+                handles.enter_context(windows_directory_handle(parent))
+                validate_output_entry(info, directory=True)
+        yield descriptor
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        handles.close()
+
+
+@contextmanager
+def artifact_stream(path: Path) -> Iterator[BinaryIO]:
+    """Open a regular artifact through its original, no-follow parent path."""
+    with output_directory(path.parent) as directory:
+        location = path.name if directory is not None else path
+        info = os.stat(location, dir_fd=directory, follow_symlinks=False)
+        validate_output_entry(info)
+        flags = (
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        )
+        descriptor = os.open(location, flags, dir_fd=directory)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            validate_output_entry(opened)
+            if (info.st_dev, info.st_ino) != (opened.st_dev, opened.st_ino):
+                raise ValueError(f"artifact changed while opening: {path}")
+            yield stream
+
+
+def write_sidecar(
+    path: Path,
+    document: dict[str, object],
+    verify: Callable[[Path], int] | None = None,
+) -> int:
+    destination = path.absolute()
+    with output_directory(destination.parent) as directory:
+        location = destination.name if directory is not None else destination
+        try:
+            info = os.stat(location, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            validate_output_entry(info)
+        name = f".{path.name}.{secrets.token_hex(16)}.tmp.json"
+        temporary = name if directory is not None else destination.parent / name
+        descriptor = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=directory
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write(json.dumps(document, indent=2) + "\n")
+            if verify is not None:
+                code = verify(destination.parent / name)
+                if code != 0:
+                    return code
+            os.replace(temporary, location, src_dir_fd=directory, dst_dir_fd=directory)
+        finally:
+            try:
+                os.unlink(temporary, dir_fd=directory)
+            except FileNotFoundError:
+                pass
+    return 0
+
+
 def run_self_test() -> int:
     """Prove both analyzer line shapes parse and an unjustified finding fails."""
     sample = (
@@ -144,7 +321,9 @@ def run_self_test() -> int:
 
     unnamed = [{"rule": "TM1014", "model": "Diagram 1", "target": "no alias prefix"}]
     document, missing = build_document(unnamed, {}, "model.tm7")
-    assert missing == ["TM1014: unparsed target 'no alias prefix'"], missing
+    assert (
+        len(missing) == 1 and "target name must start with a diagram ID" in missing[0]
+    ), missing
 
     justifications = {
         "TM1014": {"Snapshot volume": "Accurate and intended finding."},
@@ -192,6 +371,15 @@ def main() -> int:
         print(f"ERROR: no such model: {args.model}", file=sys.stderr)
         return 2
 
+    sidecar = args.out or args.model.with_suffix(".tm.suppressions.json")
+    try:
+        require_distinct_output(
+            sidecar, (args.model, args.justifications, args.analyzer_output)
+        )
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     try:
         justifications = json.loads(args.justifications.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -205,6 +393,9 @@ def main() -> int:
         invocation = resolve_invocation(args.tmforge)
     except ValueError as exc:
         parser.error(str(exc))
+    if args.verify and invocation is None:
+        print("ERROR: --verify requires tmforge", file=sys.stderr)
+        return 2
     if args.analyzer_output is not None:
         text = args.analyzer_output.read_text(encoding="utf-8")
     elif invocation is None:
@@ -219,7 +410,11 @@ def main() -> int:
             print(f"ERROR: tmforge analyze failed: {failure}", file=sys.stderr)
             return 2
 
-    findings = parse_findings(text)
+    try:
+        findings = parse_findings(text)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     document, missing = build_document(findings, justifications, args.model.name)
     if missing:
         for item in missing:
@@ -227,7 +422,6 @@ def main() -> int:
         print(f"INCOMPLETE: {len(missing)} unjustified finding(s)", file=sys.stderr)
         return 1
 
-    sidecar = args.out or args.model.with_suffix(".tm.suppressions.json")
     if sidecar.parent.resolve() != args.model.parent.resolve():
         print(
             "ERROR: sidecar must sit beside the model, because tmforge resolves its "
@@ -235,7 +429,18 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    sidecar.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    try:
+        verification = (
+            partial(verify_sidecar, invocation, args.model)
+            if args.verify and invocation is not None
+            else None
+        )
+        code = write_sidecar(sidecar, document, verification)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: cannot write sidecar: {exc}", file=sys.stderr)
+        return 2
+    if code != 0:
+        return code
 
     report: dict[str, object] = {
         "valid": True,
@@ -246,29 +451,6 @@ def main() -> int:
     }
 
     if args.verify:
-        if invocation is None:
-            print("ERROR: --verify requires tmforge", file=sys.stderr)
-            return 2
-        verify_text, failure = run_analyze(invocation, args.model, sidecar)
-        if failure is not None:
-            print(f"ERROR: verification run failed: {failure}", file=sys.stderr)
-            return 2
-        remaining = parse_findings(verify_text)
-        skipped = "TM0001" in verify_text
-        if remaining or skipped:
-            for item in remaining:
-                print(
-                    f"ERROR: unanswered after suppression: {item['rule']} "
-                    f"{item['target']}",
-                    file=sys.stderr,
-                )
-            if skipped:
-                print(
-                    "ERROR: tmforge skipped a suppression (TM0001); check that model "
-                    "names the drawing surface and file names the model",
-                    file=sys.stderr,
-                )
-            return 1
         report["verified"] = True
 
     print(json.dumps(report, indent=2))

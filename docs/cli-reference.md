@@ -11,9 +11,9 @@ tmforge <command> [options] <file>
 ## Conventions
 
 - **Options are GNU-style.** Every option accepts either `--name value` or `--name=value`.
-- **`--json` everywhere.** Add `--json` to any command for a single machine-readable document on
+- **`--json` for model commands.** Add `--json` to a supported model command for a single machine-readable document on
   stdout (see [JSON output](#json-output)). Human text and diagnostics go to stderr, so
-  `tmforge ... --json | jq` stays clean.
+  `tmforge ... --json | jq` stays clean. Help/version and git setup are text; MCP uses JSON-RPC over stdio.
 - **Help.** `tmforge --help` lists commands; `tmforge <command> --help` (also `-h`, `-?`) shows
   command-specific options.
 - **Version.** `tmforge --version` prints the released version.
@@ -51,7 +51,7 @@ tmforge <command> [options] <file>
 | [`analysis`](#analysis) | Analyze | Validate a stored analysis document (and check whether it is stale), or compare two of them. |
 | [`threats`](#threats) | Analyze | Report or author threats — the persisted, triaged view of the findings (`--write` to persist; `--add`/`--edit`/`--remove` to author). |
 | [`accept`](#accept) | Analyze | Accept a generated threat's risk (records a justification). |
-| [`report`](#report) | Report | Generate a self-contained HTML report. |
+| [`report`](#report) | Report | Generate an HTML or Markdown report, or an SVG diagram. |
 | [`convert`](#convert) | Convert | Convert a model between file formats. |
 | [`apply`](#apply) | Author | Build a model from a declarative JSON manifest (all-or-nothing). |
 | [`export`](#export) | Author | Export a model as a declarative JSON manifest. |
@@ -77,7 +77,7 @@ tmforge open payments.tm7 --rules corporate.rules.json   # recognize a custom pa
 
 #### Threat counts are split by origin and standing
 
-The register is append-only: applying a generation result never deletes, so triage is never lost when
+Generation is additive: applying a generation result never deletes, so triage is not lost when
 a rule stops firing. The cost is that a left-over entry looks exactly like a live one. `open`
 therefore classifies the register against one analysis run and reports four counts:
 
@@ -230,7 +230,7 @@ tmforge schema --json | jq '.data.commands'
 
 ### `render`
 
-Draw the first diagram in the terminal. Defaults to Unicode/ANSI; `--plain` uses ASCII only.
+Draw every diagram in the terminal. Defaults to Unicode/ANSI; `--plain` uses ASCII only.
 Boxes are clamped to the canvas (and to their enclosing trust boundary), so labels aren't clipped
 or drawn over a boundary wall.
 
@@ -266,8 +266,9 @@ tmforge diff payments.v1.tm7 payments.v2.tm7
 tmforge diff payments.v1.tm7 payments.v2.tm7 --json
 ```
 
-Identity is preserved in `.tm7`; other formats do not round-trip element ids, so `diff` is most
-useful on `.tm7`.
+Identity is preserved in `.tm7` and canonical `tmforge-json`, including deterministic mappings for
+non-GUID author ids. Compare revisions from the same identity lineage; foreign-format conversions
+can introduce different identities and appear as additions/removals.
 
 #### Trust boundary crossings
 
@@ -297,7 +298,7 @@ signal. Under `--json` the same information appears as `data.crossings`, counted
 
 `--textconv` prints a canonical, deterministic outline of a **single** model. Wired as a git
 [textconv](https://git-scm.com/docs/gitattributes#_generating_diff_text_via_textconv) it makes
-`git diff`, `git log -p`, and pull requests render `.tm7` changes as readable structure instead of
+local `git diff` and `git log -p` render `.tm7` changes as readable structure instead of
 opaque XML. Enable it once per clone:
 
 ```gitattributes
@@ -314,6 +315,8 @@ Afterwards, `git diff` on a `.tm7` shows lines such as `process "API Gateway"  <
 
 > The committed `.gitattributes` is **optional**; you don't need this repository's source. Run
 > [`tmforge git-setup`](#git-setup) to apply the config and a local (or global) mapping for you.
+> Hosted pull-request interfaces do not run your local textconv driver; attach generated diff/report
+> output to a review when the hosting service does not support it.
 
 ### `merge`
 
@@ -377,8 +380,9 @@ auto-invocation isn't possible: git requires drivers to be configured explicitly
 
 ## Authoring commands
 
-Authoring verbs mutate the model **in place** and write back through the source format's writer
-(byte-stable for `.tm7`). Writes are **atomic**: the tool writes to a temp file and renames on
+Authoring verbs mutate the model **in place** and write back through the source format's writer.
+Native XML can be reserialized; the byte-identical no-op guarantee belongs to the preserving native
+save operation, not to arbitrary CLI edits or structural conversions. Writes are **atomic**: the tool writes to a temp file and renames on
 success, so a failed run never corrupts the source. Elements without explicit coordinates get a
 **deterministic** auto-layout.
 
@@ -655,7 +659,7 @@ tmforge analyze [--ruleset <path>] [--rules <path>] [--suppressionFile <path>] [
 | `--ruleset <path>` | Use a custom rule set instead of the built-in default. |
 | `--rules <path>` | Load custom [declarative rules](analysis-rules.md#authoring-custom-rules-declarative) from a `*.tmrules.json` file (or a directory of them) in addition to the built-in rules. |
 | `--suppressionFile <path>` | Apply a suppression document to filter findings. |
-| `--reportFolder <dir>` | Also write SARIF + HTML findings reports, a JSON listing, and the versioned analysis document to `<dir>`. |
+| `--reportFolder <dir>` | Also write SARIF, HTML, and Markdown findings reports, a JSON report and listing, and the versioned analysis document to `<dir>`. |
 | `--taxonomy <path>` | Annotate the analysis document with your own threat-catalogue ids. See [mapping to your own taxonomy](analysis-rules.md#mapping-to-your-own-taxonomy). |
 | `--define name=value` | Repeatable. Supplies a rule variable. |
 | `--max-severity <level>` | Gate the exit code on findings at or above `<level>` (`error`, `warning`, or `info`). Default: `error`. |
@@ -680,6 +684,9 @@ tmforge analyze payments.tm7 --suppressionFile suppressions.json --json
 > When a model is loaded from the native `tmforge-json` format, its embedded analysis selection
 > (disabled packs/rules) is honored automatically. Other formats use the full rule set or an
 > explicit `--ruleset`.
+> Native Studio saves can retain their selection in a Studio XML extension, but the CLI's selection
+> reader does not apply that extension to `.tm7` analysis. Use canonical JSON or an explicit CLI ruleset
+> when a pipeline must apply Studio's disabled-rule selections.
 
 ### `analysis`
 
@@ -811,7 +818,7 @@ tmforge threats --remove-stale [--force] [--rules <path>] <model>
 | Option | Meaning |
 | --- | --- |
 | `--add` | Author a **manual threat** the rules do not detect. `--category` is a STRIDE category (`Spoofing` / `Tampering` / `Repudiation` / `InformationDisclosure` / `DenialOfService` / `ElevationOfPrivilege`); `--scope` is an element or flow id (omit for a model-wide threat). Manual threats are keyed in the reserved `manual:` namespace and do not implicitly persist generated threats. |
-| `--id <id>` | Key the threat yourself instead of taking a generated id, so it can be referenced from a ticket or control catalogue and the same authoring command can be re-run. Letters, digits, `-`, `_`, and `.`, up to 128 characters; the `manual:` prefix is added if you omit it. Re-using an existing id is an error — use `--edit` to change that threat. |
+| `--id <id>` | Key the threat yourself instead of taking a generated id, so it can be referenced from a ticket or control catalogue. Letters, digits, `-`, `_`, and `.`, up to 128 characters; the `manual:` prefix is added if you omit it. Re-using an existing id is an error — use `--edit` to change that threat. |
 | `--edit <id>` | Change a threat's `--title`, `--state` (`Open` / `NeedsInvestigation` / `Mitigated` / `Accepted`), `--priority` (`Critical` / `High` / `Medium` / `Low`), `--mitigation`, `--description`, or `--note`. Works on rule-derived and manual threats. `--category` applies to **manual threats only**. |
 | `--title <t>` | Retitle a threat. On a rule-derived threat this is an **override**: the rule keeps detecting the threat and keeps its identity, but the register shows your wording. Pass an empty title to drop the override and restore the rule's. |
 | `--category <c>` | Set a **manual** threat's STRIDE category. Refused for a rule-derived threat, whose category is the rule's conclusion rather than an author's opinion. |
@@ -899,11 +906,11 @@ Acceptance round-trips through `.tm7` and is honored identically by the CLI, the
 
 ### `report`
 
-Generate a self-contained HTML report with an inline SVG diagram per page, or export just the
-diagram as a standalone SVG for review artifacts.
+Generate a self-contained HTML report, a deterministic Markdown report, or a standalone SVG
+diagram for review artifacts.
 
 ```text
-tmforge report [--format <html|svg>] [--out <path>] [--rules <path>] [--json] <model.tm7>
+tmforge report [--format <html|svg|md>] [--out <path>] [--rules <path>] [--json] <model.tm7>
 ```
 
 - `--format html` (default) writes a responsive, print-friendly report with an executive summary,
@@ -912,14 +919,27 @@ tmforge report [--format <html|svg>] [--out <path>] [--rules <path>] [--json] <m
   triage; a `tmforge-json` model's disabled packs and rules are honored.
 - `--format svg` writes just the diagram as a standalone SVG (every page stacked), suitable for
   attaching to a pull request or embedding in docs. It does not run analysis.
+- `--format md` uses the same threat generation and register as HTML, preserving manual threats,
+  triage, stale entries, mitigations, references, and decision notes. It includes metadata and
+  diagram object/flow tables instead of embedded SVG. Stable identity ordering, LF line endings,
+  invariant counts, and no generated timestamp make repeated output byte-identical. Model text is
+  escaped as literal text, including in headings and tables.
 - `--rules` loads custom declarative rules alongside the built-in rules, exactly as on
   [`analyze`](#analyze), so a report shows the same threats the analysis produced.
 
 ```bash
 tmforge report payments.tm7 --out payments.html
 tmforge report payments.tm7 --format svg --out payments.svg
+tmforge report payments.tm7 --format md --out payments.md
 tmforge report payments.tm7 --rules ./corporate.tmrules.json --out payments.html
 ```
+
+For **analysis findings** rather than the threat register, use `tmforge analyze payments.tm7
+--reportFolder ./findings`. It also writes `payments.findings.md` from the same analysis run as
+HTML, SARIF, and JSON. Markdown includes reported and suppressed findings with their stable IDs,
+severities, locations, remediation, and rule configuration. Neither report command rewrites the
+input model. Without `--out`, `report --format md` writes to stdout; `--json` retains the usual
+`output`, `format`, and UTF-8 `bytes` envelope.
 
 ### `convert`
 
@@ -934,12 +954,22 @@ Use `preflight --to <format>` to inspect the same diagnostics without producing 
 tmforge convert model.tm7 --to drawio --out model.drawio --fail-on-loss
 ```
 
-OWASP Threat Dragon v2 JSON is an additional **input-only** format, detected from its content.
+OWASP Threat Dragon v2 JSON supports **bounded import and export**. Input is detected from its content.
 Use `tmforge convert dragon.json --to tmforge-json --out imported.tmforge.json` or `--to tm7`.
-The initial [supported subset and refusal rules](formats.md#threat-dragon-owasp-threat-dragon-v2-import)
-are deliberate: unsupported trust-boundary geometry and threat treatments are not silently changed.
+Return the supported subset with:
 
-Mermaid flowcharts (`.mmd`, `.mermaid`) and directed Graphviz DOT (`.dot`, `.gv`) are also input-only.
+```bash
+tmforge convert imported.tmforge.json --to threat-dragon --out returned.threatdragon.json
+```
+
+The `.threatdragon.json` suffix also selects the writer when `--to` is omitted. Imported identities,
+authored threats and supported treatments are retained; export does not generate extra threats.
+The [supported subset and refusal rules](formats.md#threat-dragon-owasp-threat-dragon-v2)
+are deliberate: unsupported trust-boundary geometry and threat treatments are not silently changed.
+Unsupported properties, generated threats, and analysis settings also block export before the
+destination is opened; inspect the reason with `preflight --to threat-dragon`.
+
+Mermaid flowcharts (`.mmd`, `.mermaid`) and directed Graphviz DOT (`.dot`, `.gv`) remain input-only.
 Use the existing `convert` command; there is no separate import verb:
 
 ```bash
@@ -957,7 +987,7 @@ tmforge convert [--to <format>] [--out <path>] [--knowledge-base <file.tb7>] [--
 
 | Format id | Extension | Notes |
 | --- | --- | --- |
-| `tm7` | `.tm7` | Lossless, byte-stable; embeds a knowledge base so it opens in MTMT. |
+| `tm7` | `.tm7` | Native model format; prepares an embedded knowledge base for MTMT. Conversion is not a preserving no-op save. |
 | `tmforge-json` | `.tmforge.json` | Canonical wire model. |
 | `drawio` | `.drawio` | draw.io / diagrams.net (structural). |
 | `vsdx` | `.vsdx` | Microsoft Visio (structural). |
@@ -970,8 +1000,9 @@ A `.tm7` target embeds the Threat Model Forge knowledge base by default so the f
 source model (for example, a file authored in the tool) is preserved.
 
 A `.tm7` target also gets its flow labels placed, because the tool draws each flow's name on its
-connector and most source formats carry no label position at all — `tmforge-json`, the canonical wire
-model Studio and the API exchange, records only a flow's endpoints and name. Without this, every label
+connector and most source formats carry no native connector-label position. Canonical JSON may carry
+Studio handle and label-offset fields, but those are not a full native connector representation.
+Without label placement, every label
 converted from one of them would land on its connector's midpoint and flows sharing a pair of
 endpoints would print their names on top of each other. A label the source did position is preserved.
 
@@ -1086,7 +1117,7 @@ by `apply` re-runs automatic placement, and because trust-boundary containment i
 geometry that can change which boundaries a flow crosses:
 
 ```bash
-tmforge export --geometry --out payments.json payments.tm7   # lossless round trip
+tmforge export --geometry --out payments.json payments.tm7   # retain declared rectangles
 tmforge export --out payments.json payments.tm7              # concise, layout re-derived
 ```
 
@@ -1126,6 +1157,9 @@ command to run first. The same recognition lets **Studio** open a manifest direc
 
 Emit a manifest from an existing model (round-trips with `apply`). Geometry is dropped unless you ask
 for it with `--geometry`, so the manifest stays a stable, diffable source by default.
+
+This is a structural authoring specification, not a lossless backup: embedded templates, the full
+threat register, and native XML extensions are not represented. Keep the native file when those matter.
 
 ```text
 tmforge export [--out <manifest.json>] [--geometry] [--json] <model>
@@ -1173,7 +1207,7 @@ Configure your MCP client to launch the tool:
 ```
 
 **Tools.** Grounding: `formats`, `stencils`, `property_schema`, `rules`, `rule_packs`,
-`manifest_schema`, `detect`. Model I/O and analysis: `read`, `save`, `analyze`, `threats`,
+`manifest_schema`, `detect`. Model I/O and analysis: `preflight`, `read`, `save`, `analyze`, `threats`,
 `threat_register`, `report`, `merge`. Authoring: `apply`, `export_manifest`, `add`, `connect`, `set`,
 `rename`, `remove`. Threat authoring: `add_threat`, `edit_threat`, `remove_threat`.
 
@@ -1224,9 +1258,9 @@ tmforge://grounding/v1/rule-packs/custom{?rulesPath,fingerprint}
 
 `rulesPath` is required and names one custom rule file inside `--root`, just as on the compatibility
 tools. URI-encode the entire path value, including spaces, slashes, `+`, `#`, and `%`. For example,
-after the normal MCP initialization handshake:
+after the normal MCP initialization handshake, send these as separate JSON-RPC messages:
 
-```json
+```jsonl
 {"jsonrpc":"2.0","id":1,"method":"resources/list"}
 {"jsonrpc":"2.0","id":2,"method":"resources/read","params":{"uri":"tmforge://grounding/v1/formats"}}
 {"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"tmforge://grounding/v1/rule-packs/custom?rulesPath=rules%2Fcorporate.tmrules.json"}}
@@ -1283,9 +1317,9 @@ ZIP model inputs are preflighted before package parsing (at most 4,096 entries, 
 directory, and 1,024-byte entry names; prefixed and ZIP64 packages are rejected), and VSDX expanded
 content shares the read-byte budget. VSDX pages are imported/exported one at a time and threats are
 indexed once per export rather than scanned for every element.
-ModelContextProtocol 1.4.1 does not expose a stdio frame-size option, so deployers that accept
-untrusted MCP clients should also apply process/container memory limits; tool-level budgets take
-effect after the SDK has deserialized a request. Report generation also uses the existing in-memory
+Deployers that accept untrusted MCP clients should also apply process/container memory limits;
+tool-level budgets take effect after the SDK has deserialized a request and are not a transport
+frame-size limit. Report generation also uses the existing in-memory
 report writers before the response-text cap is checked; the model budget bounds that work, while a
 future streaming report API could enforce the response cap during rendering.
 
@@ -1293,7 +1327,7 @@ future streaming report API could enforce the response cap during rendering.
 
 ## JSON output
 
-With `--json`, every command emits a single **versioned envelope** to stdout:
+Model commands supporting `--json` emit a single **versioned envelope** to stdout:
 
 ```json
 {

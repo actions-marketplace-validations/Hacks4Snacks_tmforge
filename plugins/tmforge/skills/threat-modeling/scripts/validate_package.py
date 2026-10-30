@@ -16,6 +16,7 @@ from typing import cast
 from urllib.parse import unquote
 
 import check_layout
+from generate_suppressions import artifact_stream
 from render_analysis import (
     DOCUMENT_NAMES,
     compare_documents,
@@ -26,9 +27,11 @@ from validate_analysis import (
     JsonObject,
     as_object,
     as_object_list,
+    display_id,
     load_document,
     validate_document,
 )
+from validate_changed_packages import package_files
 
 Check = dict[str, object]
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
@@ -51,7 +54,7 @@ def resolve_package(path: Path) -> tuple[Path, Path]:
 def file_sha256(path: Path) -> str:
     """Return a lowercase SHA-256 digest for one file."""
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with artifact_stream(path) as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
@@ -68,8 +71,9 @@ def package_relative(path: Path, package_directory: Path) -> str:
 def markdown_errors(path: Path, package_directory: Path) -> list[str]:
     """Validate dependency-free Markdown, Mermaid, and local-link structure."""
     try:
-        content = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        with artifact_stream(path) as stream:
+            content = stream.read().decode("utf-8")
+    except (OSError, ValueError) as exc:
         return [f"cannot read {path}: {exc}"]
 
     errors: list[str] = []
@@ -205,13 +209,63 @@ def object_ids(data: JsonObject, collection_name: str = "items") -> set[str]:
     }
 
 
+def native_flow_aliases(
+    model: Path, flows: JsonObject, invocation: list[str], timeout: int
+) -> tuple[JsonObject, list[str]]:
+    """Read stable aliases by native GUID, never infer them from local labels."""
+    aliases: JsonObject = {}
+    errors: list[str] = []
+    items = as_object_list(get_case_insensitive(flows, "items"))
+    if items is None:
+        return {}, ["native flow inventory is missing or malformed"]
+    for flow in items:
+        identifier = normalize_guid(get_case_insensitive(flow, "id"))
+        if identifier is None:
+            errors.append("flow has no native identifier for alias readback")
+            continue
+        stdout, failure = run_process(
+            invocation + ["show", str(model), "--id", identifier, "--json"],
+            {0},
+            timeout,
+        )
+        if failure is not None:
+            errors.append(f"{identifier}: {failure}")
+            continue
+        try:
+            detail = data_object(stdout or "")
+        except ValueError as exc:
+            errors.append(f"{identifier}: invalid alias readback: {exc}")
+            continue
+        properties = as_object(get_case_insensitive(detail, "properties")) or {}
+        alias = get_case_insensitive(properties, "Alias")
+        if (
+            normalize_guid(get_case_insensitive(detail, "id")) != identifier
+            or get_case_insensitive(detail, "name")
+            != get_case_insensitive(flow, "name")
+            or not isinstance(alias, str)
+            or not alias.strip()
+        ):
+            errors.append(f"{identifier}: missing Alias or mismatched native readback")
+            continue
+        aliases[identifier] = alias
+    return aliases, errors
+
+
 def tmforge_model_checks(
     model: Path,
     package_directory: Path,
     invocation: list[str],
     timeout: int,
+    inventories: dict[str, dict[str, JsonObject]] | None = None,
+    *,
+    flow_display_ids: bool = False,
 ) -> list[Check]:
     """Run the required read-only tmforge checks for one model artifact."""
+    try:
+        with artifact_stream(model):
+            pass
+    except (OSError, ValueError) as exc:
+        return [make_check(f"tmforge.{model.name}.path", "fail", str(exc))]
     relative_model = package_relative(model, package_directory)
     commands: tuple[tuple[str, list[str], set[int], bool], ...] = (
         ("open", ["open", str(model), "--json"], {0}, True),
@@ -239,6 +293,22 @@ def tmforge_model_checks(
                 checks.append(make_check(check_name, "fail", f"invalid JSON: {exc}"))
                 continue
         checks.append(make_check(check_name, "pass", "command completed"))
+
+    if flow_display_ids:
+        aliases, errors = native_flow_aliases(
+            model, outputs.get("flows", {}), invocation, timeout
+        )
+        outputs["flow-aliases"] = aliases
+        checks.append(
+            make_check(
+                f"tmforge.{relative_model}.flow-aliases",
+                "fail" if errors else "pass",
+                "; ".join(errors) if errors else "stable flow aliases read by GUID",
+                errors=errors,
+            )
+        )
+    if inventories is not None:
+        inventories[relative_model] = outputs
 
     flow_data = outputs.get("flows")
     diagram_data = outputs.get("diagrams")
@@ -287,6 +357,158 @@ def tmforge_model_checks(
     return checks
 
 
+def model_inventory_check(
+    document: JsonObject, inventories: dict[str, dict[str, JsonObject]]
+) -> Check:
+    kinds = {"boundaries": "boundaries", "components": "elements", "flows": "flows"}
+    expected = {
+        kind: {
+            str(item["id"]): item
+            for item in as_object_list(document.get(ledger_kind)) or []
+        }
+        for kind, ledger_kind in kinds.items()
+    }
+    seen: dict[str, set[str]] = {kind: set() for kind in kinds}
+    pages = {
+        str(page["id"]): str(page["name"])
+        for page in as_object_list(document.get("pages")) or []
+    }
+    seen_pages: set[str] = set()
+    counts = {kind: 0 for kind in kinds}
+    errors: list[str] = []
+    flow_display_ids = any("displayId" in flow for flow in expected["flows"].values())
+    for model, outputs in sorted(inventories.items()):
+        collections: dict[str, list[JsonObject]] = {}
+        for kind in (*kinds, "diagrams"):
+            data = outputs.get(kind, {})
+            items = as_object_list(get_case_insensitive(data, "items"))
+            count = get_case_insensitive(data, "count")
+            if items is None or type(count) is not int or count != len(items):
+                errors.append(f"{model}: invalid {kind} inventory or count")
+            collections[kind] = items or []
+        diagrams = collections["diagrams"]
+        headers = [get_case_insensitive(item, "header") for item in diagrams]
+        if (
+            not diagrams
+            or any(not isinstance(header, str) or not header for header in headers)
+            or len(set(headers)) != len(headers)
+        ):
+            errors.append(f"{model}: missing or ambiguous diagram headers")
+        if pages:
+            for header in headers:
+                if header not in pages.values():
+                    errors.append(
+                        f"{model}: unexpected diagram {header!r}; declare it in ledger pages"
+                    )
+                elif str(header) in seen_pages:
+                    errors.append(f"{model}: duplicate ledger page {header!r}")
+                seen_pages.add(str(header))
+        component_ids: dict[str, str] = {}
+        aliases: dict[str, list[tuple[str, JsonObject]]] = {kind: [] for kind in kinds}
+        for kind in kinds:
+            counts[kind] += len(collections[kind])
+            for item in collections[kind]:
+                name = get_case_insensitive(item, "name")
+                alias, separator, label = str(name or "").partition(":")
+                alias, label = alias.strip(), label.strip()
+                label_id = alias
+                if kind == "flows" and flow_display_ids:
+                    identifier = normalize_guid(get_case_insensitive(item, "id"))
+                    alias = str(
+                        outputs.get("flow-aliases", {}).get(identifier or "", "")
+                    )
+                if not separator or alias not in expected[kind]:
+                    errors.append(f"{model}: unexpected {kind} alias/name {name!r}")
+                else:
+                    if alias in seen[kind]:
+                        errors.append(f"{model}: duplicate {kind} alias {alias}")
+                    if (
+                        label != expected[kind][alias].get("name")
+                        or label_id != display_id(expected[kind][alias])
+                    ):
+                        errors.append(f"{model}: {alias} name differs from the ledger")
+                    seen[kind].add(alias)
+                    if pages:
+                        page_owner = expected[kind][alias]
+                        if kind == "flows":
+                            page_owner = expected["components"].get(
+                                str(page_owner.get("sourceId")), {}
+                            )
+                        expected_header = pages.get(str(page_owner.get("pageId")))
+                        if (
+                            get_case_insensitive(item, "diagramHeader")
+                            != expected_header
+                        ):
+                            errors.append(
+                                f"{model}: {alias} page differs from ledger page {expected_header!r}"
+                            )
+                identifier = normalize_guid(get_case_insensitive(item, "id"))
+                if identifier is None:
+                    errors.append(f"{model}: {alias} has no model identifier")
+                elif kind == "components":
+                    if identifier in component_ids:
+                        errors.append(
+                            f"{model}: duplicate component identifier {identifier}"
+                        )
+                    component_ids[identifier] = alias
+                if get_case_insensitive(item, "diagramHeader") not in headers:
+                    errors.append(f"{model}: {alias} references an unknown diagram")
+                aliases[kind].append((alias, item))
+        for alias, flow in aliases["flows"]:
+            canonical = expected["flows"].get(alias)
+            if canonical is None:
+                continue
+            for field, ledger_field in (
+                ("sourceComponentID", "sourceId"),
+                ("targetComponentID", "targetId"),
+            ):
+                endpoint = component_ids.get(
+                    normalize_guid(get_case_insensitive(flow, field)) or ""
+                )
+                if endpoint != canonical.get(ledger_field):
+                    errors.append(
+                        f"{model}: {alias} {ledger_field} differs from the ledger"
+                    )
+        for diagram in diagrams:
+            header = get_case_insensitive(diagram, "header")
+            for kind, field in (
+                ("components", "componentCount"),
+                ("flows", "connectorCount"),
+                ("boundaries", "trustBoundaryCount"),
+            ):
+                actual = sum(
+                    get_case_insensitive(item, "diagramHeader") == header
+                    for item in collections[kind]
+                )
+                if get_case_insensitive(diagram, field) != actual:
+                    errors.append(
+                        f"{model}: diagram {header!r} {field} disagrees with its inventory"
+                    )
+    if pages:
+        missing_pages = sorted(set(pages.values()) - seen_pages)
+        if missing_pages:
+            errors.append(f"missing ledger pages: {', '.join(missing_pages)}")
+    for kind in kinds:
+        missing = sorted(expected[kind].keys() - seen[kind])
+        if missing:
+            errors.append(f"missing {kind} aliases: {', '.join(missing)}")
+        if counts[kind] != len(expected[kind]):
+            errors.append(
+                f"{kind} count {counts[kind]} differs from ledger count {len(expected[kind])}"
+            )
+    return make_check(
+        "models.parity",
+        "fail" if errors else "pass",
+        (
+            "; ".join(errors)
+            if errors
+            else "model aliases, names, endpoints, and counts match the ledger"
+        ),
+        errors=errors,
+        modelCounts=counts,
+    )
+
+
 def text_value(value: object, default: str) -> str:
     """Return a non-empty scalar string for diagnostics."""
     if value is None:
@@ -316,8 +538,11 @@ def verify_candidate_final(candidate: Path | None, final: Path | None) -> Check:
             "fail",
             f"missing file(s): {', '.join(missing)}",
         )
-    candidate_digest = file_sha256(candidate)
-    final_digest = file_sha256(final)
+    try:
+        candidate_digest = file_sha256(candidate)
+        final_digest = file_sha256(final)
+    except (OSError, ValueError) as exc:
+        return make_check("candidate-final.equivalence", "fail", str(exc))
     return make_check(
         "candidate-final.equivalence",
         "pass" if candidate_digest == final_digest else "fail",
@@ -345,6 +570,159 @@ def inventory(document: JsonObject) -> dict[str, int]:
         "assumptions",
     )
     return {name: len(as_object_list(document.get(name)) or []) for name in names}
+
+
+def lifecycle_check(document: JsonObject, package_directory: Path) -> Check:
+    """Require lifecycle sidecars to agree with the canonical ledger."""
+    scope = as_object(document.get("scope")) or {}
+    sidecar_paths = sorted(package_directory.glob("*.tm.evidence.json"))
+    if not sidecar_paths:
+        required = scope.get("mode") == "formal-package"
+        return make_check(
+            "lifecycle.parity",
+            "fail" if required else "skipped",
+            (
+                "formal-package requires a lifecycle evidence sidecar"
+                if required
+                else "no lifecycle sidecar present"
+            ),
+        )
+    lifecycle = scope.get("lifecycle")
+    baseline = as_object(scope.get("baseline")) or {}
+    errors: list[str] = []
+    for sidecar_path in sidecar_paths:
+        try:
+            sidecar = load_document(sidecar_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            errors.append(f"{sidecar_path.name}: {exc}")
+            continue
+        if sidecar.get("state") != lifecycle:
+            errors.append(
+                f"{sidecar_path.name}: state {sidecar.get('state')!r} "
+                f"does not match scope.lifecycle {lifecycle!r}"
+            )
+        if lifecycle == "verified":
+            sidecar_baseline = as_object(sidecar.get("baseline")) or {}
+            for ledger_key, sidecar_key in (("revision", "sha"), ("date", "date")):
+                if sidecar_baseline.get(sidecar_key) != baseline.get(ledger_key):
+                    errors.append(
+                        f"{sidecar_path.name}: baseline.{sidecar_key} "
+                        f"does not match scope.baseline.{ledger_key}"
+                    )
+    return make_check(
+        "lifecycle.parity",
+        "fail" if errors else "pass",
+        (
+            "; ".join(errors)
+            if errors
+            else "lifecycle sidecars match the canonical ledger"
+        ),
+        errors=errors,
+    )
+
+
+def suppression_checks(
+    package_directory: Path, invocation: list[str] | None, timeout: int
+) -> list[Check]:
+    checks: list[Check] = []
+    try:
+        artifacts = package_files(package_directory)
+    except (OSError, ValueError) as exc:
+        return [make_check("suppressions.paths", "fail", str(exc))]
+    for sidecar in (
+        path for path in artifacts if path.name.endswith(".tm.suppressions.json")
+    ):
+        errors: list[str] = []
+        models: list[Path] = []
+        try:
+            if not sidecar.resolve().is_relative_to(package_directory.resolve()):
+                raise ValueError("suppression sidecar escapes the package")
+            document = load_document(sidecar)
+            files = as_object_list(document.get("files"))
+            if not files:
+                raise ValueError("suppression sidecar requires a nonempty files array")
+            for entry in files:
+                name = entry.get("file")
+                if (
+                    not isinstance(name, str)
+                    or not name.endswith(".tm7")
+                    or any(separator in name for separator in ("/", "\\"))
+                ):
+                    raise ValueError("suppression file must name a sibling .tm7 model")
+                model = sidecar.parent / name
+                if not model.is_file() or not model.resolve().is_relative_to(
+                    package_directory.resolve()
+                ):
+                    raise ValueError(
+                        f"missing or out-of-package suppression model: {name}"
+                    )
+                with artifact_stream(model):
+                    pass
+                if model in models:
+                    raise ValueError(f"duplicate suppression model: {name}")
+                models.append(model)
+                suppressions = as_object_list(entry.get("suppressions"))
+                if suppressions is None:
+                    raise ValueError(
+                        f"{name}: suppressions must be an array of objects"
+                    )
+                seen: set[tuple[str, str, str]] = set()
+                for suppression in suppressions:
+                    for field in ("rule", "model", "target", "justification"):
+                        value = suppression.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            raise ValueError(
+                                f"{name}: suppression {field} must be a nonempty string"
+                            )
+                    if not re.fullmatch(r"TM\d+", str(suppression["rule"])):
+                        raise ValueError(f"{name}: invalid suppression rule")
+                    key = (
+                        str(suppression["rule"]),
+                        str(suppression["model"]),
+                        str(suppression["target"]),
+                    )
+                    if key in seen:
+                        raise ValueError(f"{name}: duplicate suppression")
+                    seen.add(key)
+        except (OSError, ValueError) as exc:
+            errors.append(str(exc))
+        if not errors:
+            if invocation is None:
+                errors.append("tmforge is required to verify suppression sidecars")
+            else:
+                for model in models:
+                    stdout, failure = run_process(
+                        invocation
+                        + [
+                            "analyze",
+                            str(model),
+                            "--suppressionFile",
+                            str(sidecar),
+                            "--json",
+                        ],
+                        {0},
+                        timeout,
+                    )
+                    if failure is not None:
+                        errors.append(f"{model.name}: {failure}")
+                    else:
+                        try:
+                            data_object(stdout or "")
+                        except ValueError as exc:
+                            errors.append(f"{model.name}: invalid analyzer JSON: {exc}")
+        checks.append(
+            make_check(
+                f"suppressions.{package_relative(sidecar, package_directory)}",
+                "fail" if errors else "pass",
+                (
+                    "; ".join(errors)
+                    if errors
+                    else "sidecar is well formed and analyzer verification passed"
+                ),
+                errors=errors,
+            )
+        )
+    return checks
 
 
 def layout_check(model: Path, ledger_path: Path | None) -> Check:
@@ -395,6 +773,17 @@ def verify_package(
     package_directory, ledger_path = resolve_package(path)
     checks: list[Check] = []
     document: JsonObject | None = None
+    try:
+        artifacts = package_files(package_directory)
+    except (OSError, ValueError) as exc:
+        return {
+            "valid": False,
+            "package": str(package_directory),
+            "ledger": str(ledger_path),
+            "failureCount": 1,
+            "warningCount": 0,
+            "checks": [make_check("artifacts.paths", "fail", str(exc))],
+        }
 
     if not ledger_path.is_file():
         checks.append(
@@ -420,6 +809,7 @@ def verify_package(
             )
 
     if document is not None and not validate_document(document):
+        checks.append(lifecycle_check(document, package_directory))
         expected = render_documents(document, ledger_path.name)
         parity_failures = compare_documents(expected, package_directory)
         checks.append(
@@ -466,13 +856,12 @@ def verify_package(
             )
         )
 
-    model_paths = (
-        sorted(package_directory.rglob("*.tm7")) if package_directory.is_dir() else []
-    )
+    model_paths = [artifact for artifact in artifacts if artifact.name.endswith(".tm7")]
     scope = as_object(document.get("scope")) if document is not None else None
     mode = scope.get("mode") if scope is not None else None
+    invocation = tmforge_invocation
     if model_paths:
-        invocation = tmforge_invocation
+        inventories: dict[str, dict[str, JsonObject]] = {}
         if invocation is None:
             executable = shutil.which("tmforge")
             invocation = [executable] if executable else None
@@ -496,12 +885,21 @@ def verify_package(
                         text_value(stdout, "version command completed"),
                     )
                 )
+                flow_display_ids = any(
+                    "displayId" in flow
+                    for flow in as_object_list(
+                        document.get("flows") if document else None
+                    ) or []
+                )
                 for model in model_paths:
                     checks.extend(
                         tmforge_model_checks(
-                            model, package_directory, invocation, timeout
+                            model, package_directory, invocation, timeout, inventories,
+                            flow_display_ids=flow_display_ids,
                         )
                     )
+        if document is not None and not validate_document(document):
+            checks.append(model_inventory_check(document, inventories))
         for model in model_paths:
             checks.append(layout_check(model, ledger_path))
     else:
@@ -517,6 +915,7 @@ def verify_package(
             )
         )
 
+    checks.extend(suppression_checks(package_directory, invocation, timeout))
     checks.append(verify_candidate_final(candidate, final))
     failure_count = sum(check.get("status") == "fail" for check in checks)
     warning_count = sum(check.get("status") == "warning" for check in checks)
@@ -551,7 +950,7 @@ def run_self_test() -> int:
     """Exercise valid, stale, malformed, and candidate-equivalence paths."""
     fixture = Path(__file__).resolve().parents[1] / "assets" / "analysis.example.json"
     with tempfile.TemporaryDirectory() as temporary_directory:
-        package_directory = Path(temporary_directory) / "package"
+        package_directory = Path(temporary_directory).resolve() / "package"
         package_directory.mkdir()
         ledger = package_directory / "analysis.json"
         ledger.write_bytes(fixture.read_bytes())
@@ -572,6 +971,7 @@ def run_self_test() -> int:
         fake_tmforge.write_text(
             """import json
 import sys
+from pathlib import Path
 
 arguments = sys.argv[1:]
 if arguments == [\"--version\"]:
@@ -582,17 +982,105 @@ elif arguments[:2] == [\"list\", \"threats\"]:
     print(json.dumps({\"data\": {\"items\": []}}))
 elif arguments and arguments[0] == \"threats\":
     print(json.dumps({\"data\": {\"threats\": []}}))
+elif arguments and arguments[0] == \"list\":
+    document = json.loads((Path(arguments[2]).parent / \"analysis.json\").read_text())
+    kind = arguments[1]
+    if kind == \"diagrams\":
+        items = [{\"id\": \"diagram-id\", \"header\": \"Diagram 1\",
+                  \"componentCount\": len(document[\"elements\"]),
+                  \"connectorCount\": len(document[\"flows\"]),
+                  \"trustBoundaryCount\": len(document[\"boundaries\"])}]
+    else:
+        source = document[{\"components\": \"elements\"}.get(kind, kind)]
+        items = [{\"id\": item[\"id\"], \"name\": item[\"id\"] + \": \" + item[\"name\"],
+                  \"diagramHeader\": \"Diagram 1\",
+                  \"sourceComponentID\": item.get(\"sourceId\"),
+                  \"targetComponentID\": item.get(\"targetId\")} for item in source]
+    print(json.dumps({\"data\": {\"items\": items, \"count\": len(items)}}))
 else:
     print(json.dumps({\"data\": {\"items\": []}}))
 """,
             encoding="utf-8",
         )
+        missing_evidence = verify_package(
+            package_directory, tmforge_invocation=[sys.executable, str(fake_tmforge)]
+        )
+        if (
+            missing_evidence.get("valid") is not False
+            or lifecycle_check(document, package_directory).get("status") != "fail"
+        ):
+            raise AssertionError(
+                "formal package without lifecycle evidence was accepted"
+            )
+        sidecar = package_directory / "threat-model.tm.evidence.json"
+        sidecar.write_text(json.dumps({"state": "draft"}), encoding="utf-8")
         valid = verify_package(
             package_directory,
             tmforge_invocation=[sys.executable, str(fake_tmforge)],
         )
         if valid.get("valid") is not True:
             raise AssertionError(f"valid package was rejected: {valid}")
+
+        scope = as_object(document.get("scope"))
+        assert scope is not None
+        baseline = {
+            "revision": "a" * 40,
+            "date": "2026-09-16",
+        }
+        sidecar = package_directory / "threat-model.tm.evidence.json"
+        for ledger_state, sidecar_state, revision, date, expected_status in (
+            ("draft", "draft", "a" * 40, "2026-09-16", "pass"),
+            ("draft", "verified", "a" * 40, "2026-09-16", "fail"),
+            ("verified", "draft", "a" * 40, "2026-09-16", "fail"),
+            ("verified", "verified", "a" * 40, "2026-09-16", "pass"),
+            ("verified", "verified", "b" * 40, "2026-09-16", "fail"),
+            ("verified", "verified", "a" * 40, "2026-09-15", "fail"),
+        ):
+            scope["lifecycle"] = ledger_state
+            scope["baseline"] = baseline
+            ledger.write_text(json.dumps(document), encoding="utf-8")
+            write_documents(render_documents(document), package_directory)
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "state": sidecar_state,
+                        "baseline": {"sha": revision, "date": date},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = verify_package(
+                package_directory,
+                tmforge_invocation=[sys.executable, str(fake_tmforge)],
+            )
+            parity = next(
+                check
+                for check in as_object_list(result.get("checks")) or []
+                if check.get("name") == "lifecycle.parity"
+            )
+            if parity.get("status") != expected_status or result.get("valid") != (
+                expected_status == "pass"
+            ):
+                raise AssertionError(f"incorrect lifecycle verdict: {result}")
+
+        sidecar.write_text("{invalid", encoding="utf-8")
+        if lifecycle_check(document, package_directory).get("status") != "fail":
+            raise AssertionError("malformed lifecycle sidecar was accepted")
+        for missing in ("revision", "date"):
+            scope["baseline"] = {
+                key: value for key, value in baseline.items() if key != missing
+            }
+            if (
+                f"scope.baseline: missing required fields: ['{missing}']"
+                not in validate_document(document)
+            ):
+                raise AssertionError(
+                    f"verified ledger without baseline.{missing} was accepted"
+                )
+        sidecar.unlink()
+        ledger.write_bytes(fixture.read_bytes())
+        document = load_document(ledger)
+        write_documents(render_documents(document), package_directory)
 
         threat_model = package_directory / "threat-model.md"
         original = threat_model.read_text(encoding="utf-8")
@@ -612,8 +1100,8 @@ else:
         if not any("unclosed" in error for error in errors):
             raise AssertionError("unclosed Mermaid fence was not rejected")
 
-        candidate = Path(temporary_directory) / "candidate.bin"
-        final = Path(temporary_directory) / "final.bin"
+        candidate = package_directory.parent / "candidate.bin"
+        final = package_directory.parent / "final.bin"
         candidate.write_bytes(b"same")
         final.write_bytes(b"same")
         if verify_candidate_final(candidate, final).get("status") != "pass":

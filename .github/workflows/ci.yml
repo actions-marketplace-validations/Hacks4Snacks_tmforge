@@ -13,16 +13,36 @@ permissions:
   contents: read
 
 jobs:
-  plugin:
-    name: Copilot plugin
-    runs-on: ubuntu-latest
+  plugin-tests:
+    name: Copilot plugin (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.10", "3.14"]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
 
       - name: Validate plugin and portable scripts
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python3 -B -m unittest discover -s test/plugin -v
+        run: python -B -m unittest discover -s test/plugin -v
+
+  plugin:
+    name: Copilot plugin
+    needs: plugin-tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every plugin platform test
+        env:
+          PLUGIN_TEST_RESULT: ${{ needs.plugin-tests.result }}
+        run: '[[ "$PLUGIN_TEST_RESULT" == "success" ]]'
 
   build-test:
     name: Build & test
@@ -83,6 +103,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
@@ -113,6 +135,41 @@ jobs:
           need System.Private.DataContractSerialization.wasm ".tm7 serialization"
           need System.Text.Json.wasm "DTO JSON serialization"
           echo "WASM bundle OK: $(ls "$fw"/*.wasm | wc -l | tr -d ' ') assemblies"
+
+      - name: Set up Node for the VS Code extension
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/ThreatModelForge.Vscode/package-lock.json
+
+      - name: Build and test the VS Code extension
+        run: |
+          npm --prefix src/ThreatModelForge.Studio ci
+          npm --prefix src/ThreatModelForge.Vscode ci
+          node src/ThreatModelForge.Vscode/scripts/stage-engine.mjs artifacts/wasm/wwwroot/_framework
+          npm --prefix src/ThreatModelForge.Vscode test
+          xvfb-run -a npm --prefix src/ThreatModelForge.Vscode run test:extension
+          npm --prefix src/ThreatModelForge.Vscode run package
+
+      - name: Upload extension-host failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vscode-extension-host-diagnostics
+          path: |
+            ${{ runner.temp }}/tmforge-extension-host-*/profile/logs/**
+            ${{ runner.temp }}/tmforge-extension-host-*/crashes/**
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v7
+        with:
+          name: tmforge-vscode
+          path: src/ThreatModelForge.Vscode/*.vsix
+          if-no-files-found: error
 
   containers:
     name: Container build & smoke test
@@ -250,6 +307,90 @@ jobs:
             exit 1
           fi
 
+      - name: Check Markdown review bodies
+        run: |
+          ruby <<'RUBY'
+          require 'yaml'
+          require 'json'
+          require 'tmpdir'
+          require 'fileutils'
+          require 'open3'
+          action = YAML.load_file('action.yml')
+          script = action.fetch('runs').fetch('steps').find { |step| step['id'] == 'review' }.fetch('run')
+          comment = action.fetch('runs').fetch('steps').find { |step| step['name'] == 'Comment the review on the pull request' }.fetch('run')
+          mocks = "curl() { printf '%s' \"$TEST_FILES\"; }\ndocker() { return 99; }\n"
+          comment_mocks = <<~BASH
+            curl() {
+              local verb='' payload=''
+              while (( $# > 0 )); do
+                case "$1" in
+                  -X) verb="$2"; shift ;;
+                  -d) payload="$2"; shift ;;
+                esac
+                shift
+              done
+              if [[ -n "$verb" ]]; then
+                printf '%s' "$payload" > "$TEST_PAYLOAD"
+                printf '%s' "$verb" > "$TEST_VERB"
+                printf '200'
+              elif [[ -f "$TEST_PAYLOAD" ]]; then
+                jq '[{id: 7, body: .body}]' "$TEST_PAYLOAD"
+              else
+                printf '[]'
+              fi
+            }
+          BASH
+          %w[summary md oversized missing removed].each do |scenario|
+            Dir.mktmpdir('tmforge-review-') do |root|
+              reports = File.join(root, 'reports')
+              FileUtils.mkdir_p(reports)
+              small = "# Small findings\n\n- **Disposition:** Suppressed\n"
+              other = scenario == 'oversized' ? ('x' * 60000) : "# Other findings\n"
+              File.write(File.join(reports, 'small.findings.md'), small)
+              File.write(File.join(reports, 'review.findings.md'), other) unless scenario == 'missing'
+              files = [
+                { status: 'added', filename: 'small.tm7' },
+                { status: scenario == 'removed' ? 'removed' : 'added', filename: 'review.tm7' }
+              ]
+              env = {
+                'REVIEW_MODELS' => '**/*.tm7', 'REVIEW_DIR' => reports, 'REVIEW_TOKEN' => '',
+                'REVIEW_API' => 'https://unused.invalid', 'REVIEW_REPO' => 'test/repo', 'REVIEW_PR' => '1',
+                'REVIEW_FORMAT' => scenario == 'summary' ? 'summary' : 'md',
+                'TEST_FILES' => JSON.generate(files), 'GITHUB_OUTPUT' => File.join(root, 'output'),
+                'GITHUB_STEP_SUMMARY' => File.join(root, 'summary')
+              }
+              stdout, stderr, status = Open3.capture3(env, 'bash', stdin_data: mocks + script, chdir: root)
+              raise "#{scenario}: #{stdout}\n#{stderr}" unless status.success?
+              body = File.read(File.join(reports, 'review.md'))
+              raise "#{scenario}: oversized body" if body.bytesize > 60000
+              raise "#{scenario}: incorrect inclusion" unless body.include?(small) == (scenario != 'summary')
+              raise 'md: missing second report' if scenario == 'md' && !body.include?(other)
+              raise 'oversized: missing notice' if scenario == 'oversized' && !body.include?('1 Markdown report(s) omitted')
+              raise 'missing: missing notice' if scenario == 'missing' && !body.include?('1 Markdown report(s) unavailable')
+              raise 'removed: included deleted model' if scenario == 'removed' && body.include?(other)
+              raise 'report artifact changed' unless File.read(File.join(reports, 'small.findings.md')) == small
+              raise 'summary differs from comment body' unless File.read(File.join(root, 'summary')) == body
+              env.merge!('REVIEW_CHANGED' => '2', 'TEST_PAYLOAD' => File.join(root, 'payload'), 'TEST_VERB' => File.join(root, 'verb'))
+              %w[POST PATCH].each do |verb|
+                stdout, stderr, status = Open3.capture3(env, 'bash', stdin_data: comment_mocks + comment, chdir: root)
+                raise "comment #{scenario}: #{stdout}\n#{stderr}" unless status.success?
+                raise 'comment not updated in place' unless File.read(env.fetch('TEST_VERB')) == verb
+                actual = JSON.parse(File.read(env.fetch('TEST_PAYLOAD'))).fetch('body')
+                expected = "<!-- tmforge-review -->\n" + body.sub(/\n+\z/, '')
+                raise 'comment differs from review' unless actual == expected
+              end
+              if scenario == 'oversized'
+                File.write(File.join(reports, 'review.md'), 'x' * 60001)
+                stdout, stderr, status = Open3.capture3(env, 'bash', stdin_data: comment_mocks + comment, chdir: root)
+                raise "comment limit: #{stdout}\n#{stderr}" unless status.success?
+                actual = JSON.parse(File.read(env.fetch('TEST_PAYLOAD'))).fetch('body')
+                raise 'comment limit not enforced' unless actual.bytesize <= 60000 && actual.include?('exceeds the comment size limit')
+              end
+            end
+          end
+          puts 'Markdown review body cases passed.'
+          RUBY
+
       - name: Build CLI image (amd64, load)
         uses: docker/build-push-action@v7
         with:
@@ -326,6 +467,11 @@ jobs:
           fi
           if [ "$cli_suppressed" != "$SUPPRESSED_CODE" ]; then
             echo "::error::CLI ($cli_suppressed) and action ($SUPPRESSED_CODE) disagree with the suppression."
+            rc=1
+          fi
+          if ! cmp .tmforge-findings/webshop.findings.md .cli-findings/webshop.findings.md ||
+             ! cmp .tmforge-suppressed/webshop.findings.md .cli-suppressed/webshop.findings.md; then
+            echo "::error::Action and CLI Markdown findings differ."
             rc=1
           fi
           exit $rc
@@ -411,6 +557,7 @@ jobs:
           pull: "false"
           upload-sarif: "false"
           review: "on"
+          review-format: md
           drift-model-paths: no-such-directory/**
           sarif-directory: .tmforge-review
 

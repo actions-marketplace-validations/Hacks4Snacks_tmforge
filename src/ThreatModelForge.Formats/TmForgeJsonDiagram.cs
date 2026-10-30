@@ -1,6 +1,7 @@
 namespace ThreatModelForge.Formats
 {
     using System;
+    using System.Collections.Generic;
 
     /// <summary>
     /// A single named page (diagram) in a <see cref="TmForgeJsonModel"/>. Each page carries its own
@@ -14,6 +15,9 @@ namespace ThreatModelForge.Formats
 
         /// <summary>Gets the page (tab) label, for example <c>Context</c> or <c>Payments service</c>.</summary>
         public string Name { get; init; } = string.Empty;
+
+        /// <summary>Gets inert source-format provenance retained for return conversions.</summary>
+        public IReadOnlyDictionary<string, string>? Source { get; init; }
 
         /// <summary>Gets the diagram elements on this page.</summary>
         public TmForgeJsonElement[] Elements { get; init; } = Array.Empty<TmForgeJsonElement>();

@@ -301,7 +301,7 @@ export function CompareReview({ engine, current, currentName, accept, theme, onC
           </section>
         </main>
       </div>
-      {preflight && <PreflightDialog title={preflight.title} result={preflight.result} onDecision={decide} />}
+      {preflight && <PreflightDialog title={preflight.title} result={preflight.result} operation="import" onDecision={decide} />}
     </div>
   );
 }

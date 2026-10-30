@@ -292,6 +292,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/model/save/tm7": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Applies edits while preserving the original native TM7 document. */
+        post: operations["SaveNativeTm7"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/model/read": {
         parameters: {
             query?: never;
@@ -318,6 +335,26 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["PreflightModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/model/recover/tm7": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Creates a separate canonical recovery copy of a TM7 with unresolved flow endpoints.
+         * @description Requires explicit recovery consent. Omits unresolved flows and their scoped threats; native-only content remains in the source. Other structural errors are not overridable.
+         */
+        post: operations["RecoverTm7"];
         delete?: never;
         options?: never;
         head?: never;
@@ -637,6 +674,28 @@ export interface components {
             ruleId?: null | string;
             severity?: null | string;
         };
+        NativeTm7SaveRequest: {
+            contentBase64?: string;
+            previousContentBase64?: null | string;
+            model?: null | components["schemas"]["TmForgeModelDto"];
+        };
+        /** @description A free-text note recorded against the threat model. */
+        Note: {
+            /**
+             * Format: int32
+             * @description Gets or sets the note identifier.
+             */
+            id?: number | string;
+            /** @description Gets or sets the note text. */
+            message?: null | string;
+            /**
+             * Format: date-time
+             * @description Gets or sets the time the note was recorded.
+             */
+            date?: string;
+            /** @description Gets or sets the author of the note. */
+            addedBy?: null | string;
+        };
         /**
          * @description Describes a stencil pack: a named, togglable group of related stencils (for example, the
          *     Azure pack). The palette uses packs so the user can show or hide whole families at once.
@@ -654,9 +713,18 @@ export interface components {
         };
         PreflightResultDto: {
             success?: boolean;
+            canRecover?: boolean;
             format?: null | string;
             targetFormat?: null | string;
             diagnostics?: components["schemas"]["DocumentDiagnostic"][];
+        };
+        ProblemDetails: {
+            type?: null | string;
+            title?: null | string;
+            /** Format: int32 */
+            status?: null | number | string;
+            detail?: null | string;
+            instance?: null | string;
         };
         /**
          * @description A single attribute-level change to an element between two models: the attribute key and its
@@ -812,6 +880,9 @@ export interface components {
         TmForgeDiagramDto: {
             id?: string;
             name?: string;
+            source?: null | {
+                [key: string]: string;
+            };
             elements?: null | components["schemas"]["TmForgeElementDto"][];
             flows?: null | components["schemas"]["TmForgeFlowDto"][];
         };
@@ -836,6 +907,9 @@ export interface components {
             source?: string;
             target?: string;
             name?: null | string;
+            labelOffset?: null | components["schemas"]["TmForgePointDto"];
+            sourceHandle?: null | string;
+            targetHandle?: null | string;
             properties?: {
                 [key: string]: string;
             };
@@ -844,11 +918,18 @@ export interface components {
             schema?: null | string;
             version?: null | string;
             metadata?: null | components["schemas"]["MetaInformation"];
+            notes?: null | components["schemas"]["Note"][];
             elements?: null | components["schemas"]["TmForgeElementDto"][];
             flows?: null | components["schemas"]["TmForgeFlowDto"][];
             diagrams?: null | components["schemas"]["TmForgeDiagramDto"][];
             analysis?: null | components["schemas"]["TmForgeAnalysisDto"];
             threats?: null | components["schemas"]["ThreatStateDto"][];
+        };
+        TmForgePointDto: {
+            /** Format: int32 */
+            x?: number | string;
+            /** Format: int32 */
+            y?: number | string;
         };
     };
     responses: never;
@@ -1257,6 +1338,30 @@ export interface operations {
             };
         };
     };
+    SaveNativeTm7: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NativeTm7SaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     ReadModel: {
         parameters: {
             query?: never;
@@ -1303,6 +1408,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PreflightResultDto"];
+                };
+            };
+        };
+    };
+    RecoverTm7: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileContentDto"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TmForgeModelDto"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
         };

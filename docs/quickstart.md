@@ -12,11 +12,12 @@ the `tmforge` CLI, then shows the same flow in the browser with Studio.
 Pick one:
 
 - A prebuilt `tmforge` binary (no .NET runtime needed). See [Installation](installation.md).
-- The container image (`tmforge-cli`), which needs Docker.
+- The published CLI container image, which needs Docker.
 - The source tree, which needs the .NET SDK pinned in `global.json` (10.0.301).
 
-The examples below assume `tmforge` is on your `PATH`. From a container, prefix commands with
-`docker run --rm -v "$PWD:/work" tmforge-cli`. From source, replace `tmforge` with
+The examples below assume `tmforge` is on your `PATH`. From a container, replace `tmforge` with
+`docker run --rm -v "$PWD:/work" ghcr.io/hacks4snacks/tmforge-cli`. The image already supplies the
+executable as its entrypoint. From source, replace `tmforge` with
 `dotnet run --project src/ThreatModelForge.Cli --`.
 
 Verify your install:
@@ -81,7 +82,8 @@ tmforge list flows payments.tm7           # enumerate the data flows
 tmforge render payments.tm7 --plain       # draw the diagram in the terminal (ASCII)
 ```
 
-Add `--json` to any command for machine-readable output.
+Add `--json` to supported model commands for machine-readable output; help/version and terminal
+rendering are text, while MCP uses JSON-RPC. See [JSON output](cli-reference.md#json-output).
 
 ## 5. Validate
 
@@ -93,10 +95,11 @@ tmforge analyze payments.tm7
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Clean, no findings |
+| `0` | No findings at or above the selected severity threshold; lower-severity findings can still be present |
 | `1` | Tool error (bad arguments, load failure) |
-| `2` | The model was analyzed and has findings |
+| `2` | Findings meet or exceed the selected threshold (`error` by default) |
 
+Use `--max-severity warning` to gate on warnings as well as errors, or `info` for all finding levels.
 That lets CI **fail on findings** while distinguishing them from a broken invocation. To also emit
 SARIF + HTML reports:
 
@@ -135,12 +138,16 @@ in your browser via WebAssembly. To run it yourself, start the engine API (which
 and author visually:
 
 ```bash
-docker run --rm -p 8080:8080 tmforge      # then open http://localhost:8080/
+docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/hacks4snacks/tmforge  # http://localhost:8080/
 ```
 
 In Studio you can drag stencils, draw flows, edit flow properties in the inspector, click
 **Analyze** to see findings overlaid on the diagram, and **Export tmforge-json** to round-trip
 through the CLI. See the [Studio guide](studio-guide.md).
+
+For local editing in VS Code, install the [extension](../src/ThreatModelForge.Vscode/README.md) and
+open the model directly. Self-hosted shared APIs need an authenticated ingress; see the
+[security posture](deployment.md#security-posture).
 
 ## A minimal CI gate
 

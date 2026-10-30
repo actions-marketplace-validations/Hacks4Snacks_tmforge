@@ -9,8 +9,16 @@ export default defineConfig(({ mode }) => {
   // (from the shell or a .env file) without needing @types/node in this config.
   const env = loadEnv(mode, '.', 'VITE_');
   return {
-    base: env.VITE_BASE ?? '/',
+    base: mode === 'vscode' ? './' : env.VITE_BASE ?? '/',
+    publicDir: mode === 'vscode' ? false : 'public',
+    define: mode === 'vscode' ? { 'process.env.NODE_ENV': JSON.stringify('production') } : undefined,
     plugins: [react()],
+    build: mode === 'vscode' ? {
+      outDir: '../ThreatModelForge.Vscode/media/studio',
+      emptyOutDir: true,
+      lib: { entry: 'src/vscode.tsx', formats: ['es'], fileName: 'studio', cssFileName: 'studio' },
+      rolldownOptions: { output: { codeSplitting: false } },
+    } : undefined,
     server: { port: 5199, open: true },
     // Vitest: jsdom DOM environment for React component tests. Test files live next to the code
     // they cover (src/**/*.test.ts[x]) and are excluded from the production tsc build. Globals are

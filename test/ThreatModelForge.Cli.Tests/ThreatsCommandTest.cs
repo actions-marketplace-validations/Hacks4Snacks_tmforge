@@ -68,6 +68,14 @@ namespace ThreatModelForge.Cli.Tests
             Assert.IsTrue(added > 0);
             (ThreatModel model, _) = CliModelLoader.Load(path);
             Assert.AreEqual(added, model.AllThreatsDictionary.Count);
+            foreach (Threat threat in model.AllThreatsDictionary.Values)
+            {
+                Assert.IsNotNull(threat.TypeId);
+                Assert.AreEqual(threat.Title, threat.Properties!["Title"]);
+                Assert.AreEqual(threat.Priority, threat.Properties["Priority"]);
+                Assert.IsTrue(threat.Properties.Keys.All(name =>
+                    model.KnowledgeBase!.ThreatMetaData!.PropertiesMetaData.Any(datum => datum.Name == name)));
+            }
         }
 
         /// <summary>Custom threat metadata remains referentially complete in the written TM7 knowledge base.</summary>
@@ -226,9 +234,84 @@ namespace ThreatModelForge.Cli.Tests
             Assert.IsTrue(model.AllThreatsDictionary.TryGetValue(id, out Threat? threat));
             Assert.AreEqual("Admin actions are not logged", threat!.Title);
             Assert.AreEqual("Repudiation", threat.UserThreatCategory);
-            Assert.IsNull(threat.TypeId);
+            Assert.AreEqual(ManualThreatId.ToNativeTypeId(id), threat.TypeId);
             Assert.AreEqual("High", threat.Priority);
+            Assert.AreEqual(threat.Title, threat.Properties!["Title"]);
+            Assert.AreEqual(threat.UserThreatCategory, threat.Properties["UserThreatCategory"]);
+            Assert.AreEqual(threat.Priority, threat.Properties["Priority"]);
             Assert.AreEqual(1, model.AllThreatsDictionary.Count);
+        }
+
+        /// <summary>Native finding properties follow edits and explicit clears without changing identity.</summary>
+        [TestMethod]
+        public void ThreatsEditUpdatesAndClearsNativeFindingProperties()
+        {
+            string path = this.NewModelWithFlow();
+            (int added, _) = Capture(() => ThreatsCommand.Run(new[]
+            {
+                path, "--add", "--id", "native-edit", "--title", "Original", "--category", "Tampering",
+                "--description", "Original description", "--mitigation", "Original mitigation",
+            }));
+            Assert.AreEqual(0, added);
+            (int revised, _) = Capture(() => ThreatsCommand.Run(new[]
+            {
+                path, "--edit", "manual:native-edit", "--title", "Revised", "--priority", "Low",
+                "--description", "Revised description", "--mitigation", "Revised mitigation",
+            }));
+            Assert.AreEqual(0, revised);
+            (ThreatModel edited, _) = CliModelLoader.Load(path);
+            Threat threat = edited.AllThreatsDictionary["manual:native-edit"];
+            Assert.AreEqual("Revised", threat.Properties!["Title"]);
+            Assert.AreEqual("Low", threat.Properties["Priority"]);
+            Assert.AreEqual("Revised description", threat.Properties["UserThreatDescription"]);
+            Assert.AreEqual("Revised mitigation", threat.Properties["Mitigation"]);
+            string? nativeId = threat.TypeId;
+
+            (int removed, _) = Capture(() => ThreatsCommand.Run(new[]
+            {
+                path, "--edit", "manual:native-edit", "--description", string.Empty, "--mitigation", string.Empty,
+            }));
+            Assert.AreEqual(0, removed);
+            (ThreatModel cleared, _) = CliModelLoader.Load(path);
+            Threat clearedThreat = cleared.AllThreatsDictionary["manual:native-edit"];
+            Assert.AreEqual(nativeId, clearedThreat.TypeId);
+            Assert.IsNull(clearedThreat.UserThreatDescription);
+            Assert.IsFalse(clearedThreat.Properties!.ContainsKey("UserThreatDescription"));
+            Assert.IsFalse(clearedThreat.Properties.ContainsKey("Mitigation"));
+        }
+
+        /// <summary>A scoped manual threat belongs to its target's page, not the first page.</summary>
+        /// <param name="flowScope">Whether the scope is a flow rather than a process.</param>
+        [TestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void ThreatsAddUsesScopedObjectsPage(bool flowScope)
+        {
+            string path = this.NewModelWithFlow();
+            (ThreatModel model, _) = CliModelLoader.Load(path);
+            DrawingSurfaceModel scopedPage = model.DrawingSurfaceList.Single();
+            Guid scope = flowScope
+                ? scopedPage.Lines.Keys.Single()
+                : scopedPage.Borders.Values.OfType<StencilEllipse>().Single().Guid;
+            model.DrawingSurfaceList.Insert(0, new DrawingSurfaceModel
+            {
+                Guid = Guid.NewGuid(),
+                Header = "Unrelated page",
+            });
+            model.Save(path);
+
+            (int exit, _) = Capture(() => ThreatsCommand.Run(new[]
+            {
+                path, "--add", "--id", "page-scope", "--title", "Scoped finding",
+                "--category", "Tampering", "--scope", scope.ToString(), "--json",
+            }));
+
+            Assert.AreEqual(0, exit);
+            (ThreatModel saved, _) = CliModelLoader.Load(path);
+            Threat threat = saved.AllThreatsDictionary["manual:page-scope"];
+            Assert.AreEqual(scopedPage.Guid, threat.DrawingSurfaceGuid);
+            Assert.AreEqual(scope, threat.SourceGuid);
+            Assert.IsFalse(threat.Wide);
         }
 
         /// <summary>
@@ -311,6 +394,8 @@ namespace ThreatModelForge.Cli.Tests
             Assert.AreEqual(ThreatState.Mitigated, threat!.State);
             Assert.AreEqual("Low", threat.Priority);
             Assert.AreEqual("Handled by the mesh.", threat.UserThreatDescription);
+            Assert.AreEqual(threat.Priority, threat.Properties!["Priority"]);
+            Assert.AreEqual(threat.UserThreatDescription, threat.Properties["UserThreatDescription"]);
         }
 
         /// <summary>
@@ -333,6 +418,7 @@ namespace ThreatModelForge.Cli.Tests
             (ThreatModel model, _) = CliModelLoader.Load(path);
             Assert.IsTrue(model.AllThreatsDictionary.TryGetValue(id, out Threat? threat));
             Assert.AreEqual("Unauthenticated ledger write", threat!.Title);
+            Assert.AreEqual(threat.Title, threat.Properties!["Title"]);
         }
 
         /// <summary>Clearing the title hands the threat back to its rule, so the edit is reversible.</summary>

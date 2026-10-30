@@ -100,14 +100,23 @@ export interface TmForgeDiagram {
   id: string;
   /** Page (tab) label, for example 'Context' or 'Payments service'. */
   name: string;
+  source?: Record<string, string>;
   elements: TmForgeElement[];
   flows: TmForgeFlow[];
+}
+
+export interface TmForgeNote {
+  id: number;
+  message?: string;
+  date: string;
+  addedBy?: string;
 }
 
 export interface TmForgeModel {
   schema: 'tmforge-json';
   version: '0.1';
   metadata?: Record<string, string | null | undefined>;
+  notes?: TmForgeNote[];
   elements: TmForgeElement[];
   flows: TmForgeFlow[];
   /**

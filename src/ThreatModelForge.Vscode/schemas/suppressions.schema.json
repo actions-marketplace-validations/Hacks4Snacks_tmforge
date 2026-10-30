@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:tmforge:schema:suppressions:v1",
+  "title": "Threat Model Forge CLI suppressions",
+  "description": "Suppressions consumed by the CLI --suppressionFile option. The VS Code preview does not apply this file automatically.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["files"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["file", "suppressions"],
+        "properties": {
+          "file": { "type": "string", "minLength": 1, "description": "Model path, relative to this suppression file or absolute." },
+          "suppressions": {
+            "type": "array",
+            "items": {
+              "type": "object", "additionalProperties": false, "required": ["rule"],
+              "properties": {
+                "rule": { "type": "string", "minLength": 1, "description": "Rule id, for example TM1021." },
+                "model": { "type": "string", "description": "Diagram header for a diagram or element finding." },
+                "target": { "type": "string", "description": "Target GUID or qualified display name within the named diagram." },
+                "justification": { "type": "string" }
+              },
+              "dependencies": { "target": ["model"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

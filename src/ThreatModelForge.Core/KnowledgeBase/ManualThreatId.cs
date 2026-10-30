@@ -2,6 +2,8 @@ namespace ThreatModelForge.KnowledgeBase
 {
     using System;
     using System.Globalization;
+    using System.Security.Cryptography;
+    using System.Text;
 
     /// <summary>
     /// The reserved identity namespace for manually-authored threats.
@@ -39,6 +41,34 @@ namespace ThreatModelForge.KnowledgeBase
         /// <summary>Mints a fresh manual id, for an author who does not supply one.</summary>
         /// <returns>A new manual id.</returns>
         public static string Create() => Prefix + Guid.NewGuid().ToString("N");
+
+        /// <summary>Derives MTMT's user-defined type identity without changing the author's register key.</summary>
+        /// <param name="key">The manual register key.</param>
+        /// <returns>The native <c>BS</c> prefix followed by a stable, hyphenated GUID.</returns>
+        public static string ToNativeTypeId(string key)
+        {
+            if (!IsManual(key) || key.Length == Prefix.Length)
+            {
+                throw new ArgumentException("A manual threat register key is required.", nameof(key));
+            }
+
+            byte[] bytes = new byte[16];
+            using (SHA256 hash = SHA256.Create())
+            {
+                Array.Copy(hash.ComputeHash(Encoding.UTF8.GetBytes("tmforge-mtmt-threat:" + key.ToUpperInvariant())), bytes, bytes.Length);
+            }
+
+            bytes[7] = (byte)((bytes[7] & 0x0f) | 0x50);
+            bytes[8] = (byte)((bytes[8] & 0x3f) | 0x80);
+            return "BS" + new Guid(bytes).ToString("D");
+        }
+
+        /// <summary>Recognizes the native user-defined threat identity, not an analysis rule id.</summary>
+        /// <param name="typeId">The serialized threat type id.</param>
+        /// <returns>Whether the value is an MTMT user-defined type id.</returns>
+        public static bool IsNativeTypeId(string? typeId) =>
+            typeId != null && typeId.Length == 38 && typeId.StartsWith("BS", StringComparison.Ordinal)
+            && Guid.TryParseExact(typeId.Substring(2), "D", out _);
 
         /// <summary>
         /// Normalizes an author-supplied id into the reserved namespace.

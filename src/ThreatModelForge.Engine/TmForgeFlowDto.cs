@@ -1,6 +1,7 @@
 namespace ThreatModelForge.Engine
 {
     using System.Collections.Generic;
+    using System.Text.Json.Serialization;
 
     /// <summary>
     /// A data flow between two elements.
@@ -18,6 +19,21 @@ namespace ThreatModelForge.Engine
 
         /// <summary>Gets the flow label.</summary>
         public string? Name { get; init; }
+
+        /// <summary>Gets the author-positioned canvas label offset.</summary>
+        [JsonPropertyName("labelOffset")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public TmForgePointDto? LabelOffset { get; init; }
+
+        /// <summary>Gets the canvas source port.</summary>
+        [JsonPropertyName("sourceHandle")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? SourceHandle { get; init; }
+
+        /// <summary>Gets the canvas target port.</summary>
+        [JsonPropertyName("targetHandle")]
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? TargetHandle { get; init; }
 
         /// <summary>Gets the engine custom properties (for example, <c>Protocol</c>, <c>DataType</c>) attached to the flow.</summary>
         public IReadOnlyDictionary<string, string> Properties { get; init; } = new Dictionary<string, string>();

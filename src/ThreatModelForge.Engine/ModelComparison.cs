@@ -52,6 +52,13 @@ namespace ThreatModelForge.Engine
                 warnings.Add("Model metadata differs. Metadata fields are outside this structural and findings review.");
             }
 
+            if (!JsonElement.DeepEquals(
+                JsonSerializer.SerializeToElement(request.Baseline.Notes ?? Array.Empty<Note>(), JsonOptions),
+                JsonSerializer.SerializeToElement(request.Proposed.Notes ?? Array.Empty<Note>(), JsonOptions)))
+            {
+                warnings.Add("Model notes differ. Notes are outside this structural and findings review.");
+            }
+
             IEnumerable<ThreatStateDto> baselineThreats = (request.Baseline.Threats ?? Array.Empty<ThreatStateDto>()).OrderBy(threat => threat.Id, StringComparer.Ordinal);
             IEnumerable<ThreatStateDto> proposedThreats = (request.Proposed.Threats ?? Array.Empty<ThreatStateDto>()).OrderBy(threat => threat.Id, StringComparer.Ordinal);
             if (!JsonElement.DeepEquals(JsonSerializer.SerializeToElement(baselineThreats, JsonOptions), JsonSerializer.SerializeToElement(proposedThreats, JsonOptions)))

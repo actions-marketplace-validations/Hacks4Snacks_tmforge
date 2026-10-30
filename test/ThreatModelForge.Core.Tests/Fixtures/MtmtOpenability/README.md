@@ -17,16 +17,23 @@ Given `-ElementId` and `-PropertyName` it also reads one property back through M
 which answers the stronger question: does the tool see the value tmforge wrote?
 
 Exit code is `0` when every model opens and `1` when any does not, so it can gate a release check.
+Results include the loaded MTMT assembly/file versions, each model's SHA-256 and size, and the
+underlying exception with its stack trace when loading fails.
 
 ## Getting a payload
 
-The probe does not download anything. Reuse the verified download in the sibling
+The probe does not download or install anything. Omit `-PayloadDirectory` to use a single complete
+MTMT installation from the current user's ClickOnce cache. Missing or multiple installations fail
+explicitly; use `-PayloadDirectory` to select an existing directory instead. No execution-policy
+override is applied, so organization policy remains in effect.
+
+For environments without an existing installation, the sibling
 [`MtmtDifferential`](../../../ThreatModelForge.Analysis.Tests/Fixtures/MtmtDifferential/README.md)
-capture script, which fetches MTMT from Microsoft's versioned ClickOnce distribution and checks the
+capture script fetches MTMT from Microsoft's versioned ClickOnce distribution and checks the
 application manifest SHA-256 and every payload digest against it:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+powershell.exe -NoProfile -File `
   test/ThreatModelForge.Analysis.Tests/Fixtures/MtmtDifferential/capture-mtmt-root-scope.ps1 `
   -Preflight -WorkingDirectory C:\mtmt
 ```
@@ -37,7 +44,7 @@ it needs neither WPF nor the 32-bit host.
 ## Running it
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
+powershell.exe -NoProfile -File `
   test/ThreatModelForge.Core.Tests/Fixtures/MtmtOpenability/probe-mtmt-openability.ps1 `
   -PayloadDirectory C:\mtmt\TMT7_7_3_51110_1 `
   -ModelDirectory C:\models `
@@ -77,3 +84,13 @@ Established against MTMT `7.3.51110.1`; re-check when that version moves.
   the same display name loads clean, and `PropertyMap` reports one entry. The hazard is not
   refusal — it is that the tool and tmforge can resolve the same file to *different values*, which is
   how the `set` defect fixed in `DiagramElementHelper` was found.
+- **A persisted threat with a null `TypeId` is refused in `Threat.Configure`.** Native user-defined
+  threats use `BS` followed by a hyphenated GUID; `IsUserDefined` also requires the complete
+  38-character identity. Keep tmforge's `manual:` register key separately.
+- **A non-null threat property bag disables migration of legacy text fields.** Titles, categories,
+  descriptions, justifications and interaction text must also be present under their native
+  property names. Supplying a native type ID alone can make a model load with missing finding text.
+- **MTMT retains only metadata-declared threat properties.** Declare `Mitigation` and any
+  provenance or override properties that must survive saving. These threat-contract facts were
+  established from a user-run loader trace and the pinned 7.3.51110.1 assemblies; exporter
+  regressions remain structural proxies, not a substitute for opening each corrected candidate.

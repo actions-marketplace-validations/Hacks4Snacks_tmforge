@@ -4,8 +4,9 @@ These fixtures are derived from the three templates in
 [`microsoft/threat-modeling-templates`](https://github.com/microsoft/threat-modeling-templates)
 at commit `0ece9c71b6f3710b10d497bd1ef63e57805e7c3e`.
 
-The upstream repository and these derived fixtures are licensed under the MIT License. See
-[`LICENSE.txt`](LICENSE.txt).
+The upstream repository and these derived fixtures are licensed under the MIT License. See the
+[pinned upstream source and license](https://github.com/microsoft/threat-modeling-templates/tree/0ece9c71b6f3710b10d497bd1ef63e57805e7c3e)
+and the repository's [third-party attribution](../../../../NOTICE).
 
 ## Derivation
 

@@ -118,7 +118,7 @@ namespace ThreatModelForge.Reporting
             + " letter-spacing: 0; text-transform: uppercase; }"
             + " .context-item dd { margin: 0; white-space: pre-wrap; }"
             + " .notes-list { margin: 0; padding-left: 1.25rem; }"
-            + " .notes-list li { margin-bottom: 0.5rem; padding-left: 0.25rem; }"
+            + " .notes-list li { margin-bottom: 0.5rem; padding-left: 0.25rem; white-space: pre-wrap; overflow-wrap: anywhere; }"
             + " .count-pill, .badge { display: inline-flex; align-items: center; border: 1px solid var(--cp-border);"
             + " border-radius: 999px; background: var(--cp-surface-soft); color: var(--cp-text-muted); font-size: 0.75rem; font-weight: 600; }"
             + " .count-pill { flex: 0 0 auto; padding: 0.35rem 0.7rem; }"

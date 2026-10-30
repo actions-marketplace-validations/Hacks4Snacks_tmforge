@@ -132,6 +132,16 @@ namespace ThreatModelForge.Api
                 .WithName("ConvertModel")
                 .WithTags("Model");
             app.MapPost(
+                "/v1/model/save/tm7",
+                (NativeTm7SaveRequest request) => TypedResults.File(
+                    EngineService.SaveTm7(Convert.FromBase64String(request.ContentBase64), request.Model ?? throw new ArgumentException("An edited model is required."), rules, string.IsNullOrEmpty(request.PreviousContentBase64) ? Array.Empty<byte>() : Convert.FromBase64String(request.PreviousContentBase64)),
+                    "application/xml",
+                    "model.tm7"))
+                .WithName("SaveNativeTm7")
+                .WithSummary("Applies edits while preserving the original native TM7 document.")
+                .ProducesProblem(StatusCodes.Status400BadRequest)
+                .WithTags("Model");
+            app.MapPost(
                 "/v1/model/read",
                 (FileContentDto file) => TypedResults.Ok(
                     EngineService.ReadModel(Convert.FromBase64String(file.ContentBase64), file.FormatId)))
@@ -142,6 +152,19 @@ namespace ThreatModelForge.Api
                 (FileContentDto file, string? to) => TypedResults.Ok(
                     DocumentPreflight.Inspect(Convert.FromBase64String(file.ContentBase64), file.FormatId, to)))
                 .WithName("PreflightModel")
+                .WithTags("Model");
+
+            app.MapPost(
+                "/v1/model/recover/tm7",
+                (FileContentDto file, CancellationToken cancellationToken) =>
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return TypedResults.Ok(EngineService.RecoverTm7(Convert.FromBase64String(file.ContentBase64)));
+                })
+                .WithName("RecoverTm7")
+                .WithSummary("Creates a separate canonical recovery copy of a TM7 with unresolved flow endpoints.")
+                .WithDescription("Requires explicit recovery consent. Omits unresolved flows and their scoped threats; native-only content remains in the source. Other structural errors are not overridable.")
+                .ProducesProblem(StatusCodes.Status400BadRequest)
                 .WithTags("Model");
 
             // A declarative authoring manifest is a threat model's reviewable source, not one of the
@@ -236,6 +259,8 @@ namespace ThreatModelForge.Api
                     return ("application/vnd.ms-visio.drawing", "model.vsdx");
                 case "tmforge-json":
                     return ("application/json", "model.tmforge.json");
+                case "threat-dragon":
+                    return ("application/json", "model.threatdragon.json");
                 default:
                     return ("application/xml", "model.tm7");
             }

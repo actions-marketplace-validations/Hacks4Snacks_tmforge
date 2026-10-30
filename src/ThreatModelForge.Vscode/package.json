@@ -1,0 +1,276 @@
+{
+  "name": "tmforge",
+  "displayName": "Threat Model Forge",
+  "description": "Edit and analyze native TM7 and JSON threat models in Studio within VS Code",
+  "version": "0.14.0",
+  "publisher": "hacks4snacks",
+  "license": "MIT",
+  "homepage": "https://github.com/Hacks4Snacks/tmforge#readme",
+  "bugs": {
+    "url": "https://github.com/Hacks4Snacks/tmforge/issues"
+  },
+  "keywords": [
+    "threat modeling",
+    "tm7",
+    "STRIDE",
+    "security",
+    "data flow diagram",
+    "Microsoft Threat Modeling Tool"
+  ],
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1A2130",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Hacks4Snacks/tmforge",
+    "directory": "src/ThreatModelForge.Vscode"
+  },
+  "engines": {
+    "vscode": "^1.138.0"
+  },
+  "categories": [
+    "Visualization",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "main": "./out/extension.js",
+  "contributes": {
+    "chatSkills": [
+      {
+        "path": "./copilot/skills/tmforge-vscode/SKILL.md",
+        "when": "isWorkspaceTrusted && config.tmforge.copilot.enabled"
+      }
+    ],
+    "configuration": {
+      "title": "Threat Model Forge",
+      "properties": {
+        "tmforge.copilot.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the bundled threat-modeling skill and Copilot tools. Model content returned by tools becomes part of the Copilot conversation."
+        }
+      }
+    },
+    "languageModelTools": [
+      {
+        "name": "tmforge_catalog",
+        "displayName": "tmforge Catalog",
+        "modelDescription": "Read one authoritative catalog from the bundled tmforge engine: manifest JSON Schema, stencils, property names and enum values, built-in rules, or formats. Query manifest, stencils and properties before creating models. Does not read workspace files or install software.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "tmforgeCatalog",
+        "icon": "$(book)",
+        "when": "isWorkspaceTrusted && config.tmforge.copilot.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "section": {
+              "type": "string",
+              "enum": [
+                "manifest",
+                "stencils",
+                "properties",
+                "rules",
+                "formats"
+              ]
+            }
+          },
+          "required": [
+            "section"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tmforge_create_model",
+        "displayName": "tmforge Create Draft",
+        "modelDescription": "Validate and apply a tmforge manifest using the bundled engine, then open a NEW unsaved .tmforge.json draft in Studio. Returns its URI and revision, not a security certification. No existing file is overwritten and no CLI/Python/download is needed. Query tmforgeCatalog first; use props, stable aliases, evidenced controls or Unknown. Inspect the returned URI next. Do not use to update an existing model.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "tmforgeCreateModel",
+        "icon": "$(new-file)",
+        "when": "isWorkspaceTrusted && config.tmforge.copilot.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "manifest": {
+              "type": "object",
+              "description": "A complete tmforge-manifest object following the schema returned by tmforgeCatalog. Elements use props, not properties."
+            },
+            "name": {
+              "type": "string",
+              "maxLength": 120,
+              "description": "Suggested filename, not a filesystem path. VS Code chooses the save location later."
+            }
+          },
+          "required": [
+            "manifest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tmforge_inspect_model",
+        "displayName": "tmforge Inspect Model",
+        "modelDescription": "Read the current unsaved content of an already-open .tm7 or .tmforge.json document and analyze it locally. Returns the canonical model, findings, warnings and a revision token for updates. Use the exact URI from creation or an open editor; omit URI for the active model. Never treat missing/failed analysis as a clean assessment. Does not modify files. Tool results become Copilot context; native opaque XML is not returned.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "tmforgeInspectModel",
+        "icon": "$(search)",
+        "when": "isWorkspaceTrusted && config.tmforge.copilot.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "uri": {
+              "type": "string",
+              "description": "Exact URI of an already-open model, including its file:, untitled: or vscode-remote: scheme."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "tmforge_update_model",
+        "displayName": "tmforge Update Model",
+        "modelDescription": "Apply a validated, undoable edit to an open model, preserving native TM7 content through the engine. Inspect first and pass the returned revision plus the complete updated canonical model. Preserve stable IDs, metadata, analysis settings, unknown fields and existing triage unless the user requests their change. When diagrams exists, mirror its first page in top-level elements/flows. Stale revisions fail; inspect again instead of overwriting newer work. Does not explicitly save; VS Code Auto Save applies. Inspect again after editing. Never hand-edit TM7 XML.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "tmforgeUpdateModel",
+        "icon": "$(edit)",
+        "when": "isWorkspaceTrusted && config.tmforge.copilot.enabled",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "uri": {
+              "type": "string",
+              "description": "Exact open-document URI returned by inspection."
+            },
+            "revision": {
+              "type": "string",
+              "description": "Opaque revision token returned by the latest inspection; do not construct it."
+            },
+            "model": {
+              "type": "object",
+              "description": "Complete updated tmforge-json model, based on inspection rather than a regenerated manifest."
+            }
+          },
+          "required": [
+            "uri",
+            "revision",
+            "model"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "languages": [
+      {
+        "id": "tm7",
+        "extensions": [
+          ".tm7"
+        ],
+        "aliases": [
+          "Threat Model (TM7)"
+        ],
+        "icon": {
+          "light": "media/icons/tm7-file-light.svg",
+          "dark": "media/icons/tm7-file-dark.svg"
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "tmforge.openStudio",
+        "title": "Threat Model Forge: Open Studio",
+        "icon": {
+          "light": "media/icons/open-studio-light.svg",
+          "dark": "media/icons/open-studio-dark.svg"
+        }
+      },
+      {
+        "command": "tmforge.newModel",
+        "title": "Threat Model Forge: New Model"
+      },
+      {
+        "command": "tmforge.analyze",
+        "title": "Threat Model Forge: Analyze Model"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "tmforge.studio",
+        "displayName": "Threat Model Forge Studio",
+        "selector": [
+          {
+            "filenamePattern": "*.tm7"
+          },
+          {
+            "filenamePattern": "*.tmforge.json"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "tmforge.openStudio",
+          "when": "resourceFilename =~ /\\.(tm7|tmforge\\.json)$/",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "tmforge.openStudio",
+          "when": "resourceFilename =~ /\\.(tm7|tmforge\\.json)$/"
+        }
+      ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": "*.tmrules.json",
+        "url": "./schemas/rules.schema.json"
+      },
+      {
+        "fileMatch": "*.suppressions.json",
+        "url": "./schemas/suppressions.schema.json"
+      },
+      {
+        "fileMatch": [
+          "*.manifest.json",
+          "*.tm.json"
+        ],
+        "url": "./schemas/manifest.schema.json"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile && npm run build:studio && node scripts/check-package.mjs",
+    "build:studio": "npm --prefix ../ThreatModelForge.Studio run build:extension",
+    "compile": "tsc -p ./ && node -e \"require('node:fs').copyFileSync('src/engine-worker.mjs','out/engine-worker.mjs')\"",
+    "watch": "tsc -watch -p ./",
+    "stage:engine": "node scripts/stage-engine.mjs",
+    "pretest": "npm run compile",
+    "test": "node --test out/test/*.unit.test.js",
+    "test:extension": "npm run compile && npm run build:studio && node scripts/test-extension.mjs",
+    "package": "vsce package --no-dependencies --changelog-path out/CHANGELOG.md"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "@types/vscode": "^1.103.0",
+    "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^4.0.0",
+    "typescript": "^5.9.3"
+  }
+}

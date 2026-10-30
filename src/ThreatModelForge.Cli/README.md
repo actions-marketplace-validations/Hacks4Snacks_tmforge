@@ -5,10 +5,14 @@ The `tmforge` command-line tool: inspect, author, analyze, report on, and conver
 face of the same engine the Studio UI uses, so agents and pipelines can drive threat models
 without a GUI.
 
-Every command accepts `--json` for machine-readable output, and options take either
+Model commands support `--json` for machine-readable output, and options take either
 `--name value` or `--name=value`. Run `tmforge <command> --help` for command-specific options.
+Help/version and git setup are text; the MCP server uses JSON-RPC over stdio.
 
-## Commands
+## Common Commands
+
+The [CLI reference](../../docs/cli-reference.md) covers the full command set, including preflight,
+pages, layout, diff/merge, manifests, threat authoring, analysis documents, and MCP tools/resources.
 
 ### Inspect (read-only)
 
@@ -31,7 +35,7 @@ Every command accepts `--json` for machine-readable output, and options take eit
 | Command | Purpose |
 | --- | --- |
 | `tmforge new [--name <title>] [--template <file>] [--format <id>] [--json] <file>` | Create a new model (empty or from a template). |
-| `tmforge add <process\|store\|external\|boundary> [--name <name>] [--stencil <id>] [--left <n>] [--top <n>] [--width <n>] [--height <n>] [--property KEY=VALUE ...] [--json] <file>` | Add an element to the first diagram (generic kind or a typed `--stencil`). |
+| `tmforge add <kind> [options] <file>` or `tmforge add --stencil <id> [options] <file>` | Add a generic process/store/external/boundary or a typed stencil; select another page with `--page`. Kind and stencil are alternatives. |
 | `tmforge connect --source <guid> --target <guid> [--name <name>] [--property KEY=VALUE ...] [--json] <file>` | Add a data flow between two elements. |
 | `tmforge set --id <guid> [--name <name>] [--property KEY=VALUE ...] [--json] <file>` | Set an element/flow's name and/or custom properties. |
 | `tmforge remove --id <guid> [--json] <file>` | Remove an element (and its connected flows). |
@@ -45,8 +49,9 @@ Every command accepts `--json` for machine-readable output, and options take eit
 | `tmforge report [--format <html\|svg>] [--out <path>] [--json] <model>` | Generate a self-contained HTML threat report (enabled rule-backed + manual threats and triage), or a standalone SVG diagram. |
 | `tmforge convert [--to <format>] [--out <path>] [--json] <input>` | Convert between formats (`tm7`, `tmforge-json`, `drawio`, `vsdx`). |
 
-`analyze` exit codes: `0` = clean, `1` = error (bad arguments or load failure), `2` = findings
-reported. This lets CI fail a build on findings while distinguishing them from tool errors.
+`analyze` exit codes: `0` = no findings at the selected threshold, `1` = tool error,
+`2` = findings at or above `--max-severity` (default `error`; also accepts `warning` or `info`).
+Lower-severity findings may still be present when the command exits `0`.
 
 ## Run
 
@@ -55,11 +60,11 @@ reported. This lets CI fail a build on findings while distinguishing them from t
 dotnet run --project src/ThreatModelForge.Cli -- analyze model.tm7 --json
 
 # From the published container image (pulls on first run)
-docker run --rm -v "$PWD:/work" ghcr.io/hacks4snacks/tmforge-cli tmforge analyze model.tm7
+docker run --rm -v "$PWD:/work" ghcr.io/hacks4snacks/tmforge-cli analyze model.tm7
 
 # ...or build the image from source (see build/Dockerfile)
 docker build -f build/Dockerfile -t tmforge-cli .
-docker run --rm -v "$PWD:/work" tmforge-cli tmforge analyze model.tm7
+docker run --rm -v "$PWD:/work" tmforge-cli analyze model.tm7
 ```
 
 ## Examples

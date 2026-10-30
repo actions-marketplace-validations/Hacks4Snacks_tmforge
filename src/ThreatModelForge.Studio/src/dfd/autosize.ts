@@ -914,27 +914,31 @@ export function separateNodes(nodes: DfdNode[]): DfdNode[] {
   // Separate one sibling set. Keep the earlier top/left region fixed and move later peers only right
   // or down, which avoids introducing negative coordinates while leaving a visible gap between
   // outlines that overlap or nearly touch.
-  const separateBoundarySiblings = (ids: string[]): void => {
-    const ordered = [...ids].sort((left, right) => {
-      const a = boundaryPos.get(left)!;
-      const b = boundaryPos.get(right)!;
+  const separateSiblings = (boundaryIds: string[], memberIds: string[]): void => {
+    const positionOf = (id: string): Rect => boundaryPos.get(id) ?? pos.get(id)!;
+    const ordered = [...boundaryIds, ...memberIds].sort((left, right) => {
+      const a = positionOf(left);
+      const b = positionOf(right);
       return a.y - b.y || a.x - b.x || left.localeCompare(right);
     });
     for (let iter = 0; iter < SEPARATE_ITERS; iter++) {
       let moved = false;
       for (let i = 0; i < ordered.length; i++) {
         for (let j = i + 1; j < ordered.length; j++) {
-          const a = boundaryPos.get(ordered[i])!;
-          const b = boundaryPos.get(ordered[j])!;
+          const a = positionOf(ordered[i]);
+          const b = positionOf(ordered[j]);
           if (!rectsOverlap(a, b, BOUNDARY_GAP)) {
             continue;
           }
           const moveRight = a.x + a.w + BOUNDARY_GAP - b.x;
           const moveDown = a.y + a.h + BOUNDARY_GAP - b.y;
-          if (moveRight <= moveDown) {
-            shiftBoundaryTree(ordered[j], moveRight, 0);
+          const dx = moveRight <= moveDown ? moveRight : 0;
+          const dy = moveRight <= moveDown ? 0 : moveDown;
+          if (boundaryPos.has(ordered[j])) {
+            shiftBoundaryTree(ordered[j], dx, dy);
           } else {
-            shiftBoundaryTree(ordered[j], 0, moveDown);
+            b.x += dx;
+            b.y += dy;
           }
           moved = true;
         }
@@ -951,7 +955,7 @@ export function separateNodes(nodes: DfdNode[]): DfdNode[] {
     for (const childId of children) {
       layoutBoundary(childId);
     }
-    separateBoundarySiblings(children);
+    separateSiblings(children, membersOf.get(id) ?? []);
 
     const boundary = boundaryPos.get(id)!;
     let minX = boundary.x;
@@ -998,7 +1002,7 @@ export function separateNodes(nodes: DfdNode[]): DfdNode[] {
   for (const rootId of roots) {
     layoutBoundary(rootId);
   }
-  separateBoundarySiblings(roots);
+  separateSiblings(roots, groups.get('') ?? []);
 
   return nodes.map((n) => {
     if (n.type === 'boundary') {

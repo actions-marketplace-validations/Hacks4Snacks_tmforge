@@ -133,11 +133,11 @@ flows, boundaries, controls, persisted findings, and evidence baseline with the 
    `formal-package` or `update`, generate or refresh the sibling `.tm7` through tmforge. The declarative manifest
    remains authoritative when present; never hand-edit its generated `.tm7`. Carry diagram geometry in the manifest
    so the result is reviewable; a diagram is an argument, and one that stacks shapes or misplaces them argues badly.
-   A diagram nobody can read argues no better. The tool prints a flow's name unwrapped on its connector and clamps
-   anything drawn past a bounded canvas, so name each flow with its stable ID and a terse phrase, keep the sentence
-   in the ledger and the data-flow document where reviewers read it, and derive geometry with the core skill's layout
-   generator rather than choosing coordinates by hand. When the generator reports that the canvas no longer fits,
-   shorten names or split the page; do not widen past the limit.
+   Keep the stable flow ID in `id` and a bare phrase in the ledger's `name`; only the manifest and diagram name add
+   `F1: ` once. Keep explanations in evidence claims and threat descriptions. Derive geometry with the core skill's
+   layout generator rather than choosing coordinates by hand: it avoids label-on-shape obstructions and wraps wide
+   columns into rows. Declare `pages` and boundary/element `pageId` values for page-local views when needed; preserve
+   directionality and every material flow. Do not merge reverse flows or drop content merely to fit the canvas.
 7. **Validate**: Run the core skill's unified package verifier for retained packages, including explicit
    candidate/final paths when promotion occurs. When tmforge is involved, also follow the tmforge skill's candidate
    workflow, including its diagram-legibility check. Run discovered stricter local gates when compatible with the
@@ -158,6 +158,8 @@ Keep artifact completion separate from review lifecycle:
 - `unvalidated`: required structural tooling could not run.
 
 Never promote a model to `verified` without both a recorded baseline and explicit human approval in the task context.
+Model acceptance and approver identities belong in the external review system, such as pull-request approvals,
+not in generated ledgers or reports. Do not invent approval metadata.
 
 ## Completion Contract
 

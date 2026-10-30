@@ -17,6 +17,9 @@ namespace ThreatModelForge.Engine
         /// <summary>Gets the author-owned model description, owner and review metadata.</summary>
         public MetaInformation? Metadata { get; init; }
 
+        /// <summary>Gets the author-owned model notes.</summary>
+        public IReadOnlyList<Note>? Notes { get; init; }
+
         /// <summary>Gets the DFD elements.</summary>
         public IReadOnlyList<TmForgeElementDto>? Elements { get; init; }
 

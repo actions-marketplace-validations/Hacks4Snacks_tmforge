@@ -1,5 +1,6 @@
 namespace ThreatModelForge.Core.Tests
 {
+    using System;
     using Microsoft.VisualStudio.TestTools.UnitTesting;
     using ThreatModelForge.KnowledgeBase;
 
@@ -29,6 +30,45 @@ namespace ThreatModelForge.Core.Tests
             Assert.IsFalse(ManualThreatId.IsManual(null));
             Assert.IsFalse(ManualThreatId.IsManual(string.Empty));
             Assert.IsFalse(ManualThreatId.IsManual("d6f1c0e2ab114b0f9e0d2f1a3b4c5d6e:RULE-001"));
+        }
+
+        /// <summary>The native identity is reproducible and distinct without replacing the author's key.</summary>
+        [TestMethod]
+        public void NativeTypeIdentityIsStableAndRecognizedByMtmt()
+        {
+            string native = ManualThreatId.ToNativeTypeId("manual:Review-T-001");
+
+            Assert.IsTrue(ManualThreatId.IsNativeTypeId(native));
+            Assert.AreEqual(38, native.Length);
+            Assert.AreEqual(native, ManualThreatId.ToNativeTypeId("MANUAL:review-t-001"));
+            Assert.AreNotEqual(native, ManualThreatId.ToNativeTypeId("manual:Review-T-002"));
+            Assert.IsTrue(Guid.TryParseExact(native.Substring(2), "D", out _));
+        }
+
+        /// <summary>A native identity cannot be allocated for a generated or empty key.</summary>
+        /// <param name="key">The invalid register key.</param>
+        [TestMethod]
+        [DataRow("")]
+        [DataRow("manual:")]
+        [DataRow("source:TM1023")]
+        [DataRow(null)]
+        public void NativeTypeIdentityRequiresManualKey(string? key)
+        {
+            Assert.Throws<ArgumentException>(() => ManualThreatId.ToNativeTypeId(key!));
+        }
+
+        /// <summary>A rule name or an invalid BS-prefixed string is not a native user-defined identity.</summary>
+        /// <param name="typeId">The non-native type id.</param>
+        [TestMethod]
+        [DataRow(null)]
+        [DataRow("")]
+        [DataRow("TM1023")]
+        [DataRow("BSmanual:Review-T-001")]
+        [DataRow("BS11111111222243338444555555555555")]
+        [DataRow("BSxxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")]
+        public void NativeTypeDetectionRejectsOtherValues(string? typeId)
+        {
+            Assert.IsFalse(ManualThreatId.IsNativeTypeId(typeId));
         }
 
         /// <summary>The prefix is optional on input, so an author cannot create two ids by accident.</summary>

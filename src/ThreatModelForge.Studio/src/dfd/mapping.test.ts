@@ -37,16 +37,28 @@ describe('mapping — property round-trip (inspector edits reach the engine)', (
     const model = {
       ...graph,
       metadata: { owner: 'Reviewer', threatModelName: 'Imported model' },
-      diagrams: [{ id: 'imported-page', name: 'Requests', elements: graph.elements, flows: graph.flows }],
+      diagrams: [{ id: 'imported-page', name: 'Requests', source: { format: 'threat-dragon', id: '3', modelType: 'STRIDE' }, elements: graph.elements, flows: graph.flows }],
       threats: [{ id: 'manual:threat-dragon.original', state: 'Accepted' as const, source: { format: 'threat-dragon', id: 'original' } }],
     };
 
     const restored = modelFromPages(pagesFromModel(model), undefined, model.threats, model.metadata);
 
     expect(restored.diagrams?.[0]).toMatchObject({ id: 'imported-page', name: 'Requests' });
+    expect(restored.diagrams?.[0].source).toEqual(model.diagrams[0].source);
     expect(restored.threats).toEqual(model.threats);
     expect(restored.metadata).toEqual(model.metadata);
     expect(modelFromPages(pagesFromModel(graph)).diagrams).toBeUndefined();
+  });
+
+  it('preserves model-wide notes and distinguishes clearing notes from an older model', () => {
+    const pages = [{ id: 'p1', name: 'Context', nodes, edges }, { id: 'p2', name: 'Detail', nodes: [], edges: [] }];
+    const notes = [{ id: 7, message: 'Scope\nEvidence', date: '2026-09-30T12:00:00.1234567Z', addedBy: 'Reviewer' }];
+    const model = modelFromPages(pages, undefined, undefined, undefined, notes);
+
+    expect(model.notes).toEqual(notes);
+    expect(model.diagrams).toHaveLength(2);
+    expect(modelFromPages(pages, undefined, undefined, undefined, []).notes).toEqual([]);
+    expect(modelFromPages(pages)).not.toHaveProperty('notes');
   });
 
   it('omits the properties key entirely for an element with no custom properties', () => {

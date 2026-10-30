@@ -128,7 +128,8 @@ interface ToolbarProps {
   onExport: (formatId: string) => void;
   onImport: () => void;
   onSave: () => void;
-  onShare: () => void;
+  onShare?: () => void;
+  onNotes?: () => void;
   /** Opens the three-way merge / conflict-resolution dialog. */
   onMerge: () => void;
   onCompare: () => void;
@@ -185,9 +186,9 @@ export function Toolbar(props: ToolbarProps) {
           Save
         </button>
         <ExportMenu formats={props.exportFormats} onExport={props.onExport} />
-        <button className="btn btn-icon" onClick={props.onShare} aria-label="Share model" title="Share model as a URL">
+        {props.onShare && <button className="btn btn-icon" onClick={props.onShare} aria-label="Share model" title="Share model as a URL">
           <ShareIcon />
-        </button>
+        </button>}
         <button className="btn" onClick={props.onCompare} disabled={!props.engineOnline}
           title={props.engineOnline ? 'Review model changes without editing the canvas' : 'Comparison requires the engine'}>
           Compare
@@ -216,6 +217,7 @@ export function Toolbar(props: ToolbarProps) {
         options={REPORT_OPTIONS}
         onSelect={props.onReport}
       />
+      {props.onNotes && <button className="btn" onClick={props.onNotes} title="Model notes">Notes</button>}
 
       <span className="toolbar-spacer" />
 

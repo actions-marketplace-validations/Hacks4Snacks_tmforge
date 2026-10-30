@@ -1,0 +1,9 @@
+node_modules/
+out/
+engine/
+media/studio/
+.vscode-test/
+*.vsix
+LICENSE.md
+NOTICE
+schemas/tmforge-rules-v2.schema.json

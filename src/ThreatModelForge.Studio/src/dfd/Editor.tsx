@@ -30,7 +30,7 @@ import { Toolbar } from './Toolbar';
 import { Inspector } from './Inspector';
 import { AnalysisSettings } from './AnalysisSettings';
 import { FALLBACK_PACKS, FALLBACK_STENCILS } from './stencils';
-import { createHttpEngine, loadWasmEngine, looksLikeManifest, offlineEngine, probeEngine, type AnalysisReportFormat, type Finding, type FormatInfo, type IEngineClient, type PackInfo, type PreflightResult, type PropertyDescriptorInfo, type RuleBundle, type RuleInfo, type RulePackInfo, type StencilInfo, type Threat } from './engineClient';
+import { createHttpEngine, fromBase64, loadWasmEngine, looksLikeManifest, offlineEngine, probeEngine, toBase64, type AnalysisReportFormat, type Finding, type FormatInfo, type IEngineClient, type PackInfo, type PreflightResult, type PropertyDescriptorInfo, type RuleBundle, type RuleInfo, type RulePackInfo, type StencilInfo, type Threat } from './engineClient';
 import { ThreatsPanel, type NewThreatDraft, type ThreatEdit, type ThreatScopeOption } from './ThreatsPanel';
 import { CanvasSearch, type SearchItem } from './CanvasSearch';
 import { ModelOutline } from './ModelOutline';
@@ -46,7 +46,7 @@ import { CompareReview } from './CompareReview';
 import { PreflightDialog } from './PreflightDialog';
 import { ShareDialog, type ShareRequest } from './ShareDialog';
 import { SHARE_PREFIX } from './shareLink';
-import { DfdActionsContext, type DfdActions } from './editorContext';
+import { DfdActionsContext, type DfdActions, type EditorHost } from './editorContext';
 import { Toaster, toast } from './toast';
 import type { DfdEdge, DfdKind, DfdNode, ThreatTriage, TmForgeModel, TmForgeAnalysis, TmForgeExpectedRulePack } from './types';
 
@@ -111,12 +111,23 @@ export function initialTheme(): Theme {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
+interface NativeSource {
+  contentBase64: string;
+  fileName: string;
+  saved?: { model: string; contentBase64: string };
+}
+
 interface StoredWorkspace {
   pages: PageGraph[];
   activePageId: string;
   analysis?: TmForgeAnalysis;
   threats?: ThreatTriage[];
   metadata?: TmForgeModel['metadata'];
+  notes?: TmForgeModel['notes'];
+  nativeSource?: NativeSource;
+  savedJson?: string;
+  fileName?: string;
+  saveFormat?: string;
 }
 
 /** Reads the saved multi-page workspace (v2), migrating a legacy single-page model (v1) when present. */
@@ -124,11 +135,17 @@ export function loadStoredWorkspace(): StoredWorkspace | null {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { model?: TmForgeModel; activePageId?: string };
+      const parsed = JSON.parse(raw) as { model?: TmForgeModel; activePageId?: string; nativeSource?: NativeSource; savedJson?: string; fileName?: string; saveFormat?: string };
       if (parsed?.model?.schema === 'tmforge-json') {
+        if (parsed.nativeSource && (typeof parsed.nativeSource.contentBase64 !== 'string'
+          || typeof parsed.nativeSource.fileName !== 'string' || parsed.nativeSource.contentBase64.length > 11184812)) return null;
+        if (parsed.nativeSource) fromBase64(parsed.nativeSource.contentBase64);
         const pages = pagesFromModel(parsed.model);
         const activePageId = pages.some((p) => p.id === parsed.activePageId) ? parsed.activePageId! : pages[0].id;
-        return { pages, activePageId, analysis: parsed.model.analysis, threats: parsed.model.threats, metadata: parsed.model.metadata };
+        return { pages, activePageId, analysis: parsed.model.analysis, threats: parsed.model.threats, metadata: parsed.model.metadata, notes: parsed.model.notes,
+          nativeSource: parsed.nativeSource, savedJson: parsed.savedJson,
+          fileName: typeof parsed.fileName === 'string' ? parsed.fileName : undefined,
+          saveFormat: typeof parsed.saveFormat === 'string' ? parsed.saveFormat : undefined };
       }
     }
   } catch {
@@ -140,7 +157,7 @@ export function loadStoredWorkspace(): StoredWorkspace | null {
       const model = JSON.parse(raw) as TmForgeModel;
       if (model?.schema === 'tmforge-json') {
         const pages = pagesFromModel(model);
-        return { pages, activePageId: pages[0].id, analysis: model.analysis, threats: model.threats, metadata: model.metadata };
+        return { pages, activePageId: pages[0].id, analysis: model.analysis, threats: model.threats, metadata: model.metadata, notes: model.notes };
       }
     }
   } catch {
@@ -196,19 +213,6 @@ export function persistStringList(key: string, value: string[]): void {
 
 // Restore the last saved workspace on load, else start from a single empty page.
 const INITIAL_WORKSPACE = loadStoredWorkspace() ?? emptyWorkspace();
-const INITIAL_ACTIVE =
-  INITIAL_WORKSPACE.pages.find((p) => p.id === INITIAL_WORKSPACE.activePageId) ?? INITIAL_WORKSPACE.pages[0];
-const INITIAL_DISABLED_PACKS = INITIAL_WORKSPACE.analysis?.disabledPacks ?? [];
-const INITIAL_DISABLED_RULE_IDS = INITIAL_WORKSPACE.analysis?.disabledRuleIds ?? [];
-const INITIAL_EXPECTED_PACKS = INITIAL_WORKSPACE.analysis?.expectedPacks ?? [];
-const INITIAL_SAVED_JSON = JSON.stringify(
-  modelFromPages(
-    INITIAL_WORKSPACE.pages,
-    buildAnalysis(INITIAL_DISABLED_PACKS, INITIAL_DISABLED_RULE_IDS, INITIAL_EXPECTED_PACKS),
-    INITIAL_WORKSPACE.threats,
-    INITIAL_WORKSPACE.metadata,
-  ),
-);
 
 /** Minimal shape of the File System Access API used to open and overwrite files (Chromium). */
 interface WritableFileHandle {
@@ -246,6 +250,8 @@ const MANIFEST_NAME_SUFFIXES = [/\.json$/i, /\.(manifest|tm)$/i];
 /** A document resolved by the Open/Import path, and how the resulting model may be saved. */
 interface OpenedDocument {
   model: TmForgeModel;
+  nativeSource?: NativeSource;
+  recovered?: boolean;
   /** The format Save writes in: the source format when it is writable, else tmforge-json. */
   saveFormat: string;
   /** The name to bind, using a new name for manifests and read-only source formats. */
@@ -423,18 +429,61 @@ export function deleteFromGraph(
   };
 }
 
-export function Editor() {
-  const [pages, setPages] = useState<PageGraph[]>(INITIAL_WORKSPACE.pages);
-  const [activePageId, setActivePageId] = useState<string>(INITIAL_ACTIVE.id);
-  const [nodes, setNodes, onNodesChange] = useNodesState<DfdNode>(INITIAL_ACTIVE.nodes);
-  const [edges, setEdges] = useEdgesState<DfdEdge>(INITIAL_ACTIVE.edges);
+export async function threatIdsForDeletedObjects(
+  threats: readonly Pick<ThreatTriage, 'id' | 'manual' | 'elementIds'>[],
+  objectIds: readonly string[],
+  pageId?: string,
+): Promise<Set<string>> {
+  if (threats.length === 0) return new Set();
+  const scopeKey = (id: string) => {
+    const unwrapped = (id.startsWith('{') && id.endsWith('}')) || (id.startsWith('(') && id.endsWith(')')) ? id.slice(1, -1) : id;
+    return /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(unwrapped)
+      ? unwrapped.replaceAll('-', '').toLowerCase() : id;
+  };
+  const scopes = new Set(objectIds.map(scopeKey));
+  const inputs = objectIds.map(id => ({ id, namespace: 'tmforge-alias:' }));
+  if (pageId) {
+    scopes.add(scopeKey(pageId));
+    inputs.push({ id: pageId, namespace: 'tmforge-page:' });
+  }
+  await Promise.all(inputs.map(async ({ id, namespace }) => {
+    if (/^[0-9a-f]{32}$/.test(scopeKey(id))) return;
+    const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(namespace + id)));
+    bytes[7] = (bytes[7] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const guidByteOrder = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+    scopes.add(guidByteOrder.map(index => bytes[index].toString(16).padStart(2, '0')).join(''));
+  }));
+  return new Set(threats.filter(threat => {
+    if (threat.elementIds?.some(id => scopes.has(scopeKey(id)))) return true;
+    const separator = threat.id.indexOf(':');
+    return !threat.manual && !threat.id.toLowerCase().startsWith('manual:') && separator > 0
+      && scopes.has(scopeKey(threat.id.slice(0, separator)));
+  }).map(threat => threat.id));
+}
+
+export function Editor({ host }: { host?: EditorHost } = {}) {
+  const [initialWorkspace] = useState<StoredWorkspace>(() => {
+    if (!host) return INITIAL_WORKSPACE;
+    const initialPages = pagesFromModel(host.model);
+    return { pages: initialPages, activePageId: initialPages[0].id, analysis: host.model.analysis, threats: host.model.threats, metadata: host.model.metadata, notes: host.model.notes };
+  });
+  const initialActive = initialWorkspace.pages.find(page => page.id === initialWorkspace.activePageId) ?? initialWorkspace.pages[0];
+  const [pages, setPages] = useState<PageGraph[]>(initialWorkspace.pages);
+  const [activePageId, setActivePageId] = useState<string>(initialActive.id);
+  const [nodes, setNodes, onNodesChange] = useNodesState<DfdNode>(initialActive.nodes);
+  const [edges, setEdges] = useEdgesState<DfdEdge>(initialActive.edges);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [threats, setThreats] = useState<Threat[]>([]);
-  const [threatTriage, setThreatTriage] = useState<ThreatTriage[]>(INITIAL_WORKSPACE.threats ?? []);
-  const [metadata, setMetadata] = useState<TmForgeModel['metadata']>(INITIAL_WORKSPACE.metadata);
+  const [threatTriage, setThreatTriage] = useState<ThreatTriage[]>(initialWorkspace.threats ?? []);
+  const [metadata, setMetadata] = useState<TmForgeModel['metadata']>(initialWorkspace.metadata);
+  const [notes, setNotes] = useState<TmForgeModel['notes']>(initialWorkspace.notes);
+  const [nativeSource, setNativeSource] = useState<NativeSource | undefined>(initialWorkspace.nativeSource);
+  const nativeSourceRef = useRef(nativeSource);
+  nativeSourceRef.current = nativeSource;
   const flaggedIdsRef = useRef<ReadonlySet<string>>(new Set());
-  const [engine, setEngine] = useState<IEngineClient>(offlineEngine);
-  const [engineOnline, setEngineOnline] = useState(false);
+  const [engine, setEngine] = useState<IEngineClient>(host?.engine ?? offlineEngine);
+  const [engineOnline, setEngineOnline] = useState(Boolean(host));
   const [formats, setFormats] = useState<FormatInfo[]>([]);
   // The whole selection, not just its first member: the Inspector edits every selected element, and
   // a bulk delete has to take the connected flows with it.
@@ -446,12 +495,13 @@ export function Editor() {
   const [favoriteIds, setFavoriteIds] = useState<string[]>(() => loadStringList(FAVORITES_KEY));
   const [rules, setRules] = useState<RuleInfo[]>([]);
   const [rulePacks, setRulePacks] = useState<RulePackInfo[]>([]);
-  const [disabledRulePacks, setDisabledRulePacks] = useState<string[]>(() => INITIAL_DISABLED_PACKS);
-  const [disabledRuleIds, setDisabledRuleIds] = useState<string[]>(() => INITIAL_DISABLED_RULE_IDS);
-  const [expectedPacks, setExpectedPacks] = useState<TmForgeExpectedRulePack[]>(() => INITIAL_EXPECTED_PACKS);
+  const [disabledRulePacks, setDisabledRulePacks] = useState<string[]>(() => initialWorkspace.analysis?.disabledPacks ?? []);
+  const [disabledRuleIds, setDisabledRuleIds] = useState<string[]>(() => initialWorkspace.analysis?.disabledRuleIds ?? []);
+  const [expectedPacks, setExpectedPacks] = useState<TmForgeExpectedRulePack[]>(() => initialWorkspace.analysis?.expectedPacks ?? []);
   const [ruleBundle, setRuleBundle] = useState<RuleBundle>({ rulePacks: [], diagnostics: [] });
   const [ruleCatalogToken, setRuleCatalogToken] = useState(0);
   const [showRules, setShowRules] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
   const [showMerge, setShowMerge] = useState(false);
   const [compareSnapshot, setCompareSnapshot] = useState<{ model: TmForgeModel; name: string | null } | null>(null);
   const [shareRequest, setShareRequest] = useState<ShareRequest | null>(null);
@@ -460,32 +510,64 @@ export function Editor() {
   const reviewActiveRef = useRef(false);
   const reviewVersionRef = useRef(0);
   reviewActiveRef.current = compareSnapshot !== null || shareRequest !== null;
-  const [preflightReview, setPreflightReview] = useState<{ title: string; result: PreflightResult } | null>(null);
+  const [preflightReview, setPreflightReview] = useState<{ title: string; result: PreflightResult; operation: 'import' | 'export' } | null>(null);
   const preflightDecision = useRef<((proceed: boolean) => void) | undefined>(undefined);
   const preflightVersion = useRef(0);
   const [showOutline, setShowOutline] = useState(false);
   const [outlineOrder, setOutlineOrder] = useState<OutlineOrder>(loadOutlineOrder);
   const [outlineCrossingOnly, setOutlineCrossingOnly] = useState(false);
   const analysisActiveRef = useRef(false);
+  const analysisRequestRef = useRef(0);
+  const deletionPendingRef = useRef(false);
+  useEffect(() => () => { analysisRequestRef.current++; }, []);
   const fileRef = useRef<HTMLInputElement>(null);
   const fileHandleRef = useRef<WritableFileHandle | null>(null);
-  const fileFormatRef = useRef<string>('tmforge-json');
-  const [fileName, setFileName] = useState<string | null>(null);
+  const fileFormatRef = useRef<string>(initialWorkspace.saveFormat ?? (initialWorkspace.nativeSource ? 'tm7' : 'tmforge-json'));
+  const [fileName, setFileName] = useState<string | null>(initialWorkspace.fileName ?? initialWorkspace.nativeSource?.fileName ?? null);
   const { screenToFlowPosition, fitView } = useReactFlow();
-  const { takeSnapshot, undo, redo, canUndo, canRedo, reset } = useUndoRedo(nodes, edges, setNodes, setEdges);
+  const history = useUndoRedo(nodes, edges, setNodes, setEdges, {
+    value: { pages, activePageId, threatTriage, threats, findings, notes, nativeSource },
+    restore: snapshot => {
+      analysisRequestRef.current++;
+      setPages(snapshot.pages);
+      setActivePageId(snapshot.activePageId);
+      setThreatTriage(snapshot.threatTriage);
+      setNotes(snapshot.notes);
+      setThreats(snapshot.threats);
+      setFindings(snapshot.findings);
+      const source = snapshot.nativeSource;
+      if (source) setNativeSource(current => current ? { ...current, contentBase64: source.saved?.contentBase64 ?? source.contentBase64 } : current);
+    },
+  });
+  const takeSnapshot = useCallback(() => { if (!host) history.takeSnapshot(); }, [host, history.takeSnapshot]);
+  const undo = host?.undo ?? history.undo;
+  const redo = host?.redo ?? history.redo;
+  const canUndo = host ? true : history.canUndo;
+  const canRedo = host ? true : history.canRedo;
+  const reset = history.reset;
 
-  const [theme, setTheme] = useState<Theme>(initialTheme);
+  const [theme, setTheme] = useState<Theme>(() => host?.theme ?? initialTheme());
+  useEffect(() => { if (host) setTheme(host.theme); }, [host?.theme]);
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
+    if (host) return;
     try {
       window.localStorage.setItem(THEME_KEY, theme);
     } catch {
       /* storage unavailable */
     }
-  }, [theme]);
-  const toggleTheme = useCallback(() => setTheme((t) => (t === 'dark' ? 'light' : 'dark')), []);
+  }, [theme, host]);
+  const toggleTheme = useCallback(() => {
+    if (host) host.chooseTheme();
+    else setTheme((value) => value === 'dark' ? 'light' : 'dark');
+  }, [host]);
 
   useEffect(() => {
+    if (host) {
+      setEngine(host.engine);
+      setEngineOnline(true);
+      return;
+    }
     let active = true;
     void (async () => {
       // 1. Prefer the hosted /v1 engine — unless this is a static demo build with no /v1 to reach.
@@ -508,7 +590,7 @@ export function Editor() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [host?.engine]);
 
   useEffect(() => {
     let active = true;
@@ -661,32 +743,62 @@ export function Editor() {
   // the last explicit Save. A debounced localStorage write of the whole workspace (pages + active
   // tab) runs on every change as a crash-recovery net, so a reload never loses work.
   const currentModel = useMemo(() => {
-    return modelFromPages(allPages, buildAnalysis(disabledRulePacks, disabledRuleIds, expectedPacks), threatTriage, metadata);
-  }, [allPages, disabledRulePacks, disabledRuleIds, expectedPacks, threatTriage, metadata]);
+    return modelFromPages(allPages, buildAnalysis(disabledRulePacks, disabledRuleIds, expectedPacks), threatTriage, metadata, notes);
+  }, [allPages, disabledRulePacks, disabledRuleIds, expectedPacks, threatTriage, metadata, notes]);
   const currentJson = useMemo(() => JSON.stringify(currentModel), [currentModel]);
-  const [savedJson, setSavedJson] = useState(INITIAL_SAVED_JSON);
-  const dirty = currentJson !== savedJson;
+  const [savedJson, setSavedJson] = useState(initialWorkspace.savedJson ?? currentJson);
+  const dirty = host?.dirty ?? (currentJson !== savedJson);
+  const publishedModel = useRef(currentModel);
+  useEffect(() => {
+    if (!host || deletionPendingRef.current || nodes.some(node => node.dragging || node.resizing) || JSON.stringify(publishedModel.current) === currentJson) return;
+    const previous = publishedModel.current;
+    publishedModel.current = currentModel;
+    host.onChange(previous, currentModel);
+  }, [host, currentJson, currentModel, nodes]);
 
   const workspaceJson = useMemo(
-    () => JSON.stringify({ v: 2, activePageId, model: currentModel }),
-    [activePageId, currentModel],
+    () => JSON.stringify({ v: 2, activePageId, model: currentModel, ...(fileName ? { fileName, saveFormat: fileFormatRef.current, savedJson } : {}), ...(nativeSource ? { nativeSource, savedJson } : {}) }),
+    [activePageId, currentModel, nativeSource, savedJson, fileName],
   );
   const layoutStateRef = useRef({ workspaceJson, nodes, edges });
   layoutStateRef.current = { workspaceJson, nodes, edges };
   const layoutRequestRef = useRef(0);
   const layoutPendingRef = useRef(false);
   const [tidying, setTidying] = useState(false);
+  const recoveryWarningRef = useRef(false);
   useEffect(() => () => { layoutRequestRef.current += 1; }, []);
   useEffect(() => {
+    if (host) return;
     const id = window.setTimeout(() => {
       try {
         window.localStorage.setItem(STORAGE_KEY, workspaceJson);
+        recoveryWarningRef.current = false;
       } catch {
-        /* storage unavailable (private mode / quota) — ignore */
+        if (nativeSource && !recoveryWarningRef.current) {
+          recoveryWarningRef.current = true;
+          toast('Browser recovery storage is unavailable or full. Save your TM7 before reloading; this session still retains the original document.', 'error');
+        }
       }
     }, 600);
     return () => window.clearTimeout(id);
-  }, [workspaceJson]);
+  }, [workspaceJson, host, nativeSource]);
+
+  const prepareDeletion = useCallback(async (objectIds: string[], pageId?: string) => {
+    const baseline = layoutStateRef.current.workspaceJson;
+    const review = reviewVersionRef.current;
+    const request = analysisRequestRef.current;
+    const deleted = await threatIdsForDeletedObjects([...threatTriage, ...threats], objectIds, pageId);
+    if (reviewActiveRef.current || baseline !== layoutStateRef.current.workspaceJson
+      || review !== reviewVersionRef.current || request !== analysisRequestRef.current) return false;
+    deletionPendingRef.current = true;
+    analysisRequestRef.current++;
+    takeSnapshot();
+    setThreatTriage(previous => previous.filter(threat => !deleted.has(threat.id)));
+    setThreats(previous => previous.filter(threat => !deleted.has(threat.id)));
+    const removedObjects = new Set(objectIds);
+    setFindings(previous => previous.filter(finding => !finding.elementIds.some(id => removedObjects.has(id))));
+    return true;
+  }, [threatTriage, threats, takeSnapshot]);
 
   // ---- pages: switch, add, rename, delete, reorder ----
   const switchPage = useCallback(
@@ -724,24 +836,25 @@ export function Editor() {
   }, [allPages, pages.length, setNodes, setEdges, reset]);
 
   const renamePage = useCallback((id: string, name: string) => {
+    takeSnapshot();
     setPages((prev) => prev.map((p) => (p.id === id ? { ...p, name } : p)));
-  }, []);
+  }, [takeSnapshot]);
 
   const deletePage = useCallback(
-    (id: string) => {
+    async (id: string) => {
       if (pages.length <= 1) {
         return;
       }
       const committed = allPages;
       const victim = committed.find((p) => p.id === id);
-      if (
-        victim &&
-        (victim.nodes.length > 0 || victim.edges.length > 0) &&
-        !window.confirm(`Delete page “${victim.name}” and its contents?`)
-      ) {
-        return;
+      if (victim && (victim.nodes.length > 0 || victim.edges.length > 0)) {
+        const baseline = layoutStateRef.current.workspaceJson;
+        const message = `Delete page “${victim.name}” and its contents?`;
+        const accepted = host ? await host.confirm(message) : window.confirm(message);
+        if (!accepted || baseline !== layoutStateRef.current.workspaceJson) return;
       }
       const index = committed.findIndex((p) => p.id === id);
+      if (!victim || !await prepareDeletion([...victim.nodes.map(node => node.id), ...victim.edges.map(edge => edge.id)], id)) return;
       const remaining = committed.filter((p) => p.id !== id);
       setPages(remaining);
       if (id === activePageId) {
@@ -753,24 +866,25 @@ export function Editor() {
         setNodes(applied.nodes);
         setEdges(applied.edges);
         setSelection({ nodes: [], edges: [] });
-        reset();
       }
+      deletionPendingRef.current = false;
     },
-    [allPages, pages.length, activePageId, setNodes, setEdges, reset],
+    [allPages, pages.length, activePageId, setNodes, setEdges, prepareDeletion, host],
   );
 
   const reorderPage = useCallback(
     (from: number, to: number) => {
       const committed = allPages;
-      if (from < 0 || to < 0 || from >= committed.length || to >= committed.length) {
+      if (from === to || from < 0 || to < 0 || from >= committed.length || to >= committed.length) {
         return;
       }
+      takeSnapshot();
       const next = [...committed];
       const [moved] = next.splice(from, 1);
       next.splice(to, 0, moved);
       setPages(next);
     },
-    [allPages],
+    [allPages, takeSnapshot],
   );
 
   // Which page each element id lives on, and which pages currently carry a finding (for tab badges).
@@ -808,24 +922,35 @@ export function Editor() {
     decide?.(proceed);
   }, []);
 
-  const checkDocument = useCallback(async (bytes: Uint8Array, format: string | undefined, target: string | undefined, operation: 'import' | 'export') => {
+  const checkDocument = useCallback(async (bytes: Uint8Array, format: string | undefined, target: string | undefined, operation: 'import' | 'export', preserveNative = false) => {
     const version = ++preflightVersion.current;
     const baseline = layoutStateRef.current.workspaceJson;
     finishPreflight(false);
     const result = await engine.preflight(bytes, format, target);
+    const recovery = operation === 'import' && result.canRecover === true && !result.success;
+    if (preserveNative && !recovery) {
+      result.targetFormat = undefined;
+      result.diagnostics = result.diagnostics.filter(item => item.code !== 'conversion.generated-register').map(item => {
+        if (item.code === 'conversion.knowledge-base') return { ...item, code: 'native.analysis-rules', severity: 'info' as const,
+          message: 'TM7 data is retained. New edits update the template as needed. Analysis uses the active tmforge rules.' };
+        if (item.code === 'conversion.line-boundaries') return { ...item, code: 'native.line-boundaries',
+          message: 'This file has line trust boundaries that are not displayed on the canvas. They are retained on save; canvas-only analysis may omit those crossings. Deleting a page also removes its hidden objects.' };
+        return item;
+      });
+    }
     const ensureCurrent = () => {
       if (version !== preflightVersion.current || baseline !== layoutStateRef.current.workspaceJson) {
         throw new DOMException('The workspace changed during preflight.', 'AbortError');
       }
     };
     ensureCurrent();
-    if (!result.success || result.diagnostics.length > 0) {
+    if (!result.success || result.diagnostics.some(item => item.severity !== 'info')) {
       const accepted = await new Promise<boolean>((resolve) => {
         preflightDecision.current = resolve;
-        setPreflightReview({ title: result.success ? `Review ${operation}` : `${operation === 'import' ? 'Import' : 'Export'} blocked`, result });
+        setPreflightReview({ title: recovery ? 'Review recovery import' : result.success ? `Review ${operation}` : `${operation === 'import' ? 'Import' : 'Export'} blocked`, result, operation });
       });
       ensureCurrent();
-      if (!accepted || !result.success) {
+      if (!accepted || (!result.success && !recovery)) {
         throw new DOMException('Preflight cancelled.', 'AbortError');
       }
     }
@@ -835,7 +960,21 @@ export function Editor() {
   const serializeModel = useCallback(
     async (formatId: string): Promise<Blob> => {
       const baseline = layoutStateRef.current.workspaceJson;
+      if (host?.readNative) {
+        const source = await host.readNative();
+        if (baseline !== layoutStateRef.current.workspaceJson) throw new DOMException('The model changed before export completed.', 'AbortError');
+        if (formatId === 'tm7') return new Blob([new Uint8Array(source)], { type: 'application/xml' });
+        await checkDocument(source, 'tm7', formatId, 'export');
+      }
+      if (nativeSource && formatId === 'tm7') {
+        const blob = nativeSource.saved?.model === currentJson
+          ? new Blob([fromBase64(nativeSource.saved.contentBase64)], { type: 'application/xml' })
+          : await engine.saveTm7(fromBase64(nativeSource.contentBase64), currentModel, nativeSource.saved ? fromBase64(nativeSource.saved.contentBase64) : undefined);
+        if (baseline !== layoutStateRef.current.workspaceJson) throw new DOMException('The workspace changed before save completed.', 'AbortError');
+        return blob;
+      }
       if (engine !== offlineEngine) {
+        if (nativeSource) await checkDocument(fromBase64(nativeSource.contentBase64), 'tm7', formatId, 'export');
         await checkDocument(new TextEncoder().encode(JSON.stringify(currentModel)), 'tmforge-json', formatId === 'tmforge-json' ? undefined : formatId, 'export');
       }
       const blob = formatId === 'tmforge-json'
@@ -846,17 +985,31 @@ export function Editor() {
       }
       return blob;
     },
-    [engine, currentModel, checkDocument],
+    [engine, currentModel, currentJson, nativeSource, checkDocument, host],
   );
 
+  const rememberNativeSave = useCallback(async (blob: Blob, name: string) => {
+    if (!nativeSource) return;
+    const contentBase64 = toBase64(new Uint8Array(await blob.arrayBuffer()));
+    setNativeSource(previous => previous === nativeSource ? { ...previous, fileName: name, saved: { model: currentJson, contentBase64 } } : previous);
+  }, [nativeSource, currentJson]);
+
   const writeToHandle = useCallback(
-    async (handle: WritableFileHandle, formatId: string): Promise<void> => {
+    async (handle: WritableFileHandle, formatId: string): Promise<Blob> => {
       const blob = await serializeModel(formatId);
+      if (nativeSource && handle === fileHandleRef.current) {
+        const disk = toBase64(new Uint8Array(await (await handle.getFile()).arrayBuffer()));
+        if (disk !== (nativeSource.saved?.contentBase64 ?? nativeSource.contentBase64)) {
+          throw new Error('The TM7 changed on disk after it was opened. Reopen it or export a separate copy; the file was not overwritten.');
+        }
+      }
+      if (nativeSourceRef.current !== nativeSource) throw new DOMException('The native document changed before writing.', 'AbortError');
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
+      return blob;
     },
-    [serializeModel],
+    [serializeModel, nativeSource],
   );
 
   // Save As: pick a new file and write it (Chromium), else download a copy (other browsers).
@@ -868,11 +1021,15 @@ export function Editor() {
     try {
       if (picker.showSaveFilePicker) {
         const handle = await picker.showSaveFilePicker({ suggestedName });
-        await writeToHandle(handle, formatId);
+        const blob = await writeToHandle(handle, formatId);
+        if (nativeSourceRef.current !== nativeSource) return;
+        await rememberNativeSave(blob, handle.name);
         fileHandleRef.current = handle;
         setFileName(handle.name);
       } else {
-        downloadBlob(await serializeModel(formatId), suggestedName);
+        const blob = await serializeModel(formatId);
+        downloadBlob(blob, suggestedName);
+        await rememberNativeSave(blob, suggestedName);
       }
       setSavedJson(currentJson);
     } catch (err) {
@@ -880,23 +1037,30 @@ export function Editor() {
         toast(err instanceof Error ? err.message : 'Could not save the file.', 'error');
       }
     }
-  }, [currentJson, fileName, formats, serializeModel, writeToHandle]);
+  }, [currentJson, fileName, formats, serializeModel, writeToHandle, nativeSource, rememberNativeSave]);
 
   // Save: silently overwrite the file this model was opened from / last saved to; when no file is
   // bound (or the browser lacks the File System Access API) fall back to Save As.
   const saveModel = useCallback(async () => {
+    if (host) {
+      try { await host.save(); }
+      catch (error) { toast(error instanceof Error ? error.message : 'Could not save the file.', 'error'); }
+      return;
+    }
     const handle = fileHandleRef.current;
     if (!handle) {
       await saveAs();
       return;
     }
     try {
-      await writeToHandle(handle, fileFormatRef.current);
+      const blob = await writeToHandle(handle, fileFormatRef.current);
+      if (nativeSourceRef.current !== nativeSource) return;
+      await rememberNativeSave(blob, handle.name);
       setSavedJson(currentJson);
     } catch (err) {
       if (!isAbortError(err)) toast(err instanceof Error ? err.message : 'Could not write the file.', 'error');
     }
-  }, [currentJson, saveAs, writeToHandle]);
+  }, [currentJson, saveAs, writeToHandle, host, nativeSource, rememberNativeSave]);
 
   // Keep a ref so the global keydown handler always calls the latest saveModel without re-subscribing.
   const saveModelRef = useRef(saveModel);
@@ -1268,15 +1432,19 @@ export function Editor() {
     [setNodes, takeSnapshot],
   );
 
-  const deleteSelected = useCallback(() => {
+  const deleteSelected = useCallback(async () => {
     if (selection.nodes.length === 0 && selection.edges.length === 0) {
       return;
     }
-    takeSnapshot();
-    setNodes((nds) => deleteFromGraph(nds, [], selection.nodes, selection.edges).nodes);
-    setEdges((eds) => deleteFromGraph([], eds, selection.nodes, selection.edges).edges);
+    const next = deleteFromGraph(nodes, edges, selection.nodes, selection.edges);
+    const keptEdges = new Set(next.edges.map(edge => edge.id));
+    const removedIds = [...selection.nodes, ...edges.filter(edge => !keptEdges.has(edge.id)).map(edge => edge.id)];
+    if (!await prepareDeletion(removedIds)) return;
+    setNodes(next.nodes);
+    setEdges(next.edges);
     setSelection({ nodes: [], edges: [] });
-  }, [selection, setNodes, setEdges, takeSnapshot]);
+    deletionPendingRef.current = false;
+  }, [selection, nodes, edges, setNodes, setEdges, prepareDeletion]);
 
   // React Flow fires onNodesDelete AND onEdgesDelete for a single deletion (removing an element takes
   // its flows with it), so snapshotting in both would cost two undos for one Backspace. onBeforeDelete
@@ -1284,14 +1452,15 @@ export function Editor() {
   const beforeDelete = useCallback(
     ({ nodes: doomedNodes, edges: doomedEdges }: { nodes: DfdNode[]; edges: DfdEdge[] }) => {
       if (doomedNodes.length > 0 || doomedEdges.length > 0) {
-        takeSnapshot();
+        return prepareDeletion([...doomedNodes.map(node => node.id), ...doomedEdges.map(edge => edge.id)]);
       }
       return Promise.resolve(true);
     },
-    [takeSnapshot],
+    [prepareDeletion],
   );
 
   const clearFlags = useCallback(() => {
+    analysisRequestRef.current++;
     if (flaggedIdsRef.current.size === 0 && !analysisActiveRef.current) {
       return;
     }
@@ -1308,22 +1477,27 @@ export function Editor() {
   // panel: the register leads, non-threat findings trail. The register carries the model's acceptance
   // triage, so accepted risks come back Accepted.
   const runAnalyze = useCallback(async () => {
+    const request = ++analysisRequestRef.current;
+    const baseline = layoutStateRef.current.workspaceJson;
+    const review = reviewVersionRef.current;
+    const isCurrent = () => request === analysisRequestRef.current && baseline === layoutStateRef.current.workspaceJson && review === reviewVersionRef.current;
     let analysis: Awaited<ReturnType<typeof analyzeModel>>;
     try {
       analysis = await analyzeModel(engine, currentModel);
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Analysis failed.', 'error');
+      if (isCurrent()) toast(err instanceof Error ? err.message : 'Analysis failed.', 'error');
       return;
     }
+    if (!isCurrent()) return;
     setThreats(analysis.threats);
     setFindings(analysis.otherFindings);
     setRuleBundle(analysis.ruleBundle);
     analysisActiveRef.current = true;
     flaggedIdsRef.current = analysis.flaggedIds;
-    const applied = applyFlags(nodes, edges, analysis.flaggedIds);
+    const applied = applyFlags(layoutStateRef.current.nodes, layoutStateRef.current.edges, analysis.flaggedIds);
     setNodes(applied.nodes);
     setEdges(applied.edges);
-  }, [engine, currentModel, nodes, edges, setNodes, setEdges]);
+  }, [engine, currentModel, setNodes, setEdges]);
 
   // When an analysis is already on screen, changing the rule selection re-runs it so the results
   // reflect the new choice immediately. A ref holds the latest runAnalyze to avoid a dependency loop.
@@ -1338,6 +1512,7 @@ export function Editor() {
   // Apply an author edit (state / priority / mitigation / description / justification) to a threat:
   // record it on the model's overlay (so it persists and round-trips) and reflect it in the panel.
   const editThreat = useCallback((threat: Threat, edit: ThreatEdit) => {
+    takeSnapshot();
     setThreatTriage((prev) => {
       const existing = prev.find((t) => t.id === threat.id);
       const base: ThreatTriage = existing ?? {
@@ -1385,13 +1560,14 @@ export function Editor() {
           : t,
       ),
     );
-  }, []);
+  }, [takeSnapshot]);
 
   // Delete a manually-authored threat from the overlay and the panel.
   const deleteThreat = useCallback((threat: Threat) => {
+    takeSnapshot();
     setThreatTriage((prev) => prev.filter((t) => t.id !== threat.id));
     setThreats((prev) => prev.filter((t) => t.id !== threat.id));
-  }, []);
+  }, [takeSnapshot]);
 
   // Narrows the canvas highlights to one threat / finding, then navigates to its first referenced page.
   const jumpToElements = useCallback(
@@ -1451,6 +1627,7 @@ export function Editor() {
   // round-trips), and show it in the panel immediately.
   const addThreat = useCallback(
     (draft: NewThreatDraft) => {
+      takeSnapshot();
       const id = `manual:${crypto.randomUUID()}`;
       const elementIds = draft.scopeId ? [draft.scopeId] : [];
       const scope = scopeOptions.find((option) => option.id === draft.scopeId);
@@ -1492,7 +1669,7 @@ export function Editor() {
         },
       ]);
     },
-    [scopeOptions],
+    [scopeOptions, takeSnapshot],
   );
 
   // Selects one element or flow, highlights it on the canvas the way a picked finding is highlighted,
@@ -1570,12 +1747,14 @@ export function Editor() {
       const format = formats.find((f) => f.id === formatId);
       try {
         const blob = await serializeModel(formatId);
-        downloadBlob(blob, `model${format?.extensions[0] ?? ''}`);
+        const name = `model${format?.extensions[0] ?? ''}`;
+        if (host) await host.download(blob, name);
+        else downloadBlob(blob, name);
       } catch (err) {
         if (!isAbortError(err)) toast(err instanceof Error ? err.message : String(err), 'error');
       }
     },
-    [serializeModel, formats],
+    [serializeModel, formats, host],
   );
 
   // Download a report from the engine. The threat-model report and the diagram describe the model;
@@ -1592,16 +1771,20 @@ export function Editor() {
         const blob = spec.analysis
           ? await engine.analysisReport(currentModel, spec.format as AnalysisReportFormat)
           : await engine.report(currentModel, spec.format as 'html' | 'svg');
-        downloadBlob(blob, spec.fileName);
+        if (host) await host.download(blob, spec.fileName);
+        else downloadBlob(blob, spec.fileName);
       } catch (err) {
         toast(err instanceof Error ? err.message : String(err), 'error');
       }
     },
-    [engine, currentModel],
+    [engine, currentModel, host],
   );
 
   const loadModel = useCallback(
-    (model: TmForgeModel, preserveView = false) => {
+    (model: TmForgeModel, preserveView = false, source?: NativeSource) => {
+      setNativeSource(source);
+      fileHandleRef.current = null;
+      fileFormatRef.current = source ? 'tm7' : 'tmforge-json';
       // Import never changes trust claims. Routing and label offsets are presentation-only; shape
       // sizing and arrangement require an explicit Tidy action and the engine's preservation guard.
       const nextPages = pagesFromModel(model).map((p) => {
@@ -1612,7 +1795,7 @@ export function Editor() {
       const nextPacks = model.analysis?.disabledPacks ?? [];
       const nextRuleIds = model.analysis?.disabledRuleIds ?? [];
       const nextExpected = model.analysis?.expectedPacks ?? [];
-      const first = nextPages[0];
+      const first = (host ? nextPages.find(page => page.id === activePageId) : undefined) ?? nextPages[0];
       setPages(nextPages);
       setActivePageId(first.id);
       setNodes(first.nodes);
@@ -1624,18 +1807,35 @@ export function Editor() {
       setThreats([]);
       setThreatTriage(model.threats ?? []);
       setMetadata(model.metadata);
+      setNotes(model.notes);
       flaggedIdsRef.current = new Set();
       analysisActiveRef.current = false;
       setSelection({ nodes: [], edges: [] });
       reset();
       // A freshly loaded model is the new saved baseline, so it does not read as dirty.
       setSavedJson(
-        JSON.stringify(modelFromPages(nextPages, buildAnalysis(nextPacks, nextRuleIds, nextExpected), model.threats, model.metadata)),
+        JSON.stringify(modelFromPages(nextPages, buildAnalysis(nextPacks, nextRuleIds, nextExpected), model.threats, model.metadata, model.notes)),
       );
-      window.setTimeout(() => fitView({ padding: 0.25, maxZoom: 1.15, duration: 300 }), 0);
+      if (!host) window.setTimeout(() => fitView({ padding: 0.25, maxZoom: 1.15, duration: 300 }), 0);
     },
-    [setNodes, setEdges, fitView, reset],
+    [setNodes, setEdges, fitView, reset, host, activePageId],
   );
+
+  const receivedModel = useRef(host?.model);
+  useEffect(() => {
+    if (!host || receivedModel.current === host.model) return;
+    receivedModel.current = host.model;
+    reviewVersionRef.current += 1;
+    preflightVersion.current += 1;
+    finishPreflight(false);
+    layoutRequestRef.current += 1;
+    layoutPendingRef.current = false;
+    setTidying(false);
+    setCompareSnapshot(null);
+    setShowMerge(false);
+    publishedModel.current = modelFromPages(pagesFromModel(host.model), host.model.analysis, host.model.threats, host.model.metadata, host.model.notes);
+    loadModel(host.model, true);
+  }, [host, loadModel, finishPreflight]);
 
   const beginShare = useCallback((request: ShareRequest) => {
     reviewVersionRef.current += 1;
@@ -1649,6 +1849,7 @@ export function Editor() {
   }, [finishPreflight]);
 
   useEffect(() => {
+    if (host) return;
     const capture = () => {
       const fragment = window.location.hash;
       if (!fragment.startsWith(SHARE_PREFIX)) return;
@@ -1659,15 +1860,15 @@ export function Editor() {
     capture();
     window.addEventListener('hashchange', capture);
     return () => window.removeEventListener('hashchange', capture);
-  }, []);
+  }, [host]);
 
   useEffect(() => {
     if (!pendingShare || compareSnapshot || showMerge || preflightReview || shareRequest) return;
     beginShare({ mode: 'open', fragment: pendingShare, hasWorkspace: dirty || allPages.length > 1
       || allPages.some(page => page.nodes.length > 0 || page.edges.length > 0)
-      || threatTriage.length > 0 || metadata !== undefined || currentModel.analysis !== undefined });
+      || threatTriage.length > 0 || (notes?.length ?? 0) > 0 || metadata !== undefined || currentModel.analysis !== undefined });
     setPendingShare(null);
-  }, [pendingShare, compareSnapshot, showMerge, preflightReview, shareRequest, beginShare, dirty, allPages, threatTriage, metadata, currentModel.analysis]);
+  }, [pendingShare, compareSnapshot, showMerge, preflightReview, shareRequest, beginShare, dirty, allPages, threatTriage, notes, metadata, currentModel.analysis]);
 
   const readModelFromBytes = useCallback(
     async (bytes: Uint8Array, formatId: string): Promise<TmForgeModel> => {
@@ -1696,7 +1897,8 @@ export function Editor() {
       const baseline = layoutStateRef.current.workspaceJson;
       const detected = await engine.detect(bytes).catch(() => null);
       ensureNotSuperseded();
-      await checkDocument(bytes, detected?.id, detected?.id === 'tmforge-json' ? undefined : 'tmforge-json', 'import');
+      const preserveNative = detected?.id === 'tm7' && !host;
+      const assessment = await checkDocument(bytes, detected?.id, detected?.id === 'tmforge-json' ? undefined : 'tmforge-json', 'import', preserveNative);
       ensureNotSuperseded();
       const version = preflightVersion.current;
       const complete = (opened: OpenedDocument) => {
@@ -1706,12 +1908,23 @@ export function Editor() {
         }
         return opened;
       };
+      if (!assessment.success && assessment.canRecover) {
+        return complete({
+          model: await engine.recoverTm7(bytes),
+          saveFormat: 'tmforge-json',
+          fileName: `${name.replace(/\.tm7$/i, '')}.recovered.tmforge.json`,
+          bindable: false,
+          recovered: true,
+        });
+      }
       if (detected) {
+        const bindable = detected.canWrite;
         return complete({
           model: await readModelFromBytes(bytes, detected.id),
-          saveFormat: detected.canWrite ? detected.id : 'tmforge-json',
-          fileName: detected.canWrite ? name : modelNameForManifest(name),
-          bindable: detected.canWrite,
+          saveFormat: bindable ? detected.id : 'tmforge-json',
+          fileName: bindable ? name : modelNameForManifest(name),
+          bindable,
+          nativeSource: preserveNative ? { contentBase64: toBase64(bytes), fileName: name } : undefined,
         });
       }
 
@@ -1736,7 +1949,7 @@ export function Editor() {
         bindable: true,
       });
     },
-    [engine, readModelFromBytes, checkDocument],
+    [engine, readModelFromBytes, checkDocument, host],
   );
 
   const onImportFile = useCallback(
@@ -1744,7 +1957,12 @@ export function Editor() {
       const reviewVersion = reviewVersionRef.current;
       try {
         const opened = await readDocument(new Uint8Array(await file.arrayBuffer()), file.name, reviewVersion);
-        loadModel(opened.model);
+        if (host) {
+          await host.create(opened.model, opened.recovered ? opened.fileName : modelNameForManifest(file.name));
+          return;
+        }
+        loadModel(opened.model, Boolean(opened.nativeSource) || opened.recovered, opened.nativeSource);
+        if (opened.recovered) setSavedJson('');
         // A hidden <input> gives no writable handle, so Save falls back to Save As / download.
         fileHandleRef.current = null;
         fileFormatRef.current = opened.saveFormat;
@@ -1753,13 +1971,25 @@ export function Editor() {
         if (!isAbortError(err)) toast(err instanceof Error ? err.message : 'Could not open that file.', 'error');
       }
     },
-    [loadModel, readDocument],
+    [loadModel, readDocument, host],
   );
 
   // Prefer the File System Access API so Open retains a writable handle (Save can then overwrite the
   // same file); browsers without it (Firefox/Safari) fall back to the hidden <input>.
   const openFile = useCallback(async () => {
     const reviewVersion = reviewVersionRef.current;
+    if (host) {
+      try {
+        const file = await host.open();
+        if (file) {
+          const opened = await readDocument(file.bytes, file.name, reviewVersion);
+          await host.create(opened.model, opened.recovered ? opened.fileName : modelNameForManifest(file.name));
+        }
+      } catch (error) {
+        if (!isAbortError(error)) toast(error instanceof Error ? error.message : 'Could not open that file.', 'error');
+      }
+      return;
+    }
     const picker = window as unknown as FilePickerWindow;
     if (!picker.showOpenFilePicker) {
       fileRef.current?.click();
@@ -1769,7 +1999,8 @@ export function Editor() {
       const [handle] = await picker.showOpenFilePicker();
       const file = await handle.getFile();
       const opened = await readDocument(new Uint8Array(await file.arrayBuffer()), handle.name, reviewVersion);
-      loadModel(opened.model);
+      loadModel(opened.model, Boolean(opened.nativeSource) || opened.recovered, opened.nativeSource);
+      if (opened.recovered) setSavedJson('');
       fileHandleRef.current = opened.bindable ? handle : null;
       fileFormatRef.current = opened.saveFormat;
       setFileName(opened.fileName);
@@ -1778,9 +2009,13 @@ export function Editor() {
         toast(err instanceof Error ? err.message : 'Could not open that file.', 'error');
       }
     }
-  }, [loadModel, readDocument]);
+  }, [loadModel, readDocument, host]);
 
   const clearAll = useCallback(() => {
+    setNativeSource(undefined);
+    fileHandleRef.current = null;
+    fileFormatRef.current = 'tmforge-json';
+    setFileName(null);
     const id = crypto.randomUUID();
     setPages([{ id, name: 'Page 1', nodes: [], edges: [] }]);
     setActivePageId(id);
@@ -1790,6 +2025,7 @@ export function Editor() {
     setThreats([]);
     setThreatTriage([]);
     setMetadata(undefined);
+    setNotes(undefined);
     flaggedIdsRef.current = new Set();
     analysisActiveRef.current = false;
     setSelection({ nodes: [], edges: [] });
@@ -1808,7 +2044,7 @@ export function Editor() {
     try {
       let positioned = nodes;
       if (mode !== 'labels') {
-        const original = toModel(nodes, edges);
+        const original = modelFromPages(allPages.filter(page => page.id === activePageId).map(page => ({ ...page, preserveIdentity: true })));
         const candidate = tidyGraph(nodes, edges, 'exact');
         const positions = toModel(candidate.nodes, candidate.edges).elements.map((element) => ({
           id: element.id, x: element.x, y: element.y, width: element.width!, height: element.height!,
@@ -1838,7 +2074,7 @@ export function Editor() {
         setTidying(false);
       }
     }
-  }, [engine, nodes, edges, setNodes, setEdges, takeSnapshot, fitView]);
+  }, [engine, nodes, edges, allPages, activePageId, setNodes, setEdges, takeSnapshot, fitView]);
 
   const actions = useMemo<DfdActions>(
     () => ({ beginEdit: takeSnapshot, renameNode, renameEdge, setEdgeLabelOffset }),
@@ -1865,7 +2101,13 @@ export function Editor() {
         onExport={exportAs}
         onImport={openFile}
         onSave={saveModel}
-        onShare={() => beginShare({ mode: 'create', json: currentJson, pageUrl: window.location.href })}
+        onShare={host ? undefined : () => beginShare({ mode: 'create', json: currentJson, pageUrl: window.location.href })}
+        onNotes={() => {
+          setShowNotes(true);
+          setNodes(current => current.map(node => node.selected ? { ...node, selected: false } : node));
+          setEdges(current => current.map(edge => edge.selected ? { ...edge, selected: false } : edge));
+          setSelection({ nodes: [], edges: [] });
+        }}
         onMerge={() => setShowMerge(true)}
         onCompare={() => {
           reviewVersionRef.current += 1;
@@ -1874,10 +2116,10 @@ export function Editor() {
           layoutRequestRef.current += 1;
           layoutPendingRef.current = false;
           setTidying(false);
-          setCompareSnapshot({ model: JSON.parse(JSON.stringify(currentModel)) as TmForgeModel, name: fileName });
+          setCompareSnapshot({ model: JSON.parse(JSON.stringify(currentModel)) as TmForgeModel, name: host?.fileName ?? fileName });
         }}
         dirty={dirty}
-        fileName={fileName}
+        fileName={host?.fileName ?? fileName}
         onAnalyze={runAnalyze}
         onReport={downloadReport}
         onClear={clearAll}
@@ -1912,6 +2154,7 @@ export function Editor() {
             onReconnect={onReconnect}
             onNodeDragStart={takeSnapshot}
             onBeforeDelete={beforeDelete}
+            onDelete={() => { deletionPendingRef.current = false; }}
             onSelectionChange={onSelectionChange}
             onPaneClick={clearFlags}
             nodeTypes={nodeTypes}
@@ -2079,6 +2322,10 @@ export function Editor() {
           edges={selectedEdges}
           stencils={stencils}
           propertySchema={propertySchema}
+          notes={notes}
+          notesOpen={showNotes}
+          onCloseNotes={() => setShowNotes(false)}
+          onChangeNotes={setNotes}
           onBeginNameEdit={takeSnapshot}
           onRenameNode={renameNode}
           onRenameEdge={renameEdge}
@@ -2097,6 +2344,11 @@ export function Editor() {
         engine={engine}
         onClose={() => setShowMerge(false)}
         onResolved={(model) => {
+          if (host) {
+            setShowMerge(false);
+            void host.create(model, 'merged.tmforge.json').catch(error => toast(String(error), 'error'));
+            return;
+          }
           loadModel(model);
           // A merged model has no writable file handle yet, so Save falls back to Save As / download.
           fileHandleRef.current = null;
@@ -2107,7 +2359,7 @@ export function Editor() {
         }}
       />
     ) : null}
-    {preflightReview && <PreflightDialog title={preflightReview.title} result={preflightReview.result} onDecision={finishPreflight} />}
+    {preflightReview && <PreflightDialog title={preflightReview.title} result={preflightReview.result} operation={preflightReview.operation} onDecision={finishPreflight} />}
     {shareRequest && <ShareDialog request={shareRequest}
       onClose={() => setShareRequest(null)}
       onDownload={(json) => downloadBlob(new Blob([json], { type: 'application/json' }), 'shared-model.tmforge.json')}
