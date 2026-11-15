@@ -8,7 +8,7 @@
 #   docker build -f build/Dockerfile --build-arg NUGET_FEED=<mirror-v3-index-url> -t tmforge-cli .
 
 #  Build
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
 # The NuGet v3 index to restore from. Defaults to nuget.org; override it on a network that reaches
@@ -26,7 +26,7 @@ RUN dotnet publish src/ThreatModelForge.Cli/ThreatModelForge.Cli.csproj -c Relea
 
 # Runtime stage
 # Standard runtime image: it has a shell so the PATH wrapper script below works.
-FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/runtime:11.0 AS runtime
 WORKDIR /work
 COPY --from=build /app/tmforge /opt/tmforge
 

@@ -29,7 +29,7 @@ COPY src/ThreatModelForge.Studio/ ./
 RUN npm run build
 
 # publish the API (.NET)
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 WORKDIR /src
 
 # The NuGet v3 index to restore from. See NPM_REGISTRY above.
@@ -44,7 +44,7 @@ RUN dotnet publish src/ThreatModelForge.Api/ThreatModelForge.Api.csproj -c Relea
     -p:BuildStudio=false -p:RestoreSources="${NUGET_FEED}"
 
 # runtime
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS runtime
 WORKDIR /app
 COPY --from=build /app ./
 ENV ASPNETCORE_URLS=http://+:8080
